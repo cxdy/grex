@@ -1,0 +1,37 @@
+# Shared agent config; AGENT_NAME selects the client certificate and
+# identifies the agent (agent-1, agent-2).
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  opamp:
+    server:
+      ws:
+        endpoint: wss://grex:4320/v1/opamp
+        tls:
+          ca_file: /certs/ca.pem
+          cert_file: /certs/${env:AGENT_NAME}.pem
+          key_file: /certs/${env:AGENT_NAME}-key.pem
+    agent_description:
+      non_identifying_attributes:
+        deployment.environment: dev
+        service.namespace: grex-dev
+
+receivers:
+  hostmetrics:
+    collection_interval: 30s
+    scrapers:
+      cpu:
+      memory:
+
+exporters:
+  otlp:
+    endpoint: otelcol-gateway:4317
+    tls:
+      insecure: true
+
+service:
+  extensions: [health_check, opamp]
+  pipelines:
+    metrics:
+      receivers: [hostmetrics]
+      exporters: [otlp]

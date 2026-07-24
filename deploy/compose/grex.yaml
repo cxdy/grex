@@ -1,0 +1,14 @@
+# grex configuration for the compose dev stack.
+listeners:
+  opamp: ":4320"
+  ui: ":8080"
+  telemetry: ":9090"
+
+tls:
+  cert_file: /certs/server.pem
+  key_file: /certs/server-key.pem
+  client_ca_file: /certs/ca.pem
+
+log:
+  level: info
+  format: json

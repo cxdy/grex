@@ -1,0 +1,32 @@
+# grex configuration. Every field shown with its default.
+# Each field can be overridden with a GREX_* environment variable,
+# e.g. GREX_LISTENERS_OPAMP, GREX_LOG_LEVEL.
+
+listeners:
+  # OpAMP endpoint for collector agents and gateways.
+  opamp: ":4320"
+  # Web UI and read API.
+  ui: ":8080"
+  # Health probes and Prometheus /metrics.
+  telemetry: ":9090"
+
+tls:
+  # cert_file and key_file enable TLS on the OpAMP listener.
+  cert_file: ""
+  key_file: ""
+  # client_ca_file additionally requires and verifies client
+  # certificates (mTLS). Requires cert_file and key_file.
+  client_ca_file: ""
+
+fleet:
+  # How often each agent is expected to check in.
+  heartbeat_interval: 30s
+  # How many consecutive check-ins an agent may miss before it is
+  # evicted from fleet state and the UI.
+  stale_missed_heartbeats: 3
+
+log:
+  # debug, info, warn, error
+  level: info
+  # text, json
+  format: text

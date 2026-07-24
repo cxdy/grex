@@ -1,0 +1,23 @@
+# Dex issuer for the compose dev stack. The mock connector returns a fixed
+# identity (kilgore@kilgore.trout) carrying the "authors" group, which the
+# grex dev role mapping points at both roles. Production replaces the
+# connector with GitHub; grex is unchanged.
+issuer: http://dex:5556/dex
+
+storage:
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+staticClients:
+  - id: grex
+    secret: grex-dev-secret
+    name: grex
+    redirectURIs:
+      - http://localhost:8080/auth/callback
+
+connectors:
+  - type: mockCallback
+    id: mock
+    name: Mock
