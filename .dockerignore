@@ -1,0 +1,11 @@
+.git
+.github
+.claude
+deploy
+logo.png
+docs
+README.md
+Makefile
+compose.yaml
+Dockerfile
+config.yaml

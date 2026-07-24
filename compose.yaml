@@ -1,0 +1,76 @@
+# Local dev stack: grex, two otelcol agents, an otelcol gateway, and Dex.
+# The otelcol images are distroless (no shell), so they cannot carry exec
+# healthchecks; deploy/compose/smoke.sh covers them via log assertions.
+services:
+  gen-certs:
+    image: alpine/openssl:3.5.7
+    entrypoint: ["/bin/sh", "/gen-certs.sh"]
+    volumes:
+      - ./deploy/compose/gen-certs.sh:/gen-certs.sh:ro
+      - ./deploy/compose/certs:/certs
+
+  grex:
+    build: .
+    command: ["-config", "/etc/grex/config.yaml"]
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:9090:9090"
+      - "127.0.0.1:4320:4320"
+    volumes:
+      - ./deploy/compose/grex.yaml:/etc/grex/config.yaml:ro
+      - ./deploy/compose/certs:/certs:ro
+    depends_on:
+      gen-certs:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  dex:
+    image: dexidp/dex:v2.45.1
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    ports:
+      - "127.0.0.1:5556:5556"
+    volumes:
+      - ./deploy/compose/dex.yaml:/etc/dex/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5556/dex/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  otelcol-agent-1:
+    image: otel/opentelemetry-collector-contrib:0.157.0
+    command: ["--config", "/etc/otelcol/config.yaml"]
+    environment:
+      AGENT_NAME: agent-1
+    volumes:
+      - ./deploy/compose/otelcol-agent.yaml:/etc/otelcol/config.yaml:ro
+      - ./deploy/compose/certs:/certs:ro
+    depends_on:
+      grex:
+        condition: service_healthy
+
+  otelcol-agent-2:
+    image: otel/opentelemetry-collector-contrib:0.157.0
+    command: ["--config", "/etc/otelcol/config.yaml"]
+    environment:
+      AGENT_NAME: agent-2
+    volumes:
+      - ./deploy/compose/otelcol-agent.yaml:/etc/otelcol/config.yaml:ro
+      - ./deploy/compose/certs:/certs:ro
+    depends_on:
+      grex:
+        condition: service_healthy
+
+  otelcol-gateway:
+    image: otel/opentelemetry-collector-contrib:0.157.0
+    command: ["--config", "/etc/otelcol/config.yaml"]
+    volumes:
+      - ./deploy/compose/otelcol-gateway.yaml:/etc/otelcol/config.yaml:ro
+      - ./deploy/compose/certs:/certs:ro
+    depends_on:
+      grex:
+        condition: service_healthy
