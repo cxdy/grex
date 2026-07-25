@@ -28,6 +28,15 @@ type ConnMeta struct {
 	Transport string `json:"transport,omitempty"`
 }
 
+// ReservedAttributeKeys are AgentDescription attribute keys that collide
+// with the read API's well-known top-level agent filter fields
+// (internal/api's ?healthy=/?connected=/?via_gateway=). An agent that
+// reports one of these as an identifying or non-identifying attribute has
+// that attribute permanently shadowed: the API filter always resolves the
+// key against the top-level field, never the attribute map, for the caller
+// there is no way to filter on the attribute's value.
+var ReservedAttributeKeys = []string{"healthy", "connected", "via_gateway"}
+
 // Events receives fleet lifecycle notifications, e.g. for metrics. All
 // methods are called with the registry lock held; implementations must not
 // call back into the registry.
@@ -41,15 +50,19 @@ type Events interface {
 	// MissingAttribute is called for each newly missing required attribute
 	// when an agent's compliance state changes.
 	MissingAttribute(key string)
+	// ReservedAttributeConflict is called for each ReservedAttributeKeys key
+	// an agent's AgentDescription reports, when that conflict set changes.
+	ReservedAttributeConflict(key string)
 }
 
 type noopEvents struct{}
 
-func (noopEvents) AgentConnected()         {}
-func (noopEvents) AgentDisconnected()      {}
-func (noopEvents) AgentEvicted()           {}
-func (noopEvents) ReportReceived(string)   {}
-func (noopEvents) MissingAttribute(string) {}
+func (noopEvents) AgentConnected()                  {}
+func (noopEvents) AgentDisconnected()               {}
+func (noopEvents) AgentEvicted()                    {}
+func (noopEvents) ReportReceived(string)            {}
+func (noopEvents) MissingAttribute(string)          {}
+func (noopEvents) ReservedAttributeConflict(string) {}
 
 // Agent is a point-in-time snapshot of one agent's state.
 type Agent struct {
@@ -91,6 +104,10 @@ type Agent struct {
 	FirstSeen         time.Time          `json:"first_seen"`
 	LastSeen          time.Time          `json:"last_seen"`
 	MissingAttributes []string           `json:"missing_attributes,omitempty"`
+	// ReservedAttributeConflicts lists ReservedAttributeKeys this agent
+	// reports as an AgentDescription attribute; those values are shadowed
+	// in the read API by the top-level field of the same name.
+	ReservedAttributeConflicts []string `json:"reserved_attribute_conflicts,omitempty"`
 }
 
 // Capabilities is AgentCapabilities decoded into named fields.
@@ -233,6 +250,7 @@ func (r *Registry) Report(msg *protobufs.AgentToServer, meta ConnMeta) {
 		agent.Identifying = attrsToMap(desc.GetIdentifyingAttributes())
 		agent.NonIdentifying = attrsToMap(desc.GetNonIdentifyingAttributes())
 		r.checkRequiredAttributes(agent)
+		r.checkReservedAttributeConflicts(agent)
 	}
 	if health := msg.GetHealth(); health != nil {
 		r.events.ReportReceived("health")
@@ -290,6 +308,31 @@ func (r *Registry) checkRequiredAttributes(agent *Agent) {
 		}
 		r.log.Warn("agent missing required attributes",
 			"instance_uid", agent.InstanceUID, "missing", missing)
+	}
+}
+
+// checkReservedAttributeConflicts records which ReservedAttributeKeys this
+// agent reports as an AgentDescription attribute, warning and counting only
+// on state change so repeated reports do not flood the log or the counter.
+func (r *Registry) checkReservedAttributeConflicts(agent *Agent) {
+	var conflicts []string
+	for _, key := range ReservedAttributeKeys {
+		if _, ok := agent.Identifying[key]; ok {
+			conflicts = append(conflicts, key)
+			continue
+		}
+		if _, ok := agent.NonIdentifying[key]; ok {
+			conflicts = append(conflicts, key)
+		}
+	}
+	changed := !slices.Equal(agent.ReservedAttributeConflicts, conflicts)
+	agent.ReservedAttributeConflicts = conflicts
+	if len(conflicts) > 0 && changed {
+		for _, key := range conflicts {
+			r.events.ReservedAttributeConflict(key)
+		}
+		r.log.Warn("agent attribute shadowed by a well-known API filter field",
+			"instance_uid", agent.InstanceUID, "conflicts", conflicts)
 	}
 }
 
@@ -372,6 +415,7 @@ func snapshot(agent *Agent) Agent {
 	s.EffectiveConfig = maps.Clone(agent.EffectiveConfig)
 	s.Packages = maps.Clone(agent.Packages)
 	s.MissingAttributes = append([]string(nil), agent.MissingAttributes...)
+	s.ReservedAttributeConflicts = append([]string(nil), agent.ReservedAttributeConflicts...)
 	return s
 }
 
