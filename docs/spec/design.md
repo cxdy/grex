@@ -46,6 +46,86 @@ a read-only view of fleet health in 1.0.
 - **Multi-tenancy.** One fleet per grex instance.
 - **Custom OIDC role mapping UIs.** Role assignment is static configuration.
 
+### Post-1.0 roadmap: why the Supervisor matters
+
+Every mutation feature above is deferred because grex's 1.0 client-side
+target is the bare `opamp` extension, and the bare extension has a hard
+ceiling: it only implements `ReportsStatus`/`ReportsEffectiveConfig`/
+`ReportsHealth`. It cannot receive or act on anything the server offers,
+because it has no process-management capability of its own; it *is* the
+collector process, it can't restart itself, rewrite its own config file and
+reload, or replace its own binary. Building any of the deferred features
+against the bare extension would mean grex inventing bespoke client-side
+tooling from scratch.
+
+The [OpAMP Supervisor](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/cmd/opampsupervisor/specification/README.md)
+(adopted for one dev agent in milestone 9, see Local development) already
+solves the client side of every one of these, as a spec-compliant, actively
+maintained upstream component:
+
+| 1.1+ feature (today's non-goal) | OpAMP capability | What the Supervisor already does |
+|---|---|---|
+| Remote config push | `AcceptsRemoteConfig` | Merges Server-offered config into the collector's config file, restarts the collector, reports `RemoteConfigStatus` back. Reverts to last-known-good if the new config doesn't come up healthy (configurable). |
+| Restart agents from the UI | `AcceptsRestartCommand` | Executes a restart command against the process it supervises. |
+| Package/agent upgrades | `AcceptsPackages` | Downloads the offered executable, verifies its Cosign signature against Sigstore/Rekor before installing, reverts on a failed post-upgrade health check. |
+| Connection settings offers (cert rotation, endpoint migration) | `AcceptsOpAMPConnectionSettings` / `AcceptsOtherConnectionSettings` | Applies Server-offered TLS certs and OTLP exporter connection settings to the managed collector's config. |
+
+Adopting the Supervisor now does **not** mean these features are free or
+already done. It removes the client-side blocker; grex still needs, for
+each one, the server-side work: constructing and versioning the offers,
+deciding what "safe to send" means (e.g. staged rollout, canary a subset of
+the fleet before fleet-wide), the API/UI surface to trigger a mutation, and
+extending the `viewer`/`admin` role split (currently both read-only, see
+AuthN/AuthZ) to actually gate write access once there is something to
+write. The point of adopting it early is that when that server-side work
+starts, the hard, easy-to-get-wrong parts (safe config merge/revert, signed
+package verification, process supervision) are already solved upstream
+rather than something grex has to design and harden itself.
+
+One benefit isn't gated on any of that server-side work and is arguably
+worth having sooner: **crash-survivable health reporting.** A bare-extension
+collector's OpAMP reporting dies the instant its process does, so today grex
+sees only a stale heartbeat followed by eviction, no way to tell "crashed,"
+"network dropped," and "stopped on purpose" apart. The Supervisor's watchdog
+survives the collector crashing, can report the crash itself, and can
+capture the collector's last stdout/stderr for diagnosis. That's a fleet
+health-visibility improvement independent of any mutation feature — see the
+Metrics section for how `grex_agent_health`/`grex_agents_awaiting_full_state`
+already surface state transitions; a Supervisor-reported crash reason is a
+natural future addition there.
+
+**Metrics gap, verified against upstream source, not just the spec doc.**
+Neither side of a remote-config push gives adequate observability today:
+
+- The Supervisor's entire self-instrumentation is two metrics
+  (`supervisor.agent.health_status`, `supervisor.agent.fallback_status`,
+  both 1/0), alpha stability. Nothing about config-apply outcomes, restart
+  counts, OpAMP connection status, or package-update outcomes.
+- Config-push lifecycle exists only as protocol data
+  (`RemoteConfigStatus`: `UNSET`/`APPLYING`/`APPLIED`/`FAILED` plus a config
+  hash and error string), not a metric on either end. No `REVERTED` status
+  exists in the protocol; a revert looks like a fresh `APPLIED` unless the
+  receiving server tracks hash history itself.
+- `opamp-go` has no built-in metrics at all, it's a bare protocol library.
+  Server-side visibility is entirely the server implementation's
+  responsibility (grex's, when this is built) — same conclusion as the
+  Supervisor side, one layer up.
+- Package-update status has no real insertion point yet upstream: the
+  Supervisor's `packageManager` is currently a stub (every method ignores
+  its real parameters), matching the spec README's own note that
+  `accepts_packages`/`reports_package_statuses` are accepted in config but
+  disabled at runtime.
+
+Precise upstream insertion points for closing the Supervisor-side gap
+(single choke-point function for config status, two call sites for
+restarts, one pair of callbacks for connection status) are written up in
+`supervisor-metrics.md`, ready to become an upstream PR using the same
+playbook as the earlier OpAMP gateway TLS fix. Even with that PR, grex still
+needs its own server-side metrics built from the `RemoteConfigStatus`
+messages it receives (e.g. `grex_agent_remote_config_status_total{status}`)
+— the Supervisor-side counters only cover what the Supervisor can see
+locally, they don't give grex anything for free.
+
 ## Architecture
 
 ```text
@@ -582,6 +662,23 @@ the gateway's connect handshake needs grex to answer `connectResult`.
    OIDC lands, only the identity source feeding it. Ships first: no external
    dependency, and it is real access control for API consumers even before
    OIDC login exists for the browser UI.
+   - **SPIFFE ID path format**: two namespaces under one trust domain, so the
+     role table's prefix matching stays unambiguous between a human using a
+     personal dev cert (the realistic case before milestone 7 ships) and a
+     permanent automation caller (CI, scripts, dashboards) hitting the same
+     listener at the same time:
+     - Humans: `spiffe://<trust-domain>/user/<username>`
+     - Services/automation: `spiffe://<trust-domain>/service/<name>`
+     - Deliberately not `agent/...` for either: "agent" already means a
+       specific thing (an OpAMP-managed collector) throughout this codebase,
+       reusing it here would be confusing.
+     - This trust domain should stay distinct from any trust domain used for
+       collector/gateway identity if the OpAMP-gateway SPIFFE-forwarding
+       design (set aside separately) is ever built: UI/API access and fleet
+       infrastructure identity are different security boundaries with
+       different issuance lifecycles, and sharing a trust domain risks a
+       cert valid in one context being accidentally accepted in the other.
+       E.g. `spiffe://grex-api.internal/...` vs `spiffe://grex-fleet.internal/...`.
 7. **Auth: OIDC** — OIDC client against Dex, claims-based roles, Dex dev
    config with static users; browser session login on top of the mTLS
    groundwork from milestone 6.
