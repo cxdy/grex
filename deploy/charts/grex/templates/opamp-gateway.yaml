@@ -1,0 +1,133 @@
+{{- if .Values.opampGateway.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "grex.opampGateway.fullname" . }}
+  labels:
+    {{- include "grex.opampGateway.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- if .Values.opampGateway.config }}
+    {{- .Values.opampGateway.config | nindent 4 }}
+    {{- else }}
+    # Minimal OpAMP gateway config. Replace with a production collector
+    # config that includes the observIQ opampgateway extension. See
+    # deploy/compose/opamp-gateway.yaml and docs/admin/scaling-with-gateways.md.
+    extensions:
+      opampgateway:
+        listen_address: "0.0.0.0:{{ .Values.opampGateway.service.port }}"
+        endpoint: {{ include "grex.opampEndpoint" . | quote }}
+        {{- if .Values.opampGateway.tls.enabled }}
+        tls:
+          ca_file: {{ printf "%s/%s" (trimSuffix "/" .Values.opampGateway.tls.mountPath) .Values.opampGateway.tls.caKey | quote }}
+          cert_file: {{ printf "%s/%s" (trimSuffix "/" .Values.opampGateway.tls.mountPath) .Values.opampGateway.tls.certKey | quote }}
+          key_file: {{ printf "%s/%s" (trimSuffix "/" .Values.opampGateway.tls.mountPath) .Values.opampGateway.tls.keyKey | quote }}
+        {{- end }}
+    service:
+      extensions: [opampgateway]
+      pipelines: {}
+    {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "grex.opampGateway.fullname" . }}
+  labels:
+    {{- include "grex.opampGateway.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.opampGateway.service.type }}
+  ports:
+    - name: opamp
+      port: {{ .Values.opampGateway.service.port }}
+      targetPort: opamp
+      protocol: TCP
+  selector:
+    {{- include "grex.opampGateway.selectorLabels" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "grex.opampGateway.fullname" . }}
+  labels:
+    {{- include "grex.opampGateway.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.opampGateway.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "grex.opampGateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ toYaml .Values.opampGateway | sha256sum }}
+        {{- with .Values.opampGateway.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "grex.opampGateway.labels" . | nindent 8 }}
+        {{- with .Values.opampGateway.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: opamp-gateway
+          image: "{{ .Values.opampGateway.image.repository }}:{{ .Values.opampGateway.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.opampGateway.image.pullPolicy }}
+          args:
+            - --config
+            - /etc/otelcol/config.yaml
+          ports:
+            - name: opamp
+              containerPort: {{ .Values.opampGateway.service.port }}
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          resources:
+            {{- toYaml .Values.opampGateway.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol
+              readOnly: true
+            {{- if .Values.opampGateway.tls.enabled }}
+            - name: tls
+              mountPath: {{ .Values.opampGateway.tls.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "grex.opampGateway.fullname" . }}
+        {{- if .Values.opampGateway.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ required "opampGateway.tls.existingSecret is required when opampGateway.tls.enabled is true" .Values.opampGateway.tls.existingSecret }}
+        {{- end }}
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.opampGateway.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.opampGateway.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.opampGateway.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

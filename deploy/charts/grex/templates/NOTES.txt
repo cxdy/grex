@@ -1,0 +1,57 @@
+grex has been installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Listeners (Service {{ include "grex.fullname" . }}):
+  - OpAMP:     port {{ .Values.service.ports.opamp.port }}  (collectors / gateways)
+  - UI / API:  port {{ .Values.service.ports.ui.port }}
+  - Telemetry: port {{ .Values.service.ports.telemetry.port }}  (/healthz, /readyz, /metrics, /metrics/fleet)
+
+{{- if .Values.ingress.enabled }}
+
+UI Ingress:
+{{- range $host := .Values.ingress.hosts }}
+  {{- range .paths }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}{{ .path }}
+  {{- end }}
+{{- end }}
+{{- else }}
+
+Port-forward the UI and telemetry ports for a quick check:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "grex.fullname" . }} \
+    {{ .Values.service.ports.ui.port }}:{{ .Values.service.ports.ui.port }} \
+    {{ .Values.service.ports.telemetry.port }}:{{ .Values.service.ports.telemetry.port }}
+
+  open http://127.0.0.1:{{ .Values.service.ports.ui.port }}/
+  curl -sS http://127.0.0.1:{{ .Values.service.ports.telemetry.port }}/healthz
+{{- end }}
+
+{{- if .Values.tls.enabled }}
+
+OpAMP TLS is enabled (secret {{ .Values.tls.existingSecret | default "(unset)" }}).
+Point collectors at wss://{{ include "grex.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.ports.opamp.port }}/v1/opamp
+{{- else }}
+
+OpAMP is plaintext. For production, set tls.enabled=true and provide tls.existingSecret.
+Point collectors at ws://{{ include "grex.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.ports.opamp.port }}/v1/opamp
+{{- end }}
+
+{{- if .Values.opampGateway.enabled }}
+
+OpAMP gateway is enabled (service {{ include "grex.opampGateway.fullname" . }}:{{ .Values.opampGateway.service.port }}).
+Agents should dial the gateway; the gateway dials grex upstream.
+{{- end }}
+
+{{- if .Values.serviceMonitor.enabled }}
+
+ServiceMonitors were created for /metrics and /metrics/fleet (Prometheus Operator).
+{{- else }}
+
+No ServiceMonitor was installed. Scrape telemetry:{{ .Values.service.ports.telemetry.port }}
+with two jobs (/metrics and /metrics/fleet), or set serviceMonitor.enabled=true.
+{{- end }}
+
+Documentation: https://dennisme.github.io/grex/admin/helm/
+Chart repository: https://dennisme.github.io/grex/charts/
+
+Security note: the UI/API listener has no application authentication yet.
+Do not expose it to untrusted networks without a network boundary.

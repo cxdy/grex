@@ -79,15 +79,25 @@ The living product plan is under [SPEC](spec/index.md)
 
     See [Getting started](getting-started/index.md).
 
+=== "Helm (Kubernetes)"
+
+    ```sh
+    helm repo add grex https://dennisme.github.io/grex/charts/
+    helm install grex grex/grex -n grex --create-namespace
+    ```
+
+    See [Deploy with Helm](admin/helm.md). Chart values:
+    [reference](reference/helm-chart.md).
+
 ## Documentation map
 
 - **[Demo](demo/)** — static sample fleet UI (no grex process)
 - **[Getting started](getting-started/index.md)** — tutorials to a first success
 - **[User](user/index.md)** — fleet UI for operators
-- **[Admin](admin/index.md)** — deploy, config, TLS, lifecycle
+- **[Admin](admin/index.md)** — deploy (binary, Compose, Helm), config, TLS, lifecycle
 - **[Developer](developer/index.md)** — architecture, packages, API, UI, tests
 - **[Observability](observability/index.md)** — metrics catalog, scrape layout, logs, traces
-- **[Reference](reference/cli.md)** — CLI and HTTP endpoints
+- **[Reference](reference/cli.md)** — CLI, HTTP endpoints, Helm values
 - **[SPEC](spec/index.md)** — living design documents
 
 ## License

@@ -28,6 +28,8 @@ a read-only view of fleet health in 1.0.
 - Secure the front door: TLS termination, mTLS for collector clients, and
   OIDC/OAuth login for UI users (GitHub App OAuth is the first provider).
 - Ship as both binaries and Docker images with automated, semver releases.
+- Ship a Helm chart for Kubernetes production deployments (Compose remains the
+  local multi-collector lab).
 - Provide a one-command local dev environment with Docker Compose that includes
   multiple collectors connected to grex.
 
@@ -511,7 +513,8 @@ the gateway's connect handshake needs grex to answer `connectResult`.
 
 - **CI (GitHub Actions):** on every PR and push to main run `golangci-lint`,
   `go test ./...` with race detector, and a build of the compose stack to keep
-  the dev environment honest.
+  the dev environment honest. Chart changes additionally run `helm lint` and
+  `helm template` (`.github/workflows/helm.yml`).
 - **Versioning:** semver computed with [`svu`](https://github.com/caarlos0/svu)
   from conventional commit history; a release workflow tags `$(svu next)`.
 - **Releases:** [GoReleaser](https://goreleaser.com/) builds:
@@ -519,6 +522,14 @@ the gateway's connect handshake needs grex to answer `connectResult`.
     GitHub Release.
   - Docker images: multi-arch, pushed to GHCR, tagged with the semver tag and
     `latest`.
+- **Helm chart:** source under `deploy/charts/grex`. Packaged and published
+  as a Helm repository on GitHub Pages at
+  `https://dennisme.github.io/grex/charts/` (path prefix on the same Pages
+  site as MkDocs docs and the static demo — single deploy workflow, no second
+  Pages source). The docs workflow packages the chart into `site/charts/`
+  after `mkdocs build` so `/`, `/demo/`, and `/charts/` share one artifact.
+  Chart `version` / `appVersion` are bumped with grex releases once GoReleaser
+  lands; until then operators build/load images and set `image.tag` explicitly.
 - License scanning and dependency updates (Dependabot) enabled from the start.
 
 ## Feature list, whittled
@@ -536,10 +547,12 @@ the gateway's connect handshake needs grex to answer `connectResult`.
 | 9 | TLS termination, mTLS clients | Yes |
 | 10 | Binary + Docker releases | Yes |
 | 11 | CI/CD, golangci-lint, svu, GoReleaser | Yes |
+| 12 | Helm chart (K8s deploy + chart repo on Pages `/charts/`) | Yes |
 | — | Remote config push | No, 1.1+ |
 | — | Package management | No |
 | — | Persistent storage | No |
 | — | Multi-tenancy | No |
+| — | Multi-replica grex HA | No (in-memory state; chart `replicaCount: 1`) |
 
 ## Execution plan (milestones)
 
@@ -574,18 +587,26 @@ the gateway's connect handshake needs grex to answer `connectResult`.
    OpAMP Supervisor instead of the bare `opamp` extension, exercising both
    client-side models and giving one agent a stable, volume-persisted
    `instance_uid`.
-10. **Helm chart** — production deployment shape for Kubernetes, compose
-    stays the dev/functional-testing reference. Chart covers: grex
-    Deployment + Service exposing the three listeners (opamp, ui,
+10. **Helm chart** — production deployment shape for Kubernetes; Compose
+    stays the dev/functional-testing reference. **Shipped** under
+    `deploy/charts/grex` and published at
+    `https://dennisme.github.io/grex/charts/` (GitHub Pages path on the
+    existing docs/demo site — not a second Pages project). Chart covers:
+    grex Deployment + Service exposing the three listeners (opamp, ui,
     telemetry) on their own named ports, matching the separate-ports design;
-    Secret/volume mounts for TLS material; ConfigMap for `grex.yaml`;
-    scrape annotations (or a `ServiceMonitor`, gated by a values toggle for
-    clusters without the Prometheus Operator CRDs) for `/metrics` and
-    `/metrics/fleet` as separate jobs, matching the compose Prometheus
-    config; Ingress for the UI listener; an optional OpAMP gateway
-    Deployment + Service (`opampGateway.enabled`) for fleets large enough to
-    need connection multiplexing, off by default since most fleets don't
-    need it on day one.
+    Secret/volume mounts for TLS material (`tls.existingSecret`); ConfigMap
+    for grex YAML from `values.config` / `listeners` / `tls`; optional
+    `prometheus.io/*` Service annotations **or** two `ServiceMonitor`
+    resources (`serviceMonitor.enabled`) for `/metrics` and
+    `/metrics/fleet` as separate scrape jobs, matching the compose
+    Prometheus config; Ingress for the UI listener only; an optional OpAMP
+    gateway Deployment + Service (`opampGateway.enabled`) for fleets large
+    enough to need connection multiplexing, off by default. Probes wire
+    liveness to `/healthz` and readiness to `/readyz` on the telemetry
+    port; `terminationGracePeriodSeconds` defaults above drain + shutdown
+    grace. **Constraint:** `replicaCount` remains 1 while fleet state is
+    in-memory (no HA). Operator docs: `docs/admin/helm.md` and
+    `docs/reference/helm-chart.md`.
 11. **Grafana + dashboard** — add a Grafana service to the compose stack
     pointed at the existing Prometheus service (already scraping
     `grex-server`, `grex-fleet`, and `otelcol` as separate jobs), and ship a

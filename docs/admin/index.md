@@ -1,12 +1,13 @@
 # Admin guide
 
 This guide is for people who **deploy and operate** grex: install the
-binary or image, configure listeners and TLS, scrape metrics, and understand
-process lifecycle.
+binary, image, or Helm chart; configure listeners and TLS; scrape metrics;
+and understand process lifecycle.
 
 ## Responsibilities
 
 - Choose listen addresses and network exposure for the three listeners
+- Deploy on Kubernetes with Helm when running in a cluster
 - Configure OpAMP TLS/mTLS for collectors
 - Set fleet heartbeat / stale / required attribute policy
 - Scrape Prometheus endpoints with safe cardinality limits
@@ -16,7 +17,8 @@ process lifecycle.
 
 | Page | Description |
 |------|-------------|
-| [Install](install.md) | Binary, Docker, Compose |
+| [Install](install.md) | Binary, Docker, Compose, Helm overview |
+| [Deploy with Helm](helm.md) | Kubernetes install, TLS, Ingress, scrapes |
 | [Configuration](configuration.md) | YAML + `GREX_*` reference |
 | [TLS and mTLS](tls-mtls.md) | OpAMP server TLS and client certs |
 | [Authentication](authentication.md) | Current state + planned UI/API auth |

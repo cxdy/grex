@@ -52,9 +52,23 @@ Do not expose `:9090` to the public internet, especially if
 
 ## Service discovery
 
-grex does not ship Kubernetes ServiceMonitor CRDs. Point static configs,
-file SD, or your platform’s SD at the telemetry port. Keep the two jobs
-even if targets are identical.
+### Helm ServiceMonitors (optional)
+
+The [Helm chart](../admin/helm.md) can create **two** Prometheus Operator
+`ServiceMonitor` resources when `serviceMonitor.enabled=true`: one for
+`/metrics` and one for `/metrics/fleet`, with independent intervals. That
+matches the dual-job layout above and the compose Prometheus config.
+
+Requires the Prometheus Operator CRDs in the cluster. Set
+`serviceMonitor.labels` so your Prometheus instance selects the monitors.
+
+### Without the operator
+
+Point static configs, file SD, annotation-based discovery, or your
+platform’s SD at the telemetry port. Keep the two jobs even if targets are
+identical. The chart’s `metrics.serviceAnnotations.enabled` only annotates
+the Service for `/metrics`; it does not create a second fleet job—use an
+external scrape config or ServiceMonitors for that.
 
 ## Relabeling
 

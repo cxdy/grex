@@ -1,0 +1,30 @@
+apiVersion: v2
+name: grex
+description: OpAMP control plane for OpenTelemetry Collector fleets
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+keywords:
+  - opamp
+  - opentelemetry
+  - otel
+  - fleet
+  - observability
+  - grex
+
+home: https://dennisme.github.io/grex/
+icon: https://dennisme.github.io/grex/assets/logo.png
+
+sources:
+  - https://github.com/dennisme/grex
+
+maintainers:
+  - name: grex contributors
+    url: https://github.com/dennisme/grex
+
+kubeVersion: ">=1.25.0-0"
+
+annotations:
+  category: Observability
+  licenses: Apache-2.0

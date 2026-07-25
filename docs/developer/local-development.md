@@ -23,6 +23,15 @@ deploy/compose/smoke.sh
 make compose-down
 ```
 
+Helm chart (requires `helm`):
+
+```sh
+make helm-lint                 # lint + template render
+make helm-package              # package into dist/charts/
+# or install into a local cluster:
+helm install grex ./deploy/charts/grex -n grex --create-namespace
+```
+
 ## Suggested workflow
 
 1. Create a branch from `main`
@@ -33,6 +42,8 @@ make compose-down
 5. If you change metrics names/labels, update
    [observability docs](../observability/metrics.md) and any golden compares
    in `internal/metrics`
+6. If you change chart templates or values, run `make helm-lint` and update
+   [admin/helm](../admin/helm.md) / [reference/helm-chart](../reference/helm-chart.md)
 
 ## Config for local runs
 
@@ -49,10 +60,12 @@ mkdocs serve
 # http://127.0.0.1:8000
 ```
 
-Strict build (as in CI):
+Strict build (as in CI; also packages the Helm chart into `site/charts/` when
+`helm` is on `PATH`):
 
 ```sh
-mkdocs build --strict
+make docs
+# or: mkdocs build --strict
 ```
 
 ## IDE notes

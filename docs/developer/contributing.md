@@ -60,7 +60,8 @@ CI on every PR:
 | `ci` | `docker compose build` |
 | `conventional-commit-check` | commitizen branch message validation |
 | `markdownlint` | markdownlint-cli2 on `**/*.md` (path-filtered) |
-| `docs` | MkDocs strict build; deploy Pages from `main` (path-filtered) |
+| `docs` | MkDocs strict build + Helm chart package into `site/charts/`; deploy Pages from `main` (path-filtered) |
+| `helm` | `helm lint` / `helm template` for `deploy/charts/grex` (path-filtered) |
 
 ## License
 

@@ -1,4 +1,4 @@
-.PHONY: init build test coverage lint markdownlint pre-commit compose-up compose-down demo-static docs
+.PHONY: init build test coverage lint markdownlint pre-commit compose-up compose-down demo-static docs helm-lint helm-package
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
@@ -59,3 +59,24 @@ demo-static:
 docs: demo-static
 	mkdir -p docs/assets && cp logo.png docs/assets/logo.png
 	mkdocs build --strict
+	# Package the Helm chart into site/charts so local mkdocs previews match
+	# GitHub Pages (docs + demo + chart repo share one site).
+	@if command -v helm >/dev/null 2>&1; then \
+		mkdir -p site/charts && \
+		helm package deploy/charts/grex --destination site/charts && \
+		helm repo index site/charts --url https://dennisme.github.io/grex/charts && \
+		cp deploy/charts/grex/README.md site/charts/README.md; \
+	else \
+		echo "helm not found; skipping chart packaging into site/charts"; \
+	fi
+
+# Lint and dry-render the grex Helm chart (requires helm).
+helm-lint:
+	helm lint deploy/charts/grex
+	helm template grex deploy/charts/grex >/dev/null
+
+# Package the chart to dist/charts/ (local only; CI publishes via docs workflow).
+helm-package:
+	mkdir -p dist/charts
+	helm package deploy/charts/grex --destination dist/charts
+	helm repo index dist/charts --url https://dennisme.github.io/grex/charts
