@@ -4,7 +4,10 @@
     This design spec **changes frequently** as grex evolves. Treat it as the
     current plan of record, not a frozen contract. Implementation may lag or
     diverge briefly; prefer the rest of this documentation site and the source
-    for what ships today.
+    for what ships today. Any change that affects behavior, config, or the
+    architecture described here, including this file, **must** update the
+    relevant pages under `docs/` in the same PR; docs are not a follow-up
+    task.
 
 grex is an OpAMP control plane for OpenTelemetry Collector fleets, written in Go and
 licensed under Apache 2.0. It implements the server side of the
@@ -127,7 +130,15 @@ auth boundary:
   reporting, health reporting, own-telemetry reporting metadata. Offers from the
   server (remote config, packages, connection settings) are not sent.
 - Agent identity: `instance_uid` plus reported `AgentDescription` attributes
-  (service.name, service.version, host, OS, etc.).
+  (service.name, service.version, host, OS, etc.). `instance_uid` stability
+  is a client-side concern grex has no control over: the bare `opamp`
+  extension auto-generates a new UUID on every process start unless the
+  deployment pins one, while an [OpAMP Supervisor](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/cmd/opampsupervisor/specification/README.md)
+  generates one once and persists it across collector (and Supervisor)
+  restarts. Fleets that restart collectors without a Supervisor and without
+  a pinned `instance_uid` will see eviction/re-registration churn, not a
+  grex bug; see the Local development section for how the compose stack
+  demonstrates the stable (Supervisor) case.
 - Required attributes: a configurable list of attribute keys
   (`fleet.required_attributes`) that every agent's `AgentDescription` must
   carry, checked across identifying and non-identifying attributes. When an
@@ -434,13 +445,52 @@ agent attributes, metric cardinality cap.
    an upstream PR. Once a tagged release ships the fix, drop the `replaces`
    entry and switch back to the stock `observiq/observiq-otel-collector`
    image.
-3. **otelcol agent × 2** — OpenTelemetry Collector containers running the
-   `opamp` extension pointed at the OpAMP gateway, each generating some
-   internal telemetry so the fleet view has real data.
+3. **otelcol agent × 2** — OpenTelemetry Collector containers pointed at the
+   OpAMP gateway, each generating some internal telemetry so the fleet view
+   has real data. The two agents intentionally run under the two different
+   client-side OpAMP models grex must support, so both are exercised in dev:
+   - **agent-1**: bare `opamp` extension, as today. The extension talks
+     OpAMP directly (through the gateway) and implements only
+     `ReportsStatus`/`ReportsEffectiveConfig`/`ReportsHealth`.
+   - **agent-2**: [OpAMP Supervisor](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/cmd/opampsupervisor/specification/README.md)-managed.
+     The Supervisor is a separate process that starts/stops/watchdogs the
+     collector, and itself speaks OpAMP (through the gateway) on the
+     collector's behalf; the collector's own `opamp` extension talks to the
+     Supervisor over localhost, not to grex. This is the deployment model
+     real production fleets are expected to use, since it's the only one
+     that gets a stable `instance_uid` (see below) and process supervision.
+   - No grex-side protocol changes needed either way: a Supervisor is just
+     another OpAMP client relaying the same message shapes, and it typically
+     reports more capability bits true by default (`reports_heartbeat`,
+     `reports_effective_config`, `reports_own_metrics`) — grex already
+     decodes the full `AgentCapabilities` bitmask (`fleet.Capabilities`), so
+     this is purely observational.
+   - Image: no OCB build needed (the Supervisor isn't a collector
+     distribution). Multi-stage Dockerfile: pull the standalone, Cosign-signed
+     `opampsupervisor` binary from
+     [`open-telemetry/opentelemetry-collector-releases`](https://github.com/open-telemetry/opentelemetry-collector-releases/releases)
+     (pinned to `v0.157.0`, matching the otelcol-contrib pin already used),
+     and `COPY --from=otel/opentelemetry-collector-contrib:0.157.0` for the
+     managed collector binary.
+   - Config split: the Supervisor's own `supervisor.yaml` carries
+     `server.endpoint`/TLS (same client cert/CA already generated for
+     agent-2, pointed at the OpAMP gateway) and `agent.config_files`
+     referencing agent-2's existing hostmetrics/otlp config (its `opamp:`
+     extension block is removed — the Supervisor injects
+     `$OPAMP_EXTENSION_CONFIG` itself, pointed at its own local
+     `opamp_server_port`, not at the gateway).
+   - `storage.directory` must be a named Docker volume (not an anonymous or
+     container-local path), because that's where the Supervisor persists the
+     `instance_uid` it generates on first run: without a persistent volume,
+     every `docker compose down`/`up` (or container recreation) would mint a
+     new UUID and orphan the old fleet entry, the exact churn risk noted in
+     the metrics cardinality discussion. A plain `docker compose restart`
+     already avoids this today (container, and its filesystem, isn't
+     recreated) — the volume matters specifically across recreation.
 4. **otelcol gateway × 1** — a collector configured in OTLP gateway topology,
-   receiving from the two agents, its own OpAMP connection also routed through
-   the OpAMP gateway. This satisfies "more than one otelcol agent or gateway"
-   and demonstrates mixed fleet roles.
+   receiving from the two agents, its own OpAMP connection (bare `opamp`
+   extension) also routed through the OpAMP gateway. This satisfies "more
+   than one otelcol agent or gateway" and demonstrates mixed fleet roles.
 5. **Dex** — the OIDC issuer grex authenticates against. In dev it runs with
    static test users (Dex `staticPasswords`) carrying group claims that map to
    both roles, so the full login flow is exercised offline without GitHub
@@ -521,7 +571,37 @@ the gateway's connect handshake needs grex to answer `connectResult`.
    groundwork from milestone 6.
 8. **Release** — GoReleaser, svu, image publishing, first tagged 1.0.
 9. **Local dev** — compose stack with collectors and dev certs (built;
-   OpAMP gateway insertion lands with milestone 2).
+   OpAMP gateway insertion lands with milestone 2). One agent runs under an
+   OpAMP Supervisor instead of the bare `opamp` extension, exercising both
+   client-side models and giving one agent a stable, volume-persisted
+   `instance_uid`.
+10. **Helm chart** — production deployment shape for Kubernetes, compose
+    stays the dev/functional-testing reference. Chart covers: grex
+    Deployment + Service exposing the three listeners (opamp, ui,
+    telemetry) on their own named ports, matching the separate-ports design;
+    Secret/volume mounts for TLS material; ConfigMap for `grex.yaml`;
+    scrape annotations (or a `ServiceMonitor`, gated by a values toggle for
+    clusters without the Prometheus Operator CRDs) for `/metrics` and
+    `/metrics/fleet` as separate jobs, matching the compose Prometheus
+    config; Ingress for the UI listener; an optional OpAMP gateway
+    Deployment + Service (`opampGateway.enabled`) for fleets large enough to
+    need connection multiplexing, off by default since most fleets don't
+    need it on day one.
+11. **Grafana + dashboard** — add a Grafana service to the compose stack
+    pointed at the existing Prometheus service (already scraping
+    `grex-server`, `grex-fleet`, and `otelcol` as separate jobs), and ship a
+    checked-in dashboard JSON covering the metrics already defined in the
+    Metrics section: fleet health (`grex_agents_connected` by
+    `via`/`transport`, `grex_agents_noncompliant`,
+    `grex_agents_awaiting_full_state`, `grex_agent_series_capped`), gateway
+    (`grex_gateway_connections`, `grex_gateway_connects_total`), server
+    health (`grex_opamp_messages_total`, `grex_api_requests_total`/
+    `grex_api_request_duration_seconds`), and the `grex_build_info`/
+    `grex_config_info` gauges as a table panel. Datasource and dashboard are
+    provisioned via mounted config (Grafana's provisioning directories), not
+    manual click-through, so `docker compose up` gives a working dashboard
+    with zero setup. The same JSON is the artifact operators import into a
+    production Grafana when using the Helm chart from milestone 10.
 
 Each milestone is independently testable; TDD applies throughout (unit tests
 per package, compose stack as the end-to-end harness).
