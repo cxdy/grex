@@ -20,7 +20,17 @@ type Config struct {
 	TLS       TLS       `yaml:"tls"`
 	Fleet     Fleet     `yaml:"fleet"`
 	Metrics   Metrics   `yaml:"metrics"`
+	Debug     Debug     `yaml:"debug"`
 	Log       Log       `yaml:"log"`
+}
+
+// Debug holds settings for diagnostic endpoints that are off by default
+// because they expose runtime internals and can be expensive to serve.
+type Debug struct {
+	// PprofEnabled mounts net/http/pprof handlers under /debug/pprof on the
+	// telemetry listener. Off by default: profiles can reveal memory
+	// contents and CPU profiling is itself a load an operator must opt into.
+	PprofEnabled bool `yaml:"pprof_enabled"`
 }
 
 // Metrics holds telemetry exposure settings.
@@ -94,6 +104,16 @@ func (c *Config) envOverrides() []struct {
 			return nil
 		}
 	}
+	setBool := func(dst *bool) func(string) error {
+		return func(v string) error {
+			b, err := strconv.ParseBool(v)
+			if err != nil {
+				return err
+			}
+			*dst = b
+			return nil
+		}
+	}
 	setStringList := func(dst *[]string) func(string) error {
 		return func(v string) error {
 			var list []string
@@ -120,6 +140,7 @@ func (c *Config) envOverrides() []struct {
 		{"GREX_FLEET_STALE_MISSED_HEARTBEATS", setInt(&c.Fleet.StaleMissedHeartbeats)},
 		{"GREX_FLEET_REQUIRED_ATTRIBUTES", setStringList(&c.Fleet.RequiredAttributes)},
 		{"GREX_METRICS_PER_AGENT_SERIES_LIMIT", setInt(&c.Metrics.PerAgentSeriesLimit)},
+		{"GREX_DEBUG_PPROF_ENABLED", setBool(&c.Debug.PprofEnabled)},
 		{"GREX_LOG_LEVEL", setString(&c.Log.Level)},
 		{"GREX_LOG_FORMAT", setString(&c.Log.Format)},
 	}

@@ -8,11 +8,14 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/dennisme/grex/internal/buildinfo"
 	"github.com/dennisme/grex/internal/config"
 	"github.com/dennisme/grex/internal/fleet"
 	"github.com/dennisme/grex/internal/metrics"
@@ -20,7 +23,13 @@ import (
 	"github.com/dennisme/grex/internal/server"
 )
 
-const shutdownGrace = 10 * time.Second
+const (
+	shutdownGrace = 10 * time.Second
+	// drainDelay gives an orchestrator's readiness probe time to observe
+	// /readyz turning unready before listeners actually close, so new
+	// traffic stops arriving before in-flight connections are cut.
+	drainDelay = 5 * time.Second
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -43,6 +52,20 @@ func run() error {
 
 	serverMetrics := metrics.NewRegistry()
 	fleetMetrics := prometheus.NewRegistry()
+	metrics.NewInfoGauge(serverMetrics, "grex_build_info", "Build information.", prometheus.Labels{
+		"version":    buildinfo.Version,
+		"commit":     buildinfo.Commit,
+		"go_version": runtime.Version(),
+	})
+	metrics.NewInfoGauge(serverMetrics, "grex_config_info", "Non-secret configuration values in effect.", prometheus.Labels{
+		"log_level":               cfg.Log.Level,
+		"log_format":              cfg.Log.Format,
+		"tls_enabled":             strconv.FormatBool(cfg.TLS.CertFile != ""),
+		"mtls_enabled":            strconv.FormatBool(cfg.TLS.ClientCAFile != ""),
+		"heartbeat_interval":      cfg.Fleet.HeartbeatInterval.String(),
+		"stale_missed_heartbeats": strconv.Itoa(cfg.Fleet.StaleMissedHeartbeats),
+		"per_agent_series_limit":  strconv.Itoa(cfg.Metrics.PerAgentSeriesLimit),
+	})
 	events := metrics.NewEvents(serverMetrics, fleetMetrics)
 	registry := fleet.New(fleet.Config{
 		HeartbeatInterval:     cfg.Fleet.HeartbeatInterval,
@@ -67,6 +90,9 @@ func run() error {
 	select {
 	case <-ctx.Done():
 		logger.Info("shutting down", "reason", "signal")
+		srv.BeginDraining()
+		logger.Info("draining", "delay", drainDelay)
+		time.Sleep(drainDelay)
 	case err := <-srv.Fatal():
 		logger.Error("listener failed", "error", err)
 		shutdownErr := shutdown(srv)

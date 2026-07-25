@@ -51,6 +51,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Log.Format != "text" {
 		t.Errorf("Format = %q, want %q", cfg.Log.Format, "text")
 	}
+	if cfg.Debug.PprofEnabled {
+		t.Error("PprofEnabled = true, want false by default (sensitive, must opt in)")
+	}
 }
 
 func TestLoadFullFile(t *testing.T) {
@@ -67,6 +70,8 @@ fleet:
     - service.namespace
 metrics:
   per_agent_series_limit: 50
+debug:
+  pprof_enabled: true
 log:
   level: debug
   format: json
@@ -93,6 +98,9 @@ log:
 	}
 	if cfg.Log.Level != "debug" || cfg.Log.Format != "json" {
 		t.Errorf("Log = %+v", cfg.Log)
+	}
+	if !cfg.Debug.PprofEnabled {
+		t.Error("PprofEnabled = false, want true")
 	}
 }
 
@@ -207,6 +215,7 @@ func TestLoadEnvOverrides(t *testing.T) {
 	t.Setenv("GREX_FLEET_STALE_MISSED_HEARTBEATS", "7")
 	t.Setenv("GREX_FLEET_REQUIRED_ATTRIBUTES", "team, deployment.environment")
 	t.Setenv("GREX_METRICS_PER_AGENT_SERIES_LIMIT", "25")
+	t.Setenv("GREX_DEBUG_PPROF_ENABLED", "true")
 	path := writeFile(t, "config.yaml", "listeners:\n  opamp: \"127.0.0.1:14320\"\n")
 	cfg, err := Load(path)
 	if err != nil {
@@ -230,6 +239,17 @@ func TestLoadEnvOverrides(t *testing.T) {
 	}
 	if cfg.Metrics.PerAgentSeriesLimit != 25 {
 		t.Errorf("PerAgentSeriesLimit = %d, want 25", cfg.Metrics.PerAgentSeriesLimit)
+	}
+	if !cfg.Debug.PprofEnabled {
+		t.Error("PprofEnabled = false, want true from env")
+	}
+}
+
+func TestLoadEnvBadBool(t *testing.T) {
+	t.Setenv("GREX_DEBUG_PPROF_ENABLED", "sorta")
+	path := writeFile(t, "config.yaml", "{}\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("want error for bad bool in env")
 	}
 }
 
