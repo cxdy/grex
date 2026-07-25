@@ -169,11 +169,19 @@ func TestReportUpdatesHealthAndEffectiveConfig(t *testing.T) {
 
 	r.Report(&protobufs.AgentToServer{
 		InstanceUid: uid[:],
-		Health:      &protobufs.ComponentHealth{Healthy: false, LastError: "exporter down"},
+		SequenceNum: 42,
+		Health: &protobufs.ComponentHealth{
+			Healthy:            false,
+			LastError:          "exporter down",
+			Status:             "StatusRecoverableError",
+			StartTimeUnixNano:  1690000000000000000,
+			StatusTimeUnixNano: 1700000000000000000,
+		},
 		EffectiveConfig: &protobufs.EffectiveConfig{
 			ConfigMap: &protobufs.AgentConfigMap{
 				ConfigMap: map[string]*protobufs.AgentConfigFile{
-					"": {Body: []byte("receivers: {}")},
+					"":             {Body: []byte("receivers: {}")},
+					"logging.yaml": {Body: []byte("level: debug")},
 				},
 			},
 		},
@@ -186,12 +194,102 @@ func TestReportUpdatesHealthAndEffectiveConfig(t *testing.T) {
 	if agent.Healthy || agent.HealthError != "exporter down" {
 		t.Errorf("health = %v %q", agent.Healthy, agent.HealthError)
 	}
-	if !strings.Contains(agent.EffectiveConfig, "receivers: {}") {
-		t.Errorf("EffectiveConfig = %q", agent.EffectiveConfig)
+	if agent.HealthStatus != "StatusRecoverableError" {
+		t.Errorf("HealthStatus = %q, want StatusRecoverableError", agent.HealthStatus)
+	}
+	wantStatusTime := time.Unix(0, 1700000000000000000)
+	if !agent.HealthStatusTime.Equal(wantStatusTime) {
+		t.Errorf("HealthStatusTime = %v, want %v", agent.HealthStatusTime, wantStatusTime)
+	}
+	wantStartTime := time.Unix(0, 1690000000000000000)
+	if !agent.HealthStartTime.Equal(wantStartTime) {
+		t.Errorf("HealthStartTime = %v, want %v", agent.HealthStartTime, wantStartTime)
+	}
+	if agent.SequenceNum != 42 {
+		t.Errorf("SequenceNum = %d, want 42", agent.SequenceNum)
+	}
+	if agent.EffectiveConfig[""] != "receivers: {}" {
+		t.Errorf("EffectiveConfig[\"\"] = %q", agent.EffectiveConfig[""])
+	}
+	if agent.EffectiveConfig["logging.yaml"] != "level: debug" {
+		t.Errorf("EffectiveConfig[logging.yaml] = %q", agent.EffectiveConfig["logging.yaml"])
 	}
 	// Fields absent from a later message are retained.
 	if agent.Identifying["service.name"] != "otelcol-contrib" {
 		t.Error("description lost on partial report")
+	}
+}
+
+func TestReportDecodedCapabilities(t *testing.T) {
+	r, _ := testRegistry()
+	uid := testUID()
+
+	r.Report(&protobufs.AgentToServer{
+		InstanceUid: uid[:],
+		Capabilities: uint64(protobufs.AgentCapabilities_AgentCapabilities_ReportsStatus) |
+			uint64(protobufs.AgentCapabilities_AgentCapabilities_ReportsEffectiveConfig) |
+			uint64(protobufs.AgentCapabilities_AgentCapabilities_ReportsHealth) |
+			uint64(protobufs.AgentCapabilities_AgentCapabilities_AcceptsRemoteConfig),
+	}, ConnMeta{})
+
+	agent, ok := r.Get(uid.String())
+	if !ok {
+		t.Fatal("agent missing")
+	}
+	caps := agent.DecodedCapabilities()
+	if !caps.ReportsStatus || !caps.ReportsEffectiveConfig || !caps.ReportsHealth || !caps.AcceptsRemoteConfig {
+		t.Errorf("caps = %+v, want the four set bits true", caps)
+	}
+	if caps.AcceptsPackages || caps.ReportsOwnMetrics || caps.ReportsHeartbeat {
+		t.Errorf("caps = %+v, want unset bits false", caps)
+	}
+}
+
+func TestReportPackageStatuses(t *testing.T) {
+	r, _ := testRegistry()
+	uid := testUID()
+	r.Report(statusMsg(uid), ConnMeta{})
+
+	r.Report(&protobufs.AgentToServer{
+		InstanceUid: uid[:],
+		PackageStatuses: &protobufs.PackageStatuses{
+			Packages: map[string]*protobufs.PackageStatus{
+				"otelcol-contrib": {
+					Name:            "otelcol-contrib",
+					AgentHasVersion: "0.157.0",
+					Status:          protobufs.PackageStatusEnum_PackageStatusEnum_Installed,
+				},
+				"failing-pkg": {
+					Name:                 "failing-pkg",
+					ServerOfferedVersion: "1.2.3",
+					Status:               protobufs.PackageStatusEnum_PackageStatusEnum_InstallFailed,
+					ErrorMessage:         "checksum mismatch",
+				},
+			},
+		},
+	}, ConnMeta{})
+
+	agent, ok := r.Get(uid.String())
+	if !ok {
+		t.Fatal("agent missing")
+	}
+	if len(agent.Packages) != 2 {
+		t.Fatalf("Packages = %v, want 2 entries", agent.Packages)
+	}
+	got := agent.Packages["otelcol-contrib"]
+	if got.AgentHasVersion != "0.157.0" || got.Status != "PackageStatusEnum_Installed" {
+		t.Errorf("otelcol-contrib package = %+v", got)
+	}
+	failed := agent.Packages["failing-pkg"]
+	if failed.ServerOfferedVersion != "1.2.3" || failed.ErrorMessage != "checksum mismatch" {
+		t.Errorf("failing-pkg package = %+v", failed)
+	}
+
+	// A later report without package_statuses retains the prior set.
+	r.Report(statusMsg(uid), ConnMeta{})
+	agent, _ = r.Get(uid.String())
+	if len(agent.Packages) != 2 {
+		t.Errorf("Packages lost on partial report: %v", agent.Packages)
 	}
 }
 

@@ -139,8 +139,14 @@ auth boundary:
 ### Fleet state
 
 - In-memory registry keyed by `instance_uid`, holding the latest
-  `AgentDescription`, health, effective config, capabilities, connection
-  metadata (remote address, TLS client identity), and timestamps.
+  `AgentDescription`, `sequence_num` (detects dropped messages), health
+  (`healthy`/`last_error` plus the free-text `status`,
+  `start_time_unix_nano`, and `status_time_unix_nano` fields), effective
+  config as a filename-to-body map (not a flattened blob, so the API and UI
+  can render each file separately), package statuses (name, versions,
+  install status, error), capabilities (both the raw bitmask and a decoded
+  struct of named booleans for the API), connection metadata (remote
+  address, TLS client identity), and timestamps.
 - Concurrency-safe; the OpAMP callbacks write, the API reads.
 - No persistence in 1.0 (see non-goals). State survives agent reconnects
   because agents re-report on connect. Agents behind a gateway never observe
@@ -152,16 +158,33 @@ auth boundary:
 
 - Purpose: JSON view over fleet registry state, consumed by the web UI and
   usable directly (scripting, other tooling) without a browser.
-- Endpoints mirror the UI pages one-to-one so the UI milestone is a thin
-  rendering layer over an API that already has its own tests:
-  - Fleet overview: list of agents with the same fields the overview table
-    shows.
-  - Agent detail: full attribute set, health, effective config, capabilities,
-    connection info for one `instance_uid`.
-  - Server status: grex version, uptime, connected/disconnected/noncompliant
-    counts.
+- Kept intentionally small for 1.0: one endpoint, `GET /api/agents`, rather
+  than separate overview/detail/status endpoints. It returns every attribute
+  the registry holds for every agent (see "Fleet state" above for the full
+  field list), so it already covers the fleet-overview and agent-detail use
+  cases; a client filters to one `instance_uid` client-side. Per-agent-detail
+  and server-status endpoints are deferred until the UI milestone shows they
+  are actually needed, e.g. if the full list becomes too large to fetch
+  per page load.
+- `GET /api/agents?limit=N&offset=M`:
+  - `limit` optional, positive integer, default 100, capped at 1000.
+  - `offset` optional, non-negative integer, default 0.
+  - Invalid `limit`/`offset` (non-integer, non-positive limit, negative
+    offset) is a 400.
+  - Agents are sorted by `instance_uid` before paging, so pagination is
+    stable across calls even though the registry itself is a map with no
+    inherent order.
+  - Response: `{"agents": [...], "total": N, "limit": L, "offset": O}`.
+    `total` is the fleet size regardless of the page requested; `offset`
+    echoes the requested value even if it is past the end (in which case
+    `agents` is empty).
+  - Each agent's `capabilities` bitmask ships alongside a decoded
+    `capability_flags` object (named booleans), so clients never need
+    bitmask math.
 - Same auth boundary as the UI (OIDC session, `viewer`/`admin`), same
-  listener. Read-only: no endpoint accepts a write in 1.0.
+  listener, mounted alongside it (`server.UI{AgentsHandler: ...}`, the same
+  pattern as `server.OpAMP{Handler: ...}`). Read-only: no endpoint accepts a
+  write in 1.0.
 
 ### Web UI
 
@@ -273,7 +296,12 @@ The two groups:
   always 1; non-secret settings only, lets a dashboard confirm a config
   rollout actually took effect without grepping logs)
 - `grex_opamp_messages_total` / `grex_opamp_message_errors_total`
-- HTTP API request counts/latency/status (arrives with the read API milestone)
+- `grex_api_requests_total{route,method,code}` /
+  `grex_api_request_duration_seconds{route,method,code}` — every read API
+  handler is wrapped once via `internal/metrics.HTTPMetrics.Instrument`
+  (built on `promhttp.InstrumentHandlerCounter`/`InstrumentHandlerDuration`),
+  so new endpoints get request/latency metrics for free by wrapping them the
+  same way.
 - Auth outcomes (arrives with the auth milestone)
 - Go runtime and process metrics (standard collectors)
 

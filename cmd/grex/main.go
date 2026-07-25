@@ -15,6 +15,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/dennisme/grex/internal/api"
 	"github.com/dennisme/grex/internal/buildinfo"
 	"github.com/dennisme/grex/internal/config"
 	"github.com/dennisme/grex/internal/fleet"
@@ -78,7 +79,13 @@ func run() error {
 		return err
 	}
 
-	srv := server.New(cfg, logger, server.OpAMP{Handler: handler, ConnContext: connCtx}, serverMetrics, fleetMetrics)
+	httpMetrics := metrics.NewHTTPMetrics(serverMetrics)
+	agentsHandler := httpMetrics.Instrument("/api/agents", api.New(registry))
+
+	srv := server.New(cfg, logger,
+		server.OpAMP{Handler: handler, ConnContext: connCtx},
+		server.UI{AgentsHandler: agentsHandler},
+		serverMetrics, fleetMetrics)
 	if err := srv.Start(); err != nil {
 		return err
 	}

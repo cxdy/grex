@@ -8,8 +8,6 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -21,13 +19,13 @@ import (
 type ConnMeta struct {
 	// RemoteAddr is the peer address: the agent's for direct connections,
 	// the gateway's for relayed ones.
-	RemoteAddr string
+	RemoteAddr string `json:"remote_addr,omitempty"`
 	// TLSSubject is the client certificate subject of the peer.
-	TLSSubject string
+	TLSSubject string `json:"tls_subject,omitempty"`
 	// ViaGateway is true when the agent is relayed through an OpAMP gateway.
-	ViaGateway bool
+	ViaGateway bool `json:"via_gateway"`
 	// Transport is the OpAMP transport in use: "ws" or "http".
-	Transport string
+	Transport string `json:"transport,omitempty"`
 }
 
 // Events receives fleet lifecycle notifications, e.g. for metrics. All
@@ -38,7 +36,7 @@ type Events interface {
 	AgentDisconnected()
 	AgentEvicted()
 	// ReportReceived is called per report kind present in a message:
-	// "status", "health", or "effective_config".
+	// "status", "health", "effective_config", or "package_statuses".
 	ReportReceived(kind string)
 	// MissingAttribute is called for each newly missing required attribute
 	// when an agent's compliance state changes.
@@ -55,24 +53,99 @@ func (noopEvents) MissingAttribute(string) {}
 
 // Agent is a point-in-time snapshot of one agent's state.
 type Agent struct {
-	InstanceUID    string
-	Identifying    map[string]string
-	NonIdentifying map[string]string
-	Capabilities   uint64
-	Healthy        bool
-	HealthError    string
+	InstanceUID string `json:"instance_uid"`
+	// SequenceNum is the agent's last AgentToServer sequence_num. A jump of
+	// more than 1 from the previous value indicates a dropped message.
+	SequenceNum    uint64            `json:"sequence_num"`
+	Identifying    map[string]string `json:"identifying_attributes,omitempty"`
+	NonIdentifying map[string]string `json:"non_identifying_attributes,omitempty"`
+	// Capabilities is the raw AgentCapabilities bitmask; MarshalJSON also
+	// includes it decoded into named fields via DecodedCapabilities.
+	Capabilities uint64 `json:"capabilities"`
+	Healthy      bool   `json:"healthy"`
+	HealthError  string `json:"health_error,omitempty"`
+	// HealthStatus is the agent-defined status string (health.status); its
+	// meaning is not standardized at the protocol level.
+	HealthStatus string `json:"health_status,omitempty"`
+	// HealthStartTime is when the reporting component started
+	// (health.start_time_unix_nano). Zero if unset.
+	HealthStartTime time.Time `json:"health_start_time"`
+	// HealthStatusTime is when HealthStatus was observed. Zero if the agent
+	// has not set health.status_time_unix_nano.
+	HealthStatusTime time.Time `json:"health_status_time"`
 	// HealthReported is true once the agent has sent a health report;
 	// Healthy is meaningless before then.
-	HealthReported bool
+	HealthReported bool `json:"health_reported"`
 	// DescriptionReported is true once the agent has sent its
 	// AgentDescription. False means grex is awaiting the agent's full state.
-	DescriptionReported bool
-	EffectiveConfig     string
-	Conn                ConnMeta
-	Connected           bool
-	FirstSeen           time.Time
-	LastSeen            time.Time
-	MissingAttributes   []string
+	DescriptionReported bool `json:"description_reported"`
+	// EffectiveConfig maps config file/section name to body, mirroring
+	// effective_config.config_map. The single-file convention uses "" as
+	// the key.
+	EffectiveConfig map[string]string `json:"effective_config,omitempty"`
+	// Packages holds the agent's last reported package_statuses, keyed by
+	// package name. Absent from a report retains the prior set.
+	Packages          map[string]Package `json:"packages,omitempty"`
+	Conn              ConnMeta           `json:"connection"`
+	Connected         bool               `json:"connected"`
+	FirstSeen         time.Time          `json:"first_seen"`
+	LastSeen          time.Time          `json:"last_seen"`
+	MissingAttributes []string           `json:"missing_attributes,omitempty"`
+}
+
+// Capabilities is AgentCapabilities decoded into named fields.
+type Capabilities struct {
+	ReportsStatus                   bool `json:"reports_status"`
+	AcceptsRemoteConfig             bool `json:"accepts_remote_config"`
+	ReportsEffectiveConfig          bool `json:"reports_effective_config"`
+	AcceptsPackages                 bool `json:"accepts_packages"`
+	ReportsPackageStatuses          bool `json:"reports_package_statuses"`
+	ReportsOwnTraces                bool `json:"reports_own_traces"`
+	ReportsOwnMetrics               bool `json:"reports_own_metrics"`
+	ReportsOwnLogs                  bool `json:"reports_own_logs"`
+	AcceptsOpAMPConnectionSettings  bool `json:"accepts_opamp_connection_settings"`
+	AcceptsOtherConnectionSettings  bool `json:"accepts_other_connection_settings"`
+	AcceptsRestartCommand           bool `json:"accepts_restart_command"`
+	ReportsHealth                   bool `json:"reports_health"`
+	ReportsRemoteConfig             bool `json:"reports_remote_config"`
+	ReportsHeartbeat                bool `json:"reports_heartbeat"`
+	ReportsAvailableComponents      bool `json:"reports_available_components"`
+	ReportsConnectionSettingsStatus bool `json:"reports_connection_settings_status"`
+}
+
+// DecodedCapabilities decodes the raw Capabilities bitmask into named
+// fields for API consumers.
+func (a Agent) DecodedCapabilities() Capabilities {
+	has := func(bit protobufs.AgentCapabilities) bool {
+		return a.Capabilities&uint64(bit) != 0 //nolint:gosec // bit is a small non-negative protocol-defined enum constant
+	}
+	return Capabilities{
+		ReportsStatus:                   has(protobufs.AgentCapabilities_AgentCapabilities_ReportsStatus),
+		AcceptsRemoteConfig:             has(protobufs.AgentCapabilities_AgentCapabilities_AcceptsRemoteConfig),
+		ReportsEffectiveConfig:          has(protobufs.AgentCapabilities_AgentCapabilities_ReportsEffectiveConfig),
+		AcceptsPackages:                 has(protobufs.AgentCapabilities_AgentCapabilities_AcceptsPackages),
+		ReportsPackageStatuses:          has(protobufs.AgentCapabilities_AgentCapabilities_ReportsPackageStatuses),
+		ReportsOwnTraces:                has(protobufs.AgentCapabilities_AgentCapabilities_ReportsOwnTraces),
+		ReportsOwnMetrics:               has(protobufs.AgentCapabilities_AgentCapabilities_ReportsOwnMetrics),
+		ReportsOwnLogs:                  has(protobufs.AgentCapabilities_AgentCapabilities_ReportsOwnLogs),
+		AcceptsOpAMPConnectionSettings:  has(protobufs.AgentCapabilities_AgentCapabilities_AcceptsOpAMPConnectionSettings),
+		AcceptsOtherConnectionSettings:  has(protobufs.AgentCapabilities_AgentCapabilities_AcceptsOtherConnectionSettings),
+		AcceptsRestartCommand:           has(protobufs.AgentCapabilities_AgentCapabilities_AcceptsRestartCommand),
+		ReportsHealth:                   has(protobufs.AgentCapabilities_AgentCapabilities_ReportsHealth),
+		ReportsRemoteConfig:             has(protobufs.AgentCapabilities_AgentCapabilities_ReportsRemoteConfig),
+		ReportsHeartbeat:                has(protobufs.AgentCapabilities_AgentCapabilities_ReportsHeartbeat),
+		ReportsAvailableComponents:      has(protobufs.AgentCapabilities_AgentCapabilities_ReportsAvailableComponents),
+		ReportsConnectionSettingsStatus: has(protobufs.AgentCapabilities_AgentCapabilities_ReportsConnectionSettingsStatus),
+	}
+}
+
+// Package is one entry from an agent's package_statuses report.
+type Package struct {
+	Name                 string `json:"name"`
+	AgentHasVersion      string `json:"agent_has_version,omitempty"`
+	ServerOfferedVersion string `json:"server_offered_version,omitempty"`
+	Status               string `json:"status,omitempty"`
+	ErrorMessage         string `json:"error_message,omitempty"`
 }
 
 // Config holds the registry settings.
@@ -150,6 +223,7 @@ func (r *Registry) Report(msg *protobufs.AgentToServer, meta ConnMeta) {
 	agent.LastSeen = now
 	agent.Connected = true
 	agent.Conn = meta
+	agent.SequenceNum = msg.GetSequenceNum()
 	if msg.Capabilities != 0 {
 		agent.Capabilities = msg.Capabilities
 	}
@@ -165,23 +239,33 @@ func (r *Registry) Report(msg *protobufs.AgentToServer, meta ConnMeta) {
 		agent.HealthReported = true
 		agent.Healthy = health.GetHealthy()
 		agent.HealthError = health.GetLastError()
+		agent.HealthStatus = health.GetStatus()
+		if ns := health.GetStartTimeUnixNano(); ns != 0 {
+			agent.HealthStartTime = time.Unix(0, int64(ns)) //nolint:gosec // protocol-defined nanosecond timestamp
+		}
+		if ns := health.GetStatusTimeUnixNano(); ns != 0 {
+			agent.HealthStatusTime = time.Unix(0, int64(ns)) //nolint:gosec // protocol-defined nanosecond timestamp
+		}
+	}
+	if pkgs := msg.GetPackageStatuses().GetPackages(); len(pkgs) > 0 {
+		r.events.ReportReceived("package_statuses")
+		agent.Packages = make(map[string]Package, len(pkgs))
+		for name, p := range pkgs {
+			agent.Packages[name] = Package{
+				Name:                 p.GetName(),
+				AgentHasVersion:      p.GetAgentHasVersion(),
+				ServerOfferedVersion: p.GetServerOfferedVersion(),
+				Status:               p.GetStatus().String(),
+				ErrorMessage:         p.GetErrorMessage(),
+			}
+		}
 	}
 	if cfgMap := msg.GetEffectiveConfig().GetConfigMap().GetConfigMap(); len(cfgMap) > 0 {
 		r.events.ReportReceived("effective_config")
-		names := make([]string, 0, len(cfgMap))
-		for name := range cfgMap {
-			names = append(names, name)
+		agent.EffectiveConfig = make(map[string]string, len(cfgMap))
+		for name, file := range cfgMap {
+			agent.EffectiveConfig[name] = string(file.GetBody())
 		}
-		sort.Strings(names)
-		var b strings.Builder
-		for _, name := range names {
-			if name != "" {
-				b.WriteString("# " + name + "\n")
-			}
-			b.Write(cfgMap[name].GetBody())
-			b.WriteString("\n")
-		}
-		agent.EffectiveConfig = b.String()
 	}
 }
 
@@ -285,6 +369,8 @@ func snapshot(agent *Agent) Agent {
 	s := *agent
 	s.Identifying = maps.Clone(agent.Identifying)
 	s.NonIdentifying = maps.Clone(agent.NonIdentifying)
+	s.EffectiveConfig = maps.Clone(agent.EffectiveConfig)
+	s.Packages = maps.Clone(agent.Packages)
 	s.MissingAttributes = append([]string(nil), agent.MissingAttributes...)
 	return s
 }
