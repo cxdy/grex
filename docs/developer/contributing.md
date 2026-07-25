@@ -7,14 +7,41 @@
 - Search existing issues/PRs on
   [github.com/dennisme/grex](https://github.com/dennisme/grex)
 
+## One-time setup
+
+Requires Go 1.26+, [golangci-lint](https://golangci-lint.run/), and
+[pre-commit](https://pre-commit.com/). Optional: [mise](https://mise.jdx.dev/)
+to install versions from `.tool-versions`.
+
+```sh
+make init          # mise install (if present) + pre-commit install
+# or manually:
+pre-commit install
+```
+
+Hooks run on commit (Go build/tidy/test/fmt, golangci-lint, markdownlint,
+commitizen message check). Branch-level conventional-commit validation also
+runs in CI via the `commitizen-branch` hook.
+
 ## Development loop
 
 ```sh
 make test
 make lint
+make markdownlint
 # optional:
 make compose-up && deploy/compose/smoke.sh && make compose-down
 ```
+
+## Commit messages
+
+Use [Conventional Commits](https://www.conventionalcommits.org/) with types
+defined in `.cz.toml`:
+
+`feat` · `fix` · `doc` · `perf` · `ref` · `test` · `chore` · `ci` · `revert`
+
+Examples: `feat(ui): add agent attribute chips`, `fix: close idle OpAMP
+connections`. Optional helper: `cz commit`.
 
 ## Pull requests
 
@@ -23,15 +50,17 @@ make compose-up && deploy/compose/smoke.sh && make compose-down
 - Update docs when you change user-facing behavior, config, API, or metrics
 - Call out SPEC drift explicitly if implementation intentionally differs
 
-CI (`.github/workflows/ci.yml`) on every PR:
+CI on every PR:
 
-- `golangci-lint`
-- `go test -race ./...`
-- `go build ./...`
-- `docker compose build`
-
-Docs CI (`.github/workflows/docs.yml`) builds MkDocs on docs-related paths
-and deploys to GitHub Pages from `main`.
+| Workflow | What it runs |
+|----------|----------------|
+| `golang-lint` | `golangci-lint` |
+| `golang-tests` | `govulncheck`, `make build`, `make test` (race), coverage XML artifact |
+| `coverage-comment` | PR coverage report comment (via `workflow_run`; works for fork PRs) |
+| `ci` | `docker compose build` |
+| `conventional-commit-check` | commitizen branch message validation |
+| `markdownlint` | markdownlint-cli2 on `**/*.md` (path-filtered) |
+| `docs` | MkDocs strict build; deploy Pages from `main` (path-filtered) |
 
 ## License
 

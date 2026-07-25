@@ -36,3 +36,8 @@ deploy/compose/certs/
 
 # MkDocs build output
 site/
+
+# Coverage artifacts
+coverage.out
+coverage.html
+coverage.xml

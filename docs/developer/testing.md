@@ -33,9 +33,22 @@ depend on files under `deploy/compose/certs/`.
 
 ```sh
 make lint
+make markdownlint
 ```
 
-Config: `.golangci.yml`. CI runs `golangci-lint-action` on PRs.
+Go lint config: `.golangci.yml` (CI: `golang-lint` workflow). Markdown:
+`.markdownlint.yaml` / `.markdownlint-cli2.yaml` (CI: `markdownlint` workflow).
+Local hooks via `pre-commit` also run golangci-lint, Go fmt/build/test, and
+markdownlint.
+
+## Coverage
+
+```sh
+make coverage   # coverage.out, coverage.html, coverage.xml
+```
+
+CI posts a Cobertura report on PRs (`golang-tests` workflow) with a 70%
+line-coverage floor.
 
 ## Compose smoke
 
