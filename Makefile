@@ -1,4 +1,4 @@
-.PHONY: build test lint compose-up compose-down demo-static docs
+.PHONY: init build test coverage lint markdownlint pre-commit compose-up compose-down demo-static docs
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
@@ -7,14 +7,34 @@ LDFLAGS := -X github.com/dennisme/grex/internal/buildinfo.Version=$(VERSION) \
            -X github.com/dennisme/grex/internal/buildinfo.Commit=$(COMMIT) \
            -X github.com/dennisme/grex/internal/buildinfo.Date=$(DATE)
 
+# Install tool versions (mise) and git hooks.
+init:
+	@command -v mise >/dev/null 2>&1 && mise install || true
+	@command -v pre-commit >/dev/null 2>&1 && pre-commit install || \
+		(echo "pre-commit not found; install via 'pip install pre-commit' or mise" && false)
+
 build:
 	go build -ldflags "$(LDFLAGS)" ./...
 
 test:
-	go test -race ./...
+	env -u GOROOT GOTOOLCHAIN=auto go test -race ./...
+
+# Profile without -race for cobertura (race + cover is slower / noisier in CI).
+coverage:
+	env -u GOROOT GOTOOLCHAIN=auto go test -count=1 ./... \
+		-coverprofile coverage.out -covermode count
+	env -u GOROOT GOTOOLCHAIN=auto go tool cover -html=coverage.out -o coverage.html
+	env -u GOROOT GOTOOLCHAIN=auto go run github.com/boumenot/gocover-cobertura@v1.4.0 \
+		--by-files -ignore-gen-files < coverage.out > coverage.xml
 
 lint:
-	golangci-lint run
+	env -u GOROOT GOTOOLCHAIN=auto golangci-lint run
+
+markdownlint:
+	npx --yes markdownlint-cli2
+
+pre-commit:
+	pre-commit run --all-files
 
 compose-up:
 	docker compose up -d --build --wait

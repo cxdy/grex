@@ -21,7 +21,7 @@ com.bindplane.opamp-gateway
 
 When a gateway admits a new agent, it sends a **`connect`** custom message
 (headers + remote address). grex answers **`connectResult`** (accept/reject
-+ HTTP status). In 1.0, grex **accepts** every agent on an authenticated
+plus HTTP status). In 1.0, grex **accepts** every agent on an authenticated
 gateway connection.
 
 See [OpAMP and gateway](../developer/opamp-and-gateway.md) for protocol

@@ -46,7 +46,7 @@ a read-only view of fleet health in 1.0.
 
 ## Architecture
 
-```
+```text
   otelcol agents/gateways
   (OpAMP over WS, mTLS)             ┌───────────────────────────────┐
         │                           │            grex               │
@@ -287,7 +287,6 @@ gateway remain collectors.
   - Dense dashboard spacing, system UI + monospace for uids/config
   - SVG status icons (no emoji); visible focus rings; 4.5:1 contrast on
     body text
-
 
 ### AuthN/AuthZ
 

@@ -28,12 +28,16 @@ The living 1.0 design (changes frequently) is under
 
 ## Development
 
-Requires Go 1.26+ and [golangci-lint](https://golangci-lint.run/).
+Requires Go 1.26+ and [golangci-lint](https://golangci-lint.run/). For
+local git hooks, also install [pre-commit](https://pre-commit.com/)
+(versions in `.tool-versions` if you use [mise](https://mise.jdx.dev/)).
 
 ```sh
-make build   # go build ./...
-make test    # go test -race ./...
-make lint    # golangci-lint run
+make init          # optional: mise + pre-commit hooks
+make build         # go build ./...
+make test          # go test -race ./...
+make lint          # golangci-lint run
+make markdownlint  # markdownlint-cli2 on repo markdown
 ```
 
 Run the server with the example config:
