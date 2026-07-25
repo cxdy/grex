@@ -40,13 +40,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit, offset, err := parsePagination(r.URL.Query())
+	query := r.URL.Query()
+	limit, offset, err := parsePagination(query)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	filters, err := parseFilters(query)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	agents := h.registry.List()
+	agents := matchingAgents(h.registry.List(), filters)
 	slices.SortFunc(agents, func(a, b fleet.Agent) int {
 		if a.InstanceUID < b.InstanceUID {
 			return -1
@@ -97,4 +103,86 @@ func firstValue(q map[string][]string, key string) string {
 		return vs[0]
 	}
 	return ""
+}
+
+// reservedParams are pagination controls, never treated as filters even if
+// an agent happens to report an attribute with the same key.
+var reservedParams = map[string]bool{"limit": true, "offset": true}
+
+// boolFields are well-known top-level Agent fields filterable as
+// ?key=true|false. These take precedence over AgentDescription attribute
+// filtering for the same key: an agent-reported attribute literally named
+// "healthy" (unusual, but attribute keys are arbitrary) cannot be filtered
+// on since the top-level field always wins. The key set here must match
+// fleet.ReservedAttributeKeys exactly (see handler_test.go); that list is
+// what the registry uses to warn and count when an agent's own attributes
+// collide with these names.
+var boolFields = map[string]func(fleet.Agent) bool{
+	"healthy":     func(a fleet.Agent) bool { return a.Healthy },
+	"connected":   func(a fleet.Agent) bool { return a.Connected },
+	"via_gateway": func(a fleet.Agent) bool { return a.Conn.ViaGateway },
+}
+
+// filters holds parsed query filters: exact-match AgentDescription
+// attributes, and well-known top-level boolean fields.
+type filters struct {
+	attrs map[string]string
+	bools map[string]bool
+}
+
+func (f filters) empty() bool { return len(f.attrs) == 0 && len(f.bools) == 0 }
+
+// parseFilters turns every non-reserved query param into a filter. A
+// boolFields key must parse as true/false; anything else is an exact-match
+// AgentDescription attribute filter. Multiple params are ANDed; a repeated
+// key uses only its first value.
+func parseFilters(q map[string][]string) (filters, error) {
+	f := filters{attrs: make(map[string]string), bools: make(map[string]bool)}
+	for key, values := range q {
+		if reservedParams[key] || len(values) == 0 {
+			continue
+		}
+		if _, ok := boolFields[key]; ok {
+			b, err := strconv.ParseBool(values[0])
+			if err != nil {
+				return filters{}, fmt.Errorf("%s must be a boolean (true or false)", key)
+			}
+			f.bools[key] = b
+			continue
+		}
+		f.attrs[key] = values[0]
+	}
+	return f, nil
+}
+
+// matchingAgents returns agents satisfying every filter.
+func matchingAgents(agents []fleet.Agent, f filters) []fleet.Agent {
+	if f.empty() {
+		return agents
+	}
+	matched := agents[:0]
+	for _, agent := range agents {
+		if agentMatches(agent, f) {
+			matched = append(matched, agent)
+		}
+	}
+	return matched
+}
+
+func agentMatches(agent fleet.Agent, f filters) bool {
+	for key, want := range f.attrs {
+		got, ok := agent.Identifying[key]
+		if !ok {
+			got, ok = agent.NonIdentifying[key]
+		}
+		if !ok || got != want {
+			return false
+		}
+	}
+	for key, want := range f.bools {
+		if boolFields[key](agent) != want {
+			return false
+		}
+	}
+	return true
 }

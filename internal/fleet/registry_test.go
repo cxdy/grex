@@ -23,12 +23,14 @@ type recordingEvents struct {
 	evictions         int
 	reports           map[string]int
 	missingAttributes map[string]int
+	reservedConflicts map[string]int
 }
 
 func newRecordingEvents() *recordingEvents {
 	return &recordingEvents{
 		reports:           make(map[string]int),
 		missingAttributes: make(map[string]int),
+		reservedConflicts: make(map[string]int),
 	}
 }
 
@@ -60,6 +62,12 @@ func (e *recordingEvents) MissingAttribute(key string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.missingAttributes[key]++
+}
+
+func (e *recordingEvents) ReservedAttributeConflict(key string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.reservedConflicts[key]++
 }
 
 func testRegistry(required ...string) (*Registry, *bytes.Buffer) {
@@ -484,6 +492,86 @@ func TestMissingAttributeEvents(t *testing.T) {
 	}
 	if events.missingAttributes["deployment.environment"] != 0 {
 		t.Errorf("deployment.environment counted missing: %v", events.missingAttributes)
+	}
+}
+
+func TestReservedAttributeConflictDetected(t *testing.T) {
+	r, logBuf, events := testRegistryEvents()
+	uid := testUID()
+
+	r.Report(&protobufs.AgentToServer{
+		InstanceUid: uid[:],
+		AgentDescription: &protobufs.AgentDescription{
+			IdentifyingAttributes: []*protobufs.KeyValue{
+				strAttr("service.name", "otelcol-contrib"),
+			},
+			NonIdentifyingAttributes: []*protobufs.KeyValue{
+				strAttr("healthy", "yes"),
+			},
+		},
+	}, ConnMeta{})
+
+	agent, ok := r.Get(uid.String())
+	if !ok {
+		t.Fatal("agent missing")
+	}
+	if !slices.Equal(agent.ReservedAttributeConflicts, []string{"healthy"}) {
+		t.Errorf("ReservedAttributeConflicts = %v, want [healthy]", agent.ReservedAttributeConflicts)
+	}
+	if events.reservedConflicts["healthy"] != 1 {
+		t.Errorf("reservedConflicts[healthy] = %d, want 1", events.reservedConflicts["healthy"])
+	}
+	if !strings.Contains(logBuf.String(), "healthy") {
+		t.Errorf("conflict not logged: %q", logBuf.String())
+	}
+
+	// Re-reporting the same conflict does not fire the event again.
+	logBuf.Reset()
+	r.Report(&protobufs.AgentToServer{
+		InstanceUid: uid[:],
+		AgentDescription: &protobufs.AgentDescription{
+			NonIdentifyingAttributes: []*protobufs.KeyValue{strAttr("healthy", "yes")},
+		},
+	}, ConnMeta{})
+	if events.reservedConflicts["healthy"] != 1 {
+		t.Errorf("unchanged conflict fired again: reservedConflicts[healthy] = %d", events.reservedConflicts["healthy"])
+	}
+	if strings.Contains(logBuf.String(), "healthy") {
+		t.Error("unchanged conflict logged again")
+	}
+}
+
+func TestReservedAttributeConflictClears(t *testing.T) {
+	r, _, events := testRegistryEvents()
+	uid := testUID()
+
+	r.Report(&protobufs.AgentToServer{
+		InstanceUid: uid[:],
+		AgentDescription: &protobufs.AgentDescription{
+			NonIdentifyingAttributes: []*protobufs.KeyValue{strAttr("connected", "true")},
+		},
+	}, ConnMeta{})
+	r.Report(&protobufs.AgentToServer{
+		InstanceUid:      uid[:],
+		AgentDescription: &protobufs.AgentDescription{},
+	}, ConnMeta{})
+
+	agent, _ := r.Get(uid.String())
+	if len(agent.ReservedAttributeConflicts) != 0 {
+		t.Errorf("ReservedAttributeConflicts = %v, want empty after clearing", agent.ReservedAttributeConflicts)
+	}
+	if events.reservedConflicts["connected"] != 1 {
+		t.Errorf("reservedConflicts[connected] = %d, want 1 (only fired once, on the conflicting report)",
+			events.reservedConflicts["connected"])
+	}
+}
+
+func TestNoReservedAttributeConflictForOrdinaryAttributes(t *testing.T) {
+	r, _, events := testRegistryEvents()
+	r.Report(statusMsg(testUID()), ConnMeta{})
+
+	if len(events.reservedConflicts) != 0 {
+		t.Errorf("reservedConflicts = %v, want none for an ordinary description", events.reservedConflicts)
 	}
 }
 

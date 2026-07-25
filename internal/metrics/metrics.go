@@ -39,15 +39,16 @@ func NewInfoGauge(reg prometheus.Registerer, name, help string, labels prometheu
 // Events holds the event-driven fleet and OpAMP counters. It implements
 // fleet.Events and the opamp handler's metrics hooks.
 type Events struct {
-	agentConnects      prometheus.Counter
-	agentDisconnects   prometheus.Counter
-	agentsEvicted      prometheus.Counter
-	reports            *prometheus.CounterVec
-	missingAttributes  *prometheus.CounterVec
-	messages           prometheus.Counter
-	messageErrors      prometheus.Counter
-	gatewayConnects    *prometheus.CounterVec
-	gatewayConnections prometheus.Gauge
+	agentConnects              prometheus.Counter
+	agentDisconnects           prometheus.Counter
+	agentsEvicted              prometheus.Counter
+	reports                    *prometheus.CounterVec
+	missingAttributes          *prometheus.CounterVec
+	reservedAttributeConflicts *prometheus.CounterVec
+	messages                   prometheus.Counter
+	messageErrors              prometheus.Counter
+	gatewayConnects            *prometheus.CounterVec
+	gatewayConnections         prometheus.Gauge
 }
 
 // NewEvents builds the counters. OpAMP server-health counters register on
@@ -75,6 +76,10 @@ func NewEvents(server, fleet prometheus.Registerer) *Events {
 			Name: "grex_agent_missing_attributes_total",
 			Help: "Required AgentDescription attributes reported missing, by key.",
 		}, []string{"attribute"}),
+		reservedAttributeConflicts: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "grex_agent_reserved_attribute_conflicts_total",
+			Help: "AgentDescription attributes reported that collide with a well-known read API filter field, by key.",
+		}, []string{"attribute"}),
 		messages: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "grex_opamp_messages_total",
 			Help: "OpAMP messages processed.",
@@ -95,7 +100,7 @@ func NewEvents(server, fleet prometheus.Registerer) *Events {
 	server.MustRegister(e.messages, e.messageErrors)
 	fleet.MustRegister(
 		e.agentConnects, e.agentDisconnects, e.agentsEvicted,
-		e.reports, e.missingAttributes,
+		e.reports, e.missingAttributes, e.reservedAttributeConflicts,
 		e.gatewayConnects, e.gatewayConnections,
 	)
 	return e
@@ -115,6 +120,11 @@ func (e *Events) ReportReceived(kind string) { e.reports.WithLabelValues(kind).I
 
 // MissingAttribute implements fleet.Events.
 func (e *Events) MissingAttribute(key string) { e.missingAttributes.WithLabelValues(key).Inc() }
+
+// ReservedAttributeConflict implements fleet.Events.
+func (e *Events) ReservedAttributeConflict(key string) {
+	e.reservedAttributeConflicts.WithLabelValues(key).Inc()
+}
 
 // Message counts one processed OpAMP message.
 func (e *Events) Message() { e.messages.Inc() }

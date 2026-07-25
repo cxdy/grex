@@ -39,6 +39,57 @@ func testRegistry(t *testing.T, n int) *fleet.Registry {
 	return r
 }
 
+// newAgentRegistry builds a registry from explicit identifying and
+// non-identifying attribute maps, one agent per map pair, for filter tests.
+func newAgentRegistry(t *testing.T, agents ...[2]map[string]string) *fleet.Registry {
+	t.Helper()
+	r := fleet.New(fleet.Config{
+		HeartbeatInterval:     30 * time.Second,
+		StaleMissedHeartbeats: 3,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	toKV := func(m map[string]string) []*protobufs.KeyValue {
+		var kvs []*protobufs.KeyValue
+		for k, v := range m {
+			kvs = append(kvs, &protobufs.KeyValue{
+				Key:   k,
+				Value: &protobufs.AnyValue{Value: &protobufs.AnyValue_StringValue{StringValue: v}},
+			})
+		}
+		return kvs
+	}
+	for _, a := range agents {
+		uid := uuid.New()
+		r.Report(&protobufs.AgentToServer{
+			InstanceUid: uid[:],
+			AgentDescription: &protobufs.AgentDescription{
+				IdentifyingAttributes:    toKV(a[0]),
+				NonIdentifyingAttributes: toKV(a[1]),
+			},
+		}, fleet.ConnMeta{})
+	}
+	return r
+}
+
+func newRegistry(t *testing.T) *fleet.Registry {
+	t.Helper()
+	return fleet.New(fleet.Config{
+		HeartbeatInterval:     30 * time.Second,
+		StaleMissedHeartbeats: 3,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+}
+
+// reportAgent registers one agent with the given health and connection
+// state, for top-level-field filter tests.
+func reportAgent(r *fleet.Registry, healthy bool, meta fleet.ConnMeta) string {
+	uid := uuid.New()
+	r.Report(&protobufs.AgentToServer{
+		InstanceUid:      uid[:],
+		Health:           &protobufs.ComponentHealth{Healthy: healthy},
+		AgentDescription: &protobufs.AgentDescription{},
+	}, meta)
+	return uid.String()
+}
+
 type testListResponse struct {
 	Agents []map[string]any `json:"agents"`
 	Total  int              `json:"total"`
@@ -184,6 +235,190 @@ func TestListAgentsContentType(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+}
+
+func TestListAgentsFilterByIdentifyingAttribute(t *testing.T) {
+	r := newAgentRegistry(t,
+		[2]map[string]string{{"service.name": "otelcol-contrib"}, nil},
+		[2]map[string]string{{"service.name": "otelcol-gateway"}, nil},
+	)
+	h := New(r)
+	_, body := doGet(t, h, "/api/agents?service.name=otelcol-contrib")
+
+	if body.Total != 1 || len(body.Agents) != 1 {
+		t.Fatalf("agents=%d total=%d, want 1/1", len(body.Agents), body.Total)
+	}
+	if body.Agents[0]["identifying_attributes"].(map[string]any)["service.name"] != "otelcol-contrib" {
+		t.Errorf("wrong agent matched: %v", body.Agents[0])
+	}
+}
+
+func TestListAgentsFilterByNonIdentifyingAttribute(t *testing.T) {
+	r := newAgentRegistry(t,
+		[2]map[string]string{nil, {"deployment.environment": "dev"}},
+		[2]map[string]string{nil, {"deployment.environment": "prod"}},
+	)
+	h := New(r)
+	_, body := doGet(t, h, "/api/agents?deployment.environment=prod")
+
+	if body.Total != 1 || len(body.Agents) != 1 {
+		t.Fatalf("agents=%d total=%d, want 1/1", len(body.Agents), body.Total)
+	}
+}
+
+func TestListAgentsFilterMultipleKeysAreANDed(t *testing.T) {
+	r := newAgentRegistry(t,
+		[2]map[string]string{{"service.name": "otelcol-contrib"}, {"deployment.environment": "dev"}},
+		[2]map[string]string{{"service.name": "otelcol-contrib"}, {"deployment.environment": "prod"}},
+		[2]map[string]string{{"service.name": "otelcol-gateway"}, {"deployment.environment": "dev"}},
+	)
+	h := New(r)
+	_, body := doGet(t, h, "/api/agents?service.name=otelcol-contrib&deployment.environment=dev")
+
+	if body.Total != 1 || len(body.Agents) != 1 {
+		t.Fatalf("agents=%d total=%d, want 1/1", len(body.Agents), body.Total)
+	}
+}
+
+func TestListAgentsFilterNoMatches(t *testing.T) {
+	r := newAgentRegistry(t, [2]map[string]string{{"service.name": "otelcol-contrib"}, nil})
+	h := New(r)
+	_, body := doGet(t, h, "/api/agents?service.name=nonexistent")
+
+	if body.Total != 0 || len(body.Agents) != 0 {
+		t.Errorf("agents=%d total=%d, want 0/0", len(body.Agents), body.Total)
+	}
+}
+
+func TestListAgentsFilterTotalReflectsFilteredSetForPagination(t *testing.T) {
+	r := newAgentRegistry(t,
+		[2]map[string]string{{"service.name": "otelcol-contrib"}, nil},
+		[2]map[string]string{{"service.name": "otelcol-contrib"}, nil},
+		[2]map[string]string{{"service.name": "otelcol-gateway"}, nil},
+	)
+	h := New(r)
+	_, body := doGet(t, h, "/api/agents?service.name=otelcol-contrib&limit=1")
+
+	if body.Total != 2 {
+		t.Errorf("total = %d, want 2 (filtered set size, not full fleet)", body.Total)
+	}
+	if len(body.Agents) != 1 {
+		t.Errorf("agents = %d, want 1 (limit applied after filter)", len(body.Agents))
+	}
+}
+
+func TestListAgentsFilterIgnoresReservedParams(t *testing.T) {
+	r := testRegistry(t, 3)
+	h := New(r)
+	_, body := doGet(t, h, "/api/agents?limit=2&offset=0")
+
+	if body.Total != 3 {
+		t.Errorf("total = %d, want 3 (limit/offset must not be treated as attribute filters)", body.Total)
+	}
+}
+
+func TestListAgentsFilterByHealthy(t *testing.T) {
+	r := newRegistry(t)
+	reportAgent(r, true, fleet.ConnMeta{})
+	unhealthy := reportAgent(r, false, fleet.ConnMeta{})
+
+	h := New(r)
+	_, body := doGet(t, h, "/api/agents?healthy=false")
+
+	if body.Total != 1 || len(body.Agents) != 1 {
+		t.Fatalf("agents=%d total=%d, want 1/1", len(body.Agents), body.Total)
+	}
+	if body.Agents[0]["instance_uid"] != unhealthy {
+		t.Errorf("wrong agent matched: %v", body.Agents[0])
+	}
+}
+
+func TestListAgentsFilterByConnected(t *testing.T) {
+	r := newRegistry(t)
+	reportAgent(r, true, fleet.ConnMeta{})
+	disconnected := reportAgent(r, true, fleet.ConnMeta{})
+	r.SetConnected(disconnected, false)
+
+	h := New(r)
+	_, body := doGet(t, h, "/api/agents?connected=false")
+
+	if body.Total != 1 || len(body.Agents) != 1 {
+		t.Fatalf("agents=%d total=%d, want 1/1", len(body.Agents), body.Total)
+	}
+	if body.Agents[0]["instance_uid"] != disconnected {
+		t.Errorf("wrong agent matched: %v", body.Agents[0])
+	}
+}
+
+func TestListAgentsFilterByViaGateway(t *testing.T) {
+	r := newRegistry(t)
+	reportAgent(r, true, fleet.ConnMeta{ViaGateway: false})
+	gatewayed := reportAgent(r, true, fleet.ConnMeta{ViaGateway: true})
+
+	h := New(r)
+	_, body := doGet(t, h, "/api/agents?via_gateway=true")
+
+	if body.Total != 1 || len(body.Agents) != 1 {
+		t.Fatalf("agents=%d total=%d, want 1/1", len(body.Agents), body.Total)
+	}
+	if body.Agents[0]["instance_uid"] != gatewayed {
+		t.Errorf("wrong agent matched: %v", body.Agents[0])
+	}
+}
+
+func TestListAgentsFilterCombinesBoolAndAttribute(t *testing.T) {
+	r := newRegistry(t)
+	uid := uuid.New()
+	r.Report(&protobufs.AgentToServer{
+		InstanceUid: uid[:],
+		Health:      &protobufs.ComponentHealth{Healthy: false},
+		AgentDescription: &protobufs.AgentDescription{
+			IdentifyingAttributes: []*protobufs.KeyValue{{
+				Key:   "service.name",
+				Value: &protobufs.AnyValue{Value: &protobufs.AnyValue_StringValue{StringValue: "otelcol-contrib"}},
+			}},
+		},
+	}, fleet.ConnMeta{})
+	reportAgent(r, false, fleet.ConnMeta{}) // unhealthy but different service.name
+
+	h := New(r)
+	_, body := doGet(t, h, "/api/agents?healthy=false&service.name=otelcol-contrib")
+
+	if body.Total != 1 || len(body.Agents) != 1 {
+		t.Fatalf("agents=%d total=%d, want 1/1", len(body.Agents), body.Total)
+	}
+}
+
+func TestListAgentsFilterInvalidBoolValue(t *testing.T) {
+	h := New(testRegistry(t, 1))
+	for _, param := range []string{"healthy", "connected", "via_gateway"} {
+		code, _ := doGet(t, h, "/api/agents?"+param+"=notabool")
+		if code != http.StatusBadRequest {
+			t.Errorf("%s=notabool: status = %d, want 400", param, code)
+		}
+	}
+}
+
+// TestBoolFieldsMatchFleetReservedAttributeKeys keeps this package's filter
+// key set and fleet's ReservedAttributeKeys (which drives the
+// grex_agent_reserved_attribute_conflicts_total metric) from drifting apart:
+// every key the API special-cases must be one fleet warns about, and vice
+// versa.
+func TestBoolFieldsMatchFleetReservedAttributeKeys(t *testing.T) {
+	want := make(map[string]bool, len(fleet.ReservedAttributeKeys))
+	for _, key := range fleet.ReservedAttributeKeys {
+		want[key] = true
+	}
+	for key := range boolFields {
+		if !want[key] {
+			t.Errorf("boolFields has %q, not in fleet.ReservedAttributeKeys", key)
+		}
+	}
+	for key := range want {
+		if _, ok := boolFields[key]; !ok {
+			t.Errorf("fleet.ReservedAttributeKeys has %q, not filterable via boolFields", key)
+		}
 	}
 }
 

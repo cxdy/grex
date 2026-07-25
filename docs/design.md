@@ -175,12 +175,26 @@ auth boundary:
     stable across calls even though the registry itself is a map with no
     inherent order.
   - Response: `{"agents": [...], "total": N, "limit": L, "offset": O}`.
-    `total` is the fleet size regardless of the page requested; `offset`
-    echoes the requested value even if it is past the end (in which case
-    `agents` is empty).
+    `total` reflects the filtered set (see below), not the whole fleet, when
+    a filter is applied; `offset` echoes the requested value even if it is
+    past the end (in which case `agents` is empty).
   - Each agent's `capabilities` bitmask ships alongside a decoded
     `capability_flags` object (named booleans), so clients never need
     bitmask math.
+  - Filtering: any query param other than `limit`/`offset` is a filter.
+    Three well-known keys filter on top-level fields as `true`/`false`
+    (invalid values are a 400): `healthy`, `connected`, `via_gateway`. Any
+    other key is an exact-match filter against `AgentDescription`
+    attributes, checked against `identifying_attributes` first, then
+    `non_identifying_attributes`, e.g.
+    `?service.name=otelcol-contrib&deployment.environment=dev`. Multiple
+    filter params are ANDed, e.g. `?healthy=false&service.name=otelcol-contrib`.
+    The well-known keys take precedence: an agent-reported attribute
+    literally named `healthy` cannot be attribute-filtered, since the
+    top-level field always wins for that key; the registry counts this
+    shadowing as it happens (`grex_agent_reserved_attribute_conflicts_total`,
+    see Metrics below). Filtering happens before pagination, so `total` and
+    `limit`/`offset` apply to the filtered result, not the full fleet.
 - Same auth boundary as the UI (OIDC session, `viewer`/`admin`), same
   listener, mounted alongside it (`server.UI{AgentsHandler: ...}`, the same
   pattern as `server.OpAMP{Handler: ...}`). Read-only: no endpoint accepts a
@@ -295,6 +309,13 @@ The two groups:
   reports lacking a required AgentDescription attribute)
 - `grex_agents_noncompliant` (gauge: agents currently missing at least one
   required attribute)
+- `grex_agent_reserved_attribute_conflicts_total` (counter, by attribute key:
+  an agent reported an AgentDescription attribute matching one of the read
+  API's well-known filter fields, `fleet.ReservedAttributeKeys` —
+  `healthy`/`connected`/`via_gateway` — so that attribute is permanently
+  shadowed for API filtering. Fires once per key when the conflict set
+  changes, not on every report, same pattern as the missing-attributes
+  counter above)
 - `grex_agent_connects_total` / `grex_agent_disconnects_total` (counters)
 
 **Server health:**
