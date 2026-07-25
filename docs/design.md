@@ -215,20 +215,31 @@ auth boundary:
   grex. grex records the gateway's certificate identity plus the forwarded
   per-agent remote address; direct agents get their own certificate identity
   recorded.
-- **Users (UI/API):** OIDC Authorization Code flow against [Dex](https://dexidp.io/).
-  Dex federates the upstream identity provider; the first connector is GitHub,
-  tied to an organization. Dex injects org/team membership as `groups` claims
-  in the `id_token`, so grex is a plain OIDC client with claims-based role
-  mapping and no provider-specific code. Any other identity provider Dex
-  supports works without changes to grex.
+- **Users (UI/API):** shipped in two milestones, both feeding the same role
+  table.
+  - **mTLS (first):** required client certificates on the UI/API listener,
+    same TLS plumbing as the OpAMP listener. Identity is the SPIFFE ID from
+    the cert's URI SAN (`spiffe://<trust-domain>/<path>`), not the X.509
+    subject; grex requires exactly one SPIFFE URI SAN per cert and rejects
+    certs without one or with a malformed one. Real access control for
+    `/api/agents` with no external dependency, useful on its own for
+    non-browser API consumers.
+  - **OIDC (second):** Authorization Code flow against
+    [Dex](https://dexidp.io/) for browser session login. Dex federates the
+    upstream identity provider; the first connector is GitHub, tied to an
+    organization. Dex injects org/team membership as `groups` claims in the
+    `id_token`, so grex is a plain OIDC client with claims-based role mapping
+    and no provider-specific code. Any other identity provider Dex supports
+    works without changes to grex.
 - **Roles:** simple and static in 1.0.
   - `viewer` — can see everything the UI shows.
   - `admin` — same as viewer in 1.0 (mutation comes later); the role exists now
     so tokens/sessions carry it and 1.1+ can gate mutations on it.
-  - Role assignment via configuration: map of `groups` claim values (e.g.
-    GitHub `org:team`) to role, plus a default role for authenticated users
-    (may be "none" to deny by default). Users with no mapped group get no
-    role and no access.
+  - Role assignment via configuration, same table shape for both identity
+    sources: map of SPIFFE ID (or a path prefix of it) or OIDC `groups`
+    claim values (e.g. GitHub `org:team`) to role, plus a default role for
+    authenticated callers (may be "none" to deny by default). Callers with
+    no mapped identity get no role and no access.
 - **Deployment note:** Dex is a required companion service in production. It
   ships in the compose stack for dev and is documented as a prerequisite for
   deployment.
@@ -413,11 +424,23 @@ the gateway's connect handshake needs grex to answer `connectResult`.
 4. **Read API** — JSON endpoints over fleet registry state: fleet overview,
    agent detail, server status.
 5. **Web UI** — embedded `html/template` + htmx pages rendering the read API.
-6. **Auth** — OIDC client against Dex, claims-based roles, Dex dev config
-   with static users; gates the UI/API listener.
-7. **Local dev** — compose stack with collectors and dev certs (built;
-   OpAMP gateway insertion lands with milestone 2).
+6. **Auth: mTLS** — TLS termination plus required client certificates on the
+   UI/API listener, reusing the mTLS plumbing built for the OpAMP listener
+   in milestone 2. Identity comes from the client cert's SPIFFE ID (URI SAN,
+   `spiffe://<trust-domain>/<path>`), not the X.509 subject: grex requires
+   exactly one SPIFFE URI SAN per cert and rejects certs that lack one or
+   carry a malformed one. Authorization maps SPIFFE ID (or a path prefix of
+   it) to role via config, same shape as the `groups`-to-role table OIDC
+   uses in milestone 7, so the role table's mechanism does not change when
+   OIDC lands, only the identity source feeding it. Ships first: no external
+   dependency, and it is real access control for API consumers even before
+   OIDC login exists for the browser UI.
+7. **Auth: OIDC** — OIDC client against Dex, claims-based roles, Dex dev
+   config with static users; browser session login on top of the mTLS
+   groundwork from milestone 6.
 8. **Release** — GoReleaser, svu, image publishing, first tagged 1.0.
+9. **Local dev** — compose stack with collectors and dev certs (built;
+   OpAMP gateway insertion lands with milestone 2).
 
 Each milestone is independently testable; TDD applies throughout (unit tests
 per package, compose stack as the end-to-end harness).
