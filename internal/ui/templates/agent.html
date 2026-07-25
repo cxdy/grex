@@ -1,0 +1,29 @@
+{{define "agent.html"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body>
+  {{template "header" .}}
+  <main class="main">
+    <div class="detail-toolbar">
+      <a class="back-link" href="/">← Fleet</a>
+      {{if .Agent}}
+      <button
+        type="button"
+        class="btn btn-ghost"
+        hx-get="/partials/agents/{{.Agent.InstanceUID}}"
+        hx-target="#agent-detail"
+        hx-swap="innerHTML"
+        hx-indicator=".htmx-indicator"
+      >Refresh</button>
+      {{end}}
+    </div>
+    {{if .Agent}}
+    <div id="agent-detail">
+      {{template "partials/agent.html" .}}
+    </div>
+    {{end}}
+  </main>
+</body>
+</html>
+{{end}}

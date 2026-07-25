@@ -20,8 +20,16 @@ type Config struct {
 	TLS       TLS       `yaml:"tls"`
 	Fleet     Fleet     `yaml:"fleet"`
 	Metrics   Metrics   `yaml:"metrics"`
+	UI        UI        `yaml:"ui"`
 	Debug     Debug     `yaml:"debug"`
 	Log       Log       `yaml:"log"`
+}
+
+// UI holds web UI settings.
+type UI struct {
+	// PollInterval is how often the embedded UI refreshes fleet data via htmx.
+	// Default 5s.
+	PollInterval time.Duration `yaml:"poll_interval"`
 }
 
 // Debug holds settings for diagnostic endpoints that are off by default
@@ -140,6 +148,7 @@ func (c *Config) envOverrides() []struct {
 		{"GREX_FLEET_STALE_MISSED_HEARTBEATS", setInt(&c.Fleet.StaleMissedHeartbeats)},
 		{"GREX_FLEET_REQUIRED_ATTRIBUTES", setStringList(&c.Fleet.RequiredAttributes)},
 		{"GREX_METRICS_PER_AGENT_SERIES_LIMIT", setInt(&c.Metrics.PerAgentSeriesLimit)},
+		{"GREX_UI_POLL_INTERVAL", setDuration(&c.UI.PollInterval)},
 		{"GREX_DEBUG_PPROF_ENABLED", setBool(&c.Debug.PprofEnabled)},
 		{"GREX_LOG_LEVEL", setString(&c.Log.Level)},
 		{"GREX_LOG_FORMAT", setString(&c.Log.Format)},
@@ -155,6 +164,7 @@ func defaults() *Config {
 		},
 		Fleet:   Fleet{HeartbeatInterval: 30 * time.Second, StaleMissedHeartbeats: 3},
 		Metrics: Metrics{PerAgentSeriesLimit: 1000},
+		UI:      UI{PollInterval: 5 * time.Second},
 		Log:     Log{Level: "info", Format: "text"},
 	}
 }
@@ -216,6 +226,9 @@ func (c *Config) validate() error {
 	}
 	if c.Metrics.PerAgentSeriesLimit < 0 {
 		return fmt.Errorf("metrics.per_agent_series_limit: must be non-negative, got %d", c.Metrics.PerAgentSeriesLimit)
+	}
+	if c.UI.PollInterval <= 0 {
+		return fmt.Errorf("ui.poll_interval: must be positive, got %v", c.UI.PollInterval)
 	}
 	return nil
 }

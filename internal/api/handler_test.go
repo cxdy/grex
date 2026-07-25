@@ -7,6 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,22 +100,36 @@ type testListResponse struct {
 	Offset int              `json:"offset"`
 }
 
-func doGet(t *testing.T, h http.Handler, path string) (int, testListResponse) {
+func newMux(t *testing.T, r *fleet.Registry) http.Handler {
+	t.Helper()
+	h := New(r, time.Now())
+	mux := http.NewServeMux()
+	h.Mount(mux, nil)
+	return mux
+}
+
+func doGetRaw(t *testing.T, h http.Handler, path string) (int, []byte) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
+	return rec.Code, rec.Body.Bytes()
+}
+
+func doGet(t *testing.T, h http.Handler, path string) (int, testListResponse) {
+	t.Helper()
+	code, raw := doGetRaw(t, h, path)
 	var body testListResponse
-	if rec.Code == http.StatusOK && rec.Body.Len() > 0 {
-		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-			t.Fatalf("decode response: %v (body=%s)", err, rec.Body.String())
+	if code == http.StatusOK && len(raw) > 0 {
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode response: %v (body=%s)", err, raw)
 		}
 	}
-	return rec.Code, body
+	return code, body
 }
 
 func TestListAgentsDefaults(t *testing.T) {
-	h := New(testRegistry(t, 3))
+	h := newMux(t, testRegistry(t, 3))
 	code, body := doGet(t, h, "/api/agents")
 
 	if code != http.StatusOK {
@@ -127,7 +144,7 @@ func TestListAgentsDefaults(t *testing.T) {
 }
 
 func TestListAgentsPaginationIsStableAndOrdered(t *testing.T) {
-	h := New(testRegistry(t, 5))
+	h := newMux(t, testRegistry(t, 5))
 
 	_, page1 := doGet(t, h, "/api/agents?limit=2&offset=0")
 	_, page2 := doGet(t, h, "/api/agents?limit=2&offset=2")
@@ -166,7 +183,7 @@ func TestListAgentsPaginationIsStableAndOrdered(t *testing.T) {
 }
 
 func TestListAgentsOffsetBeyondTotal(t *testing.T) {
-	h := New(testRegistry(t, 2))
+	h := newMux(t, testRegistry(t, 2))
 	code, body := doGet(t, h, "/api/agents?offset=50")
 
 	if code != http.StatusOK {
@@ -178,7 +195,7 @@ func TestListAgentsOffsetBeyondTotal(t *testing.T) {
 }
 
 func TestListAgentsEmptyRegistry(t *testing.T) {
-	h := New(testRegistry(t, 0))
+	h := newMux(t, testRegistry(t, 0))
 	code, body := doGet(t, h, "/api/agents")
 
 	if code != http.StatusOK {
@@ -190,7 +207,7 @@ func TestListAgentsEmptyRegistry(t *testing.T) {
 }
 
 func TestListAgentsLimitCapped(t *testing.T) {
-	h := New(testRegistry(t, 3))
+	h := newMux(t, testRegistry(t, 3))
 	_, body := doGet(t, h, fmt.Sprintf("/api/agents?limit=%d", maxLimit+500))
 
 	if body.Limit != maxLimit {
@@ -199,7 +216,7 @@ func TestListAgentsLimitCapped(t *testing.T) {
 }
 
 func TestListAgentsInvalidLimit(t *testing.T) {
-	h := New(testRegistry(t, 1))
+	h := newMux(t, testRegistry(t, 1))
 	for _, v := range []string{"abc", "0", "-1"} {
 		code, _ := doGet(t, h, "/api/agents?limit="+v)
 		if code != http.StatusBadRequest {
@@ -209,7 +226,7 @@ func TestListAgentsInvalidLimit(t *testing.T) {
 }
 
 func TestListAgentsInvalidOffset(t *testing.T) {
-	h := New(testRegistry(t, 1))
+	h := newMux(t, testRegistry(t, 1))
 	for _, v := range []string{"abc", "-1"} {
 		code, _ := doGet(t, h, "/api/agents?offset="+v)
 		if code != http.StatusBadRequest {
@@ -219,7 +236,7 @@ func TestListAgentsInvalidOffset(t *testing.T) {
 }
 
 func TestListAgentsMethodNotAllowed(t *testing.T) {
-	h := New(testRegistry(t, 1))
+	h := newMux(t, testRegistry(t, 1))
 	req := httptest.NewRequest(http.MethodPost, "/api/agents", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -229,7 +246,7 @@ func TestListAgentsMethodNotAllowed(t *testing.T) {
 }
 
 func TestListAgentsContentType(t *testing.T) {
-	h := New(testRegistry(t, 1))
+	h := newMux(t, testRegistry(t, 1))
 	req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -243,7 +260,7 @@ func TestListAgentsFilterByIdentifyingAttribute(t *testing.T) {
 		[2]map[string]string{{"service.name": "otelcol-contrib"}, nil},
 		[2]map[string]string{{"service.name": "otelcol-gateway"}, nil},
 	)
-	h := New(r)
+	h := newMux(t, r)
 	_, body := doGet(t, h, "/api/agents?service.name=otelcol-contrib")
 
 	if body.Total != 1 || len(body.Agents) != 1 {
@@ -259,7 +276,7 @@ func TestListAgentsFilterByNonIdentifyingAttribute(t *testing.T) {
 		[2]map[string]string{nil, {"deployment.environment": "dev"}},
 		[2]map[string]string{nil, {"deployment.environment": "prod"}},
 	)
-	h := New(r)
+	h := newMux(t, r)
 	_, body := doGet(t, h, "/api/agents?deployment.environment=prod")
 
 	if body.Total != 1 || len(body.Agents) != 1 {
@@ -273,7 +290,7 @@ func TestListAgentsFilterMultipleKeysAreANDed(t *testing.T) {
 		[2]map[string]string{{"service.name": "otelcol-contrib"}, {"deployment.environment": "prod"}},
 		[2]map[string]string{{"service.name": "otelcol-gateway"}, {"deployment.environment": "dev"}},
 	)
-	h := New(r)
+	h := newMux(t, r)
 	_, body := doGet(t, h, "/api/agents?service.name=otelcol-contrib&deployment.environment=dev")
 
 	if body.Total != 1 || len(body.Agents) != 1 {
@@ -283,7 +300,7 @@ func TestListAgentsFilterMultipleKeysAreANDed(t *testing.T) {
 
 func TestListAgentsFilterNoMatches(t *testing.T) {
 	r := newAgentRegistry(t, [2]map[string]string{{"service.name": "otelcol-contrib"}, nil})
-	h := New(r)
+	h := newMux(t, r)
 	_, body := doGet(t, h, "/api/agents?service.name=nonexistent")
 
 	if body.Total != 0 || len(body.Agents) != 0 {
@@ -297,7 +314,7 @@ func TestListAgentsFilterTotalReflectsFilteredSetForPagination(t *testing.T) {
 		[2]map[string]string{{"service.name": "otelcol-contrib"}, nil},
 		[2]map[string]string{{"service.name": "otelcol-gateway"}, nil},
 	)
-	h := New(r)
+	h := newMux(t, r)
 	_, body := doGet(t, h, "/api/agents?service.name=otelcol-contrib&limit=1")
 
 	if body.Total != 2 {
@@ -310,7 +327,7 @@ func TestListAgentsFilterTotalReflectsFilteredSetForPagination(t *testing.T) {
 
 func TestListAgentsFilterIgnoresReservedParams(t *testing.T) {
 	r := testRegistry(t, 3)
-	h := New(r)
+	h := newMux(t, r)
 	_, body := doGet(t, h, "/api/agents?limit=2&offset=0")
 
 	if body.Total != 3 {
@@ -323,7 +340,7 @@ func TestListAgentsFilterByHealthy(t *testing.T) {
 	reportAgent(r, true, fleet.ConnMeta{})
 	unhealthy := reportAgent(r, false, fleet.ConnMeta{})
 
-	h := New(r)
+	h := newMux(t, r)
 	_, body := doGet(t, h, "/api/agents?healthy=false")
 
 	if body.Total != 1 || len(body.Agents) != 1 {
@@ -340,7 +357,7 @@ func TestListAgentsFilterByConnected(t *testing.T) {
 	disconnected := reportAgent(r, true, fleet.ConnMeta{})
 	r.SetConnected(disconnected, false)
 
-	h := New(r)
+	h := newMux(t, r)
 	_, body := doGet(t, h, "/api/agents?connected=false")
 
 	if body.Total != 1 || len(body.Agents) != 1 {
@@ -356,7 +373,7 @@ func TestListAgentsFilterByViaGateway(t *testing.T) {
 	reportAgent(r, true, fleet.ConnMeta{ViaGateway: false})
 	gatewayed := reportAgent(r, true, fleet.ConnMeta{ViaGateway: true})
 
-	h := New(r)
+	h := newMux(t, r)
 	_, body := doGet(t, h, "/api/agents?via_gateway=true")
 
 	if body.Total != 1 || len(body.Agents) != 1 {
@@ -382,7 +399,7 @@ func TestListAgentsFilterCombinesBoolAndAttribute(t *testing.T) {
 	}, fleet.ConnMeta{})
 	reportAgent(r, false, fleet.ConnMeta{}) // unhealthy but different service.name
 
-	h := New(r)
+	h := newMux(t, r)
 	_, body := doGet(t, h, "/api/agents?healthy=false&service.name=otelcol-contrib")
 
 	if body.Total != 1 || len(body.Agents) != 1 {
@@ -391,12 +408,156 @@ func TestListAgentsFilterCombinesBoolAndAttribute(t *testing.T) {
 }
 
 func TestListAgentsFilterInvalidBoolValue(t *testing.T) {
-	h := New(testRegistry(t, 1))
+	h := newMux(t, testRegistry(t, 1))
 	for _, param := range []string{"healthy", "connected", "via_gateway"} {
 		code, _ := doGet(t, h, "/api/agents?"+param+"=notabool")
 		if code != http.StatusBadRequest {
 			t.Errorf("%s=notabool: status = %d, want 400", param, code)
 		}
+	}
+}
+
+func TestListAgentsFilterEmptyBoolIsIgnored(t *testing.T) {
+	// HTML "Any" selects submit as healthy=&connected=&via_gateway=.
+	// Those must not 400; they mean no filter on that field.
+	r := testRegistry(t, 2)
+	h := newMux(t, r)
+	code, body := doGet(t, h, "/api/agents?healthy=&connected=&via_gateway=")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if body.Total != 2 {
+		t.Errorf("total = %d, want 2 (empty bools are not filters)", body.Total)
+	}
+}
+
+func TestListAgentsFilterEmptyBoolWithAttr(t *testing.T) {
+	r := newAgentRegistry(t,
+		[2]map[string]string{{"service.name": "keep"}, nil},
+		[2]map[string]string{{"service.name": "drop"}, nil},
+	)
+	h := newMux(t, r)
+	code, body := doGet(t, h, "/api/agents?healthy=&connected=&via_gateway=&attr_key=service.name&attr_value=keep")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if body.Total != 1 {
+		t.Fatalf("total = %d, want 1", body.Total)
+	}
+}
+
+func TestListAgentsFilterMatchers(t *testing.T) {
+	r := newAgentRegistry(t,
+		[2]map[string]string{{"service.name": "otelcol-contrib"}, {"deployment.environment": "prod"}},
+		[2]map[string]string{{"service.name": "otelcol-gateway"}, {"deployment.environment": "dev"}},
+		[2]map[string]string{{"service.name": "other"}, {"deployment.environment": "prod"}},
+	)
+	h := newMux(t, r)
+
+	t.Run("not equal", func(t *testing.T) {
+		_, body := doGet(t, h, "/api/agents?match="+url.QueryEscape("service.name!=otelcol-contrib"))
+		if body.Total != 2 {
+			t.Fatalf("total = %d, want 2", body.Total)
+		}
+	})
+	t.Run("regex", func(t *testing.T) {
+		_, body := doGet(t, h, "/api/agents?match="+url.QueryEscape("service.name=~otelcol-.*"))
+		if body.Total != 2 {
+			t.Fatalf("total = %d, want 2", body.Total)
+		}
+	})
+	t.Run("not regex", func(t *testing.T) {
+		_, body := doGet(t, h, "/api/agents?match="+url.QueryEscape("service.name!~otelcol-.*"))
+		if body.Total != 1 {
+			t.Fatalf("total = %d, want 1", body.Total)
+		}
+	})
+	t.Run("spaced matcher", func(t *testing.T) {
+		_, body := doGet(t, h, "/api/agents?match="+url.QueryEscape("deployment.environment = prod"))
+		if body.Total != 2 {
+			t.Fatalf("total = %d, want 2", body.Total)
+		}
+	})
+	t.Run("and multiple match", func(t *testing.T) {
+		q := url.Values{}
+		q.Add("match", "deployment.environment=prod")
+		q.Add("match", "service.name=~otelcol-.*")
+		_, body := doGet(t, h, "/api/agents?"+q.Encode())
+		if body.Total != 1 {
+			t.Fatalf("total = %d, want 1", body.Total)
+		}
+	})
+	t.Run("invalid regex", func(t *testing.T) {
+		code, _ := doGet(t, h, "/api/agents?match="+url.QueryEscape("service.name=~[invalid"))
+		if code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", code)
+		}
+	})
+	t.Run("quoted regex not match prefix", func(t *testing.T) {
+		// service.instance.id !~ "9.+" should drop values starting with 9.
+		r2 := newAgentRegistry(t,
+			[2]map[string]string{{"service.instance.id": "9abc-starts-with-nine"}, nil},
+			[2]map[string]string{{"service.instance.id": "a7af-starts-with-a"}, nil},
+			[2]map[string]string{{"service.instance.id": "019f-starts-with-zero"}, nil},
+		)
+		h2 := newMux(t, r2)
+		_, body := doGet(t, h2, "/api/agents?match="+url.QueryEscape(`service.instance.id !~ "9.+"`))
+		if body.Total != 2 {
+			t.Fatalf("total = %d, want 2 (exclude ids starting with 9)", body.Total)
+		}
+		for _, a := range body.Agents {
+			id := a["identifying_attributes"].(map[string]any)["service.instance.id"].(string)
+			if strings.HasPrefix(id, "9") {
+				t.Errorf("should have filtered out %q", id)
+			}
+		}
+	})
+	t.Run("quoted regex match prefix", func(t *testing.T) {
+		r2 := newAgentRegistry(t,
+			[2]map[string]string{{"service.instance.id": "9abc"}, nil},
+			[2]map[string]string{{"service.instance.id": "a7af"}, nil},
+		)
+		h2 := newMux(t, r2)
+		_, body := doGet(t, h2, "/api/agents?match="+url.QueryEscape(`service.instance.id =~ '9.+'`))
+		if body.Total != 1 {
+			t.Fatalf("total = %d, want 1", body.Total)
+		}
+	})
+}
+
+func TestAttributeDiscovery(t *testing.T) {
+	r := newAgentRegistry(t,
+		[2]map[string]string{{"service.name": "a"}, {"deployment.environment": "dev"}},
+		[2]map[string]string{{"service.name": "b"}, {"deployment.environment": "prod"}},
+	)
+	h := newMux(t, r)
+
+	code, raw := doGetRaw(t, h, "/api/attributes")
+	if code != http.StatusOK {
+		t.Fatalf("keys status = %d", code)
+	}
+	var keysBody struct {
+		Keys []string `json:"keys"`
+	}
+	if err := json.Unmarshal(raw, &keysBody); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(keysBody.Keys, "service.name") || !slices.Contains(keysBody.Keys, "deployment.environment") {
+		t.Errorf("keys = %v", keysBody.Keys)
+	}
+
+	code, raw = doGetRaw(t, h, "/api/attributes/values?key=deployment.environment")
+	if code != http.StatusOK {
+		t.Fatalf("values status = %d", code)
+	}
+	var valsBody struct {
+		Values []string `json:"values"`
+	}
+	if err := json.Unmarshal(raw, &valsBody); err != nil {
+		t.Fatal(err)
+	}
+	if len(valsBody.Values) != 2 {
+		t.Errorf("values = %v, want 2", valsBody.Values)
 	}
 }
 
@@ -423,7 +584,7 @@ func TestBoolFieldsMatchFleetReservedAttributeKeys(t *testing.T) {
 }
 
 func TestListAgentsFullAttributeSet(t *testing.T) {
-	h := New(testRegistry(t, 1))
+	h := newMux(t, testRegistry(t, 1))
 	_, body := doGet(t, h, "/api/agents")
 
 	if len(body.Agents) != 1 {
@@ -434,9 +595,45 @@ func TestListAgentsFullAttributeSet(t *testing.T) {
 		"instance_uid", "sequence_num", "identifying_attributes", "capabilities",
 		"capability_flags", "healthy", "health_reported", "description_reported",
 		"connection", "connected", "first_seen", "last_seen",
+		"role", "display_name",
 	} {
 		if _, ok := agent[field]; !ok {
 			t.Errorf("agent JSON missing field %q: %v", field, agent)
 		}
+	}
+	if _, ok := agent["effective_config"]; ok {
+		t.Error("list projection should omit effective_config")
+	}
+}
+
+func TestGetAgentAndStatus(t *testing.T) {
+	r := newAgentRegistry(t, [2]map[string]string{{"service.name": "detail-me"}, nil})
+	// grab the only agent uid
+	agents := r.List()
+	if len(agents) != 1 {
+		t.Fatalf("setup agents = %d", len(agents))
+	}
+	id := agents[0].InstanceUID
+	h := newMux(t, r)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/agents/"+id, nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get agent status = %d", rec.Code)
+	}
+	var detail map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail["display_name"] != "detail-me" {
+		t.Errorf("display_name = %v", detail["display_name"])
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
 	}
 }

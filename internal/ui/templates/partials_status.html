@@ -1,0 +1,46 @@
+{{define "partials/status.html"}}
+{{with .Status}}
+<div class="stat-row">
+  <div class="stat">
+    <div class="label">Agents</div>
+    <div class="value">{{.Total}}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Connected</div>
+    <div class="value ok">{{.Connected}}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Disconnected</div>
+    <div class="value">{{.Disconnected}}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Healthy</div>
+    <div class="value ok">{{.Healthy}}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Unhealthy</div>
+    <div class="value {{if gt .Unhealthy 0}}bad{{end}}">{{.Unhealthy}}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Health unknown</div>
+    <div class="value">{{.HealthUnknown}}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Awaiting full state</div>
+    <div class="value">{{.Awaiting}}</div>
+  </div>
+</div>
+
+<div class="grid">
+  <section class="card">
+    <h2>grex</h2>
+    <dl class="kv">
+      <dt>Version</dt><dd class="mono">{{.Version}}</dd>
+      <dt>Commit</dt><dd class="mono">{{.Commit}}</dd>
+      <dt>Started</dt><dd>{{formatTime .StartedAt}}</dd>
+      <dt>Uptime</dt><dd>{{.Uptime}}</dd>
+    </dl>
+  </section>
+</div>
+{{end}}
+{{end}}

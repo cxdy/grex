@@ -375,15 +375,32 @@ func (r *Registry) List() []Agent {
 	return list
 }
 
-// Sweep evicts agents whose last check-in is older than
-// HeartbeatInterval * StaleMissedHeartbeats and returns their instance uids.
+// Sweep updates liveness for agents that have stopped checking in, then
+// evicts those past the stale threshold. Returns instance uids of evicted
+// agents.
+//
+// Liveness (two stages):
+//  1. Missed one HeartbeatInterval without a check-in → mark disconnected.
+//     This covers gateway-relayed agents: grex does not see per-agent TCP
+//     close when an agent dies behind an OpAMP gateway, only the absence of
+//     messages. Health bits are left as last reported so the UI can show
+//     "Disconnected" rather than inventing Unhealthy.
+//  2. Missed StaleMissedHeartbeats intervals → evict from the registry.
 func (r *Registry) Sweep(now time.Time) []string {
-	threshold := r.cfg.HeartbeatInterval * time.Duration(r.cfg.StaleMissedHeartbeats)
+	disconnectAfter := r.cfg.HeartbeatInterval
+	evictAfter := r.cfg.HeartbeatInterval * time.Duration(r.cfg.StaleMissedHeartbeats)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var evicted []string
 	for id, agent := range r.agents {
-		if now.Sub(agent.LastSeen) > threshold {
+		age := now.Sub(agent.LastSeen)
+		if agent.Connected && age > disconnectAfter {
+			agent.Connected = false
+			r.events.AgentDisconnected()
+			r.log.Info("agent disconnected (missed check-in)",
+				"instance_uid", id, "last_seen", agent.LastSeen, "age", age)
+		}
+		if age > evictAfter {
 			delete(r.agents, id)
 			evicted = append(evicted, id)
 			r.events.AgentEvicted()
