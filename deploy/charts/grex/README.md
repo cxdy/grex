@@ -20,6 +20,17 @@ helm install grex grex/grex --namespace grex --create-namespace
 helm install grex ./deploy/charts/grex --namespace grex --create-namespace
 ```
 
+## Local smoke test (kind / k3d)
+
+```sh
+make helm-e2e-kind    # or: make helm-e2e-k3d / make helm-e2e
+# same script CI uses:
+./deploy/charts/smoke.sh --provider kind
+```
+
+Builds the repo `Dockerfile`, loads `grex:e2e` into the cluster, installs with
+`deploy/charts/ci/values-e2e.yaml`, checks health/API/UI, and runs `helm test`.
+
 ## Documentation
 
 - [Deploy with Helm](https://dennisme.github.io/grex/admin/helm/) — how-to

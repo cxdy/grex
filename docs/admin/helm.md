@@ -242,6 +242,31 @@ helm uninstall grex -n grex
 
 ConfigMap changes roll the Deployment via a content checksum annotation.
 
+## Local cluster smoke test (kind / k3d)
+
+From a git checkout you can exercise a real install without a remote registry.
+The script builds the Dockerfile image, loads it into a disposable cluster,
+installs the chart with `deploy/charts/ci/values-e2e.yaml`, asserts
+`/healthz`, `/readyz`, metrics, `/api/status`, the UI, and runs `helm test`.
+
+Prerequisites: Docker, `kubectl`, Helm, and either
+[kind](https://kind.sigs.k8s.io/) or [k3d](https://k3d.io/) (k3s-in-Docker).
+
+```sh
+make helm-e2e            # auto-pick kind or k3d
+make helm-e2e-kind       # force kind
+make helm-e2e-k3d        # force k3d (k3s)
+
+# or:
+./deploy/charts/smoke.sh --provider kind
+./deploy/charts/smoke.sh --provider k3d --keep   # leave cluster for debugging
+./deploy/charts/smoke.sh --skip-build            # reuse grex:e2e image
+```
+
+CI runs the same script against kind (`.github/workflows/helm.yml` job
+`e2e-kind`). Compose remains the multi-collector lab; this path validates the
+**Kubernetes package** only (no agents).
+
 ## Troubleshooting
 
 | Symptom | Check |
@@ -251,12 +276,14 @@ ConfigMap changes roll the Deployment via a content checksum annotation.
 | Empty fleet UI | Collectors not reaching OpAMP Service; path must include `/v1/opamp` |
 | Ready never true | Readiness is `/readyz` on telemetry; ensure port 9090 is free and probes match |
 | ServiceMonitor ignored | Prometheus Operator CRDs missing, or label selectors do not match your Prometheus |
+| kind/k3d smoke fails | `kubectl -n grex-e2e describe pod`, logs; ensure Docker can pull `busybox` for `helm test` |
 
 Validate a values file without installing:
 
 ```sh
 helm template grex grex/grex -f grex-values.yaml | less
 helm lint deploy/charts/grex   # from a git checkout
+make helm-lint
 ```
 
 ## Next steps

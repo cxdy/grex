@@ -513,8 +513,12 @@ the gateway's connect handshake needs grex to answer `connectResult`.
 
 - **CI (GitHub Actions):** on every PR and push to main run `golangci-lint`,
   `go test ./...` with race detector, and a build of the compose stack to keep
-  the dev environment honest. Chart changes additionally run `helm lint` and
-  `helm template` (`.github/workflows/helm.yml`).
+  the dev environment honest. Chart changes additionally run `helm lint`,
+  `helm template`, and a kind end-to-end install via `deploy/charts/smoke.sh`
+  (`.github/workflows/helm.yml` job `e2e-kind`): build the Dockerfile image,
+  load into kind, `helm upgrade --install`, assert `/healthz` `/readyz`
+  metrics API UI, and `helm test`. The same script is the local path for kind
+  or k3d (`make helm-e2e-kind` / `make helm-e2e-k3d`).
 - **Versioning:** semver computed with [`svu`](https://github.com/caarlos0/svu)
   from conventional commit history; a release workflow tags `$(svu next)`.
 - **Releases:** [GoReleaser](https://goreleaser.com/) builds:

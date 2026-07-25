@@ -5,10 +5,20 @@ on:
     branches: [main]
     paths:
       - "deploy/charts/**"
+      - "Dockerfile"
+      - "cmd/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
       - ".github/workflows/helm.yml"
   pull_request:
     paths:
       - "deploy/charts/**"
+      - "Dockerfile"
+      - "cmd/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
       - ".github/workflows/helm.yml"
   workflow_dispatch:
 
@@ -40,3 +50,31 @@ jobs:
             >/dev/null
       - name: Package chart
         run: helm package deploy/charts/grex --destination /tmp
+
+  # Same entrypoint as local `make helm-e2e-kind` / deploy/charts/smoke.sh.
+  e2e-kind:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: grex-e2e
+          wait: 120s
+      - name: Chart smoke (build, load, install, assert)
+        run: |
+          chmod +x deploy/charts/smoke.sh
+          # kind-action already created the cluster; reuse it.
+          ./deploy/charts/smoke.sh --provider kind --no-create
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n grex-e2e get all,cm,sa -o wide || true
+          kubectl -n grex-e2e describe deploy,pods || true
+          kubectl -n grex-e2e logs -l app.kubernetes.io/instance=grex --tail=200 || true
+          cat /tmp/grex-helm-smoke-pf.log 2>/dev/null || true

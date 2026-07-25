@@ -1,4 +1,4 @@
-.PHONY: init build test coverage lint markdownlint pre-commit compose-up compose-down demo-static docs helm-lint helm-package
+.PHONY: init build test coverage lint markdownlint pre-commit compose-up compose-down demo-static docs helm-lint helm-package helm-e2e helm-e2e-kind helm-e2e-k3d
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
@@ -80,3 +80,14 @@ helm-package:
 	mkdir -p dist/charts
 	helm package deploy/charts/grex --destination dist/charts
 	helm repo index dist/charts --url https://dennisme.github.io/grex/charts
+
+# End-to-end chart install into kind or k3d (auto-detect). Requires docker,
+# kubectl, helm, and kind or k3d. See deploy/charts/smoke.sh --help.
+helm-e2e:
+	./deploy/charts/smoke.sh
+
+helm-e2e-kind:
+	./deploy/charts/smoke.sh --provider kind
+
+helm-e2e-k3d:
+	./deploy/charts/smoke.sh --provider k3d

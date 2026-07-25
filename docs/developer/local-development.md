@@ -23,14 +23,19 @@ deploy/compose/smoke.sh
 make compose-down
 ```
 
-Helm chart (requires `helm`):
+Helm chart (requires `helm`; e2e also needs Docker + kind or k3d):
 
 ```sh
 make helm-lint                 # lint + template render
 make helm-package              # package into dist/charts/
-# or install into a local cluster:
+make helm-e2e-kind             # build image, kind cluster, install, smoke + helm test
+make helm-e2e-k3d              # same with k3d (k3s)
+# or install into an existing cluster:
 helm install grex ./deploy/charts/grex -n grex --create-namespace
 ```
+
+See [Deploy with Helm](../admin/helm.md#local-cluster-smoke-test-kind--k3d)
+and `deploy/charts/smoke.sh --help`.
 
 ## Suggested workflow
 
