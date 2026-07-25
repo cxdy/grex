@@ -59,9 +59,10 @@ services:
       retries: 12
 
   opamp-gateway:
-    # Built from source: opampgateway v1.10.0 never wires its upstream TLS
-    # settings into the websocket dialer, so the stock observIQ image cannot
-    # do mTLS to grex. The build patches that (accepted fork-and-fix risk).
+    # Built from source against a grex fork branch: opampgateway v1.10.0
+    # never wires its upstream TLS settings into the websocket dialer, so
+    # the stock observIQ image cannot do mTLS to grex. See
+    # deploy/compose/opamp-gateway-build/manifest.yaml.
     build: deploy/compose/opamp-gateway-build
     command: ["--config", "/etc/otelcol/config.yaml"]
     volumes:
