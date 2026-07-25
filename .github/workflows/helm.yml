@@ -26,7 +26,7 @@ permissions:
   contents: read
 
 jobs:
-  lint:
+  helm-lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,7 +54,7 @@ jobs:
   # Same entrypoint as local `make helm-e2e-kind` / deploy/charts/smoke.sh.
   e2e-kind:
     runs-on: ubuntu-latest
-    needs: lint
+    needs: helm-lint
     steps:
       - uses: actions/checkout@v4
       - name: Set up Helm
