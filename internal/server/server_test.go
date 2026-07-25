@@ -236,8 +236,20 @@ func TestShutdownClosesListeners(t *testing.T) {
 	if err := s.Shutdown(ctx); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
-	if _, err := net.DialTimeout("tcp", addr, time.Second); err == nil {
-		t.Error("telemetry listener still accepting after Shutdown")
+	// TCP teardown at the OS level isn't necessarily atomic with Shutdown
+	// returning, so poll briefly rather than asserting on a single Dial.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		if err != nil {
+			return
+		}
+		_ = conn.Close()
+		if time.Now().After(deadline) {
+			t.Error("telemetry listener still accepting after Shutdown")
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
