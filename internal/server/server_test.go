@@ -206,10 +206,11 @@ func TestOpAMPHandlerMounted(t *testing.T) {
 }
 
 func TestUIHandlerMounted(t *testing.T) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/agents", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	s := New(testConfig(), testLogger(), OpAMP{}, UI{AgentsHandler: handler}, metrics.NewRegistry(), prometheus.NewRegistry())
+	s := New(testConfig(), testLogger(), OpAMP{}, UI{Handler: mux}, metrics.NewRegistry(), prometheus.NewRegistry())
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -221,9 +222,6 @@ func TestUIHandlerMounted(t *testing.T) {
 
 	if code, _ := get(t, "http://"+s.UIAddr()+"/api/agents"); code != http.StatusOK {
 		t.Errorf("/api/agents = %d, want 200 from mounted handler", code)
-	}
-	if code, _ := get(t, "http://"+s.UIAddr()+"/other"); code != http.StatusNotImplemented {
-		t.Errorf("/other = %d, want 501", code)
 	}
 }
 

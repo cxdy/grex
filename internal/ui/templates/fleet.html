@@ -1,0 +1,86 @@
+{{define "fleet.html"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body>
+  {{template "header" .}}
+  <main class="main">
+    <h1 class="page-title">Fleet</h1>
+
+    <form class="filters" method="get" action="/" role="search">
+      <div class="filters-toolbar">
+        <div class="filters-status">
+          <div class="field">
+            <label for="healthy">Health</label>
+            <select id="healthy" name="healthy">
+              <option value="" {{if eq .Healthy ""}}selected{{end}}>Any</option>
+              <option value="true" {{if eq .Healthy "true"}}selected{{end}}>Healthy</option>
+              <option value="false" {{if eq .Healthy "false"}}selected{{end}}>Unhealthy</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="connected">Connection</label>
+            <select id="connected" name="connected">
+              <option value="" {{if eq .Connected ""}}selected{{end}}>Any</option>
+              <option value="true" {{if eq .Connected "true"}}selected{{end}}>Connected</option>
+              <option value="false" {{if eq .Connected "false"}}selected{{end}}>Disconnected</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="via_gateway">Via gateway</label>
+            <select id="via_gateway" name="via_gateway">
+              <option value="" {{if eq .ViaGateway ""}}selected{{end}}>Any</option>
+              <option value="true" {{if eq .ViaGateway "true"}}selected{{end}}>Yes</option>
+              <option value="false" {{if eq .ViaGateway "false"}}selected{{end}}>No (direct)</option>
+            </select>
+          </div>
+        </div>
+        <div class="filter-actions">
+          <button type="submit" class="btn">Apply</button>
+          {{if hasFilter .}}
+          <a class="btn btn-ghost" href="/">Clear</a>
+          {{end}}
+        </div>
+      </div>
+
+      <div class="filters-labels">
+        <div class="filters-labels-head">
+          <span class="filters-section-label">Label filters</span>
+          <p class="field-hint">
+            Type a key, choose <code>=</code> <code>!=</code> <code>=~</code> <code>!~</code>, then a value · click a chip to edit
+          </p>
+        </div>
+        <div class="matcher-field" data-matcher data-matches="{{range .Matches}}{{.}}&#10;{{end}}">
+          <label class="visually-hidden" for="matcher-input">Attribute label filter</label>
+          <div class="matcher-chips" aria-live="polite"></div>
+          <div class="matcher-wrap">
+            <input
+              id="matcher-input"
+              class="matcher-input"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="service.name = otelcol-contrib"
+              aria-autocomplete="list"
+              aria-controls="matcher-suggest"
+              aria-expanded="false"
+            >
+            <ul id="matcher-suggest" class="matcher-suggest" role="listbox" hidden></ul>
+          </div>
+        </div>
+      </div>
+    </form>
+
+    <div
+      id="fleet-table"
+      hx-get="/partials/agents{{pollQuery .Query}}"
+      hx-trigger="every {{.PollInterval}}"
+      hx-swap="innerHTML"
+      hx-indicator=".htmx-indicator"
+    >
+      {{template "partials/agents.html" .}}
+    </div>
+  </main>
+</body>
+</html>
+{{end}}

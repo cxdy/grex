@@ -1,0 +1,110 @@
+{{define "partials/agents.html"}}
+<div class="table-wrap">
+  {{if eq .Total 0}}
+  <div class="empty">
+    <strong>{{if hasFilter .}}No agents match{{else}}No agents connected{{end}}</strong>
+    {{if hasFilter .}}
+    Try clearing filters or wait for collectors to report.
+    {{else}}
+    Waiting for OpAMP agents to check in.
+    {{end}}
+  </div>
+  {{else}}
+  <table class="fleet">
+    <thead>
+      <tr>
+        <th scope="col" aria-sort="{{sortAria "status" .Sort .Order}}">
+          <a class="{{sortClass "status" .Sort .Order}}" href="{{sortHref .Query "status" .Sort .Order}}">Status</a>
+        </th>
+        <th scope="col" aria-sort="{{sortAria "name" .Sort .Order}}">
+          <a class="{{sortClass "name" .Sort .Order}}" href="{{sortHref .Query "name" .Sort .Order}}">Name</a>
+        </th>
+        <th scope="col" aria-sort="{{sortAria "role" .Sort .Order}}">
+          <a class="{{sortClass "role" .Sort .Order}}" href="{{sortHref .Query "role" .Sort .Order}}">Role</a>
+        </th>
+        <th scope="col" aria-sort="{{sortAria "version" .Sort .Order}}">
+          <a class="{{sortClass "version" .Sort .Order}}" href="{{sortHref .Query "version" .Sort .Order}}">Version</a>
+        </th>
+        <th scope="col">Attributes</th>
+        <th scope="col" aria-sort="{{sortAria "via" .Sort .Order}}">
+          <a class="{{sortClass "via" .Sort .Order}}" href="{{sortHref .Query "via" .Sort .Order}}">Via</a>
+        </th>
+        <th scope="col" aria-sort="{{sortAria "transport" .Sort .Order}}">
+          <a class="{{sortClass "transport" .Sort .Order}}" href="{{sortHref .Query "transport" .Sort .Order}}">Transport</a>
+        </th>
+        <th scope="col" aria-sort="{{sortAria "last_seen" .Sort .Order}}">
+          <a class="{{sortClass "last_seen" .Sort .Order}}" href="{{sortHref .Query "last_seen" .Sort .Order}}">Last seen</a>
+        </th>
+        <th scope="col" aria-sort="{{sortAria "instance" .Sort .Order}}">
+          <a class="{{sortClass "instance" .Sort .Order}}" href="{{sortHref .Query "instance" .Sort .Order}}">Instance</a>
+        </th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Agents}}
+      <tr>
+        <td>
+          <span class="badge {{statusClass .}}" title="{{statusTitle .}}">
+            <span class="badge-dot" aria-hidden="true"></span>
+            {{statusLabel .}}
+          </span>
+        </td>
+        <td>
+          <a class="row-link" href="/agents/{{.InstanceUID}}">{{.DisplayName}}</a>
+          {{if .HostName}}<span class="cell-secondary">{{.HostName}}</span>{{end}}
+        </td>
+        <td>{{.Role}}</td>
+        <td class="mono">{{if .Version}}{{.Version}}{{else}}—{{end}}</td>
+        <td class="attrs-cell">
+          {{$chips := attrChips .}}
+          {{if $chips}}
+          <div class="attr-chips">
+            {{range $chips}}
+            <button
+              type="button"
+              class="attr-chip"
+              data-attr-key="{{index . 0}}"
+              data-attr-value="{{index . 1}}"
+              title="Filter by {{index . 0}} = {{index . 1}}"
+            ><span class="attr-chip-key">{{index . 0}}</span><span class="attr-chip-val">{{index . 1}}</span></button>
+            {{end}}
+          </div>
+          {{else}}
+          <span class="mono">—</span>
+          {{end}}
+        </td>
+        <td><span class="via-pill">{{viaLabel .Conn.ViaGateway}}</span></td>
+        <td class="mono">{{if .Conn.Transport}}{{.Conn.Transport}}{{else}}—{{end}}</td>
+        <td title="{{formatTime .LastSeen}}">{{relTime .LastSeen}}</td>
+        <td class="mono" title="{{.InstanceUID}}">{{shortUID .InstanceUID}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
+
+<div class="table-meta">
+  <span>
+    {{if gt .Total 0}}
+      Showing {{add .Offset 1}}–{{if lt (add .Offset .Limit) .Total}}{{add .Offset .Limit}}{{else}}{{.Total}}{{end}}
+      of {{.Total}}
+    {{else}}
+      0 agents
+    {{end}}
+  </span>
+  {{$pages := pageList .Total .Limit}}
+  {{if gt (len $pages) 1}}
+  <nav class="pager" aria-label="Pagination">
+    {{$cur := pageNum .Offset .Limit}}
+    {{range $pages}}
+      {{if eq . $cur}}
+      <span class="page-link is-current" aria-current="page">{{.}}</span>
+      {{else}}
+      <a class="page-link" href="/{{queryWith $.Query "offset" (printf "%d" (pageOffset . $.Limit))}}">{{.}}</a>
+      {{end}}
+    {{end}}
+  </nav>
+  {{end}}
+</div>
+{{end}}

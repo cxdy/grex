@@ -1,0 +1,16 @@
+{{define "notfound.html"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body>
+  {{template "header" .}}
+  <main class="main">
+    <div class="empty">
+      <strong>Agent not found</strong>
+      It may have disconnected and been evicted, or the link is stale.
+      <p style="margin-top:16px"><a href="/">Back to fleet</a></p>
+    </div>
+  </main>
+</body>
+</html>
+{{end}}

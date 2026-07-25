@@ -373,6 +373,49 @@ func TestSweepEvictsStaleAgents(t *testing.T) {
 	}
 }
 
+func TestSweepMarksLapsedAgentsDisconnected(t *testing.T) {
+	r, logBuf := testRegistry()
+	base := time.Now()
+	r.now = func() time.Time { return base }
+	uid := testUID()
+	r.Report(statusMsg(uid), ConnMeta{})
+	// Health report so last known health stays healthy while disconnected.
+	r.Report(&protobufs.AgentToServer{
+		InstanceUid: uid[:],
+		Health:      &protobufs.ComponentHealth{Healthy: true},
+	}, ConnMeta{})
+
+	// Still within one heartbeat: connected.
+	if evicted := r.Sweep(base.Add(29 * time.Second)); len(evicted) != 0 {
+		t.Fatalf("evicted early: %v", evicted)
+	}
+	agent, _ := r.Get(uid.String())
+	if !agent.Connected {
+		t.Error("agent disconnected before missing a full heartbeat interval")
+	}
+
+	// Past one heartbeat, before eviction window: disconnected, still listed.
+	if evicted := r.Sweep(base.Add(31 * time.Second)); len(evicted) != 0 {
+		t.Fatalf("evicted at disconnect stage: %v", evicted)
+	}
+	agent, ok := r.Get(uid.String())
+	if !ok {
+		t.Fatal("agent missing after lapse; should be retained until stale eviction")
+	}
+	if agent.Connected {
+		t.Error("Connected = true after missing a check-in interval")
+	}
+	if !agent.Healthy || !agent.HealthReported {
+		t.Error("last health report should be retained when marking disconnected")
+	}
+	if !strings.Contains(logBuf.String(), "missed check-in") {
+		t.Errorf("disconnect not logged: %q", logBuf.String())
+	}
+
+	// Second sweep while still lapsed must not double-count disconnect.
+	r.Sweep(base.Add(45 * time.Second))
+}
+
 func TestReconnectAfterEvictionReRegisters(t *testing.T) {
 	r, _ := testRegistry()
 	base := time.Now()
@@ -466,8 +509,10 @@ func TestEventsFire(t *testing.T) {
 	if events.connects != 2 {
 		t.Errorf("connects = %d, want 2 (register + reconnect)", events.connects)
 	}
-	if events.disconnects != 1 {
-		t.Errorf("disconnects = %d, want 1", events.disconnects)
+	// Explicit SetConnected(false) plus Sweep marking the reconnected agent
+	// lapsed (last_seen still at base when Sweep runs at base+1h).
+	if events.disconnects != 2 {
+		t.Errorf("disconnects = %d, want 2 (manual + sweep lapse)", events.disconnects)
 	}
 	if events.evictions != 1 {
 		t.Errorf("evictions = %d, want 1", events.evictions)

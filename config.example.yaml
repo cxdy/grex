@@ -24,6 +24,10 @@ metrics:
   # fleet exceeds this limit; aggregate series always remain.
   per_agent_series_limit: 1000
 
+ui:
+  # How often the embedded web UI refreshes fleet data (htmx poll interval).
+  poll_interval: 5s
+
 fleet:
   # How often each agent is expected to check in.
   heartbeat_interval: 30s

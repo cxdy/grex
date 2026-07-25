@@ -54,6 +54,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Debug.PprofEnabled {
 		t.Error("PprofEnabled = true, want false by default (sensitive, must opt in)")
 	}
+	if cfg.UI.PollInterval != 5*time.Second {
+		t.Errorf("UI.PollInterval = %v, want 5s", cfg.UI.PollInterval)
+	}
 }
 
 func TestLoadFullFile(t *testing.T) {

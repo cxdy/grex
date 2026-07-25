@@ -130,11 +130,18 @@ auth boundary:
   is still accepted and displayed; enforcement is observe-only in 1.0.
 - Check-in tracking: the server expects each agent to check in (any
   AgentToServer message, heartbeat or otherwise) at least once per
-  `heartbeat_interval`. An agent that misses `stale_missed_heartbeats`
-  consecutive intervals is stale: evicted from fleet state, removed from the
-  UI, and counted in `grex_agents_evicted_total`. Until it crosses that
-  threshold, a disconnected agent stays visible with its last-seen timestamp.
-  A stale agent that returns re-registers as a fresh entry.
+  `heartbeat_interval`. Liveness is two-stage so gateway-relayed agents
+  (no per-agent TCP close visible to grex) still surface correctly:
+  - Miss one `heartbeat_interval` without a check-in → mark
+    `connected=false` (UI: Disconnected). Last reported health is retained;
+    missing a check-in is not the same as reporting Unhealthy.
+  - Miss `stale_missed_heartbeats` consecutive intervals → stale: evicted
+    from fleet state, removed from the UI, counted in
+    `grex_agents_evicted_total`.
+  Until eviction, a disconnected agent stays visible with its last-seen
+  timestamp. A stale agent that returns re-registers as a fresh entry.
+  Direct OpAMP connection close still marks disconnected immediately via
+  the connection-close callback.
 
 ### Fleet state
 
@@ -158,67 +165,112 @@ auth boundary:
 
 - Purpose: JSON view over fleet registry state, consumed by the web UI and
   usable directly (scripting, other tooling) without a browser.
-- Kept intentionally small for 1.0: one endpoint, `GET /api/agents`, rather
-  than separate overview/detail/status endpoints. It returns every attribute
-  the registry holds for every agent (see "Fleet state" above for the full
-  field list), so it already covers the fleet-overview and agent-detail use
-  cases; a client filters to one `instance_uid` client-side. Per-agent-detail
-  and server-status endpoints are deferred until the UI milestone shows they
-  are actually needed, e.g. if the full list becomes too large to fetch
-  per page load.
-- `GET /api/agents?limit=N&offset=M`:
-  - `limit` optional, positive integer, default 100, capped at 1000.
-  - `offset` optional, non-negative integer, default 0.
-  - Invalid `limit`/`offset` (non-integer, non-positive limit, negative
-    offset) is a 400.
-  - Agents are sorted by `instance_uid` before paging, so pagination is
-    stable across calls even though the registry itself is a map with no
-    inherent order.
-  - Response: `{"agents": [...], "total": N, "limit": L, "offset": O}`.
-    `total` reflects the filtered set (see below), not the whole fleet, when
-    a filter is applied; `offset` echoes the requested value even if it is
-    past the end (in which case `agents` is empty).
-  - Each agent's `capabilities` bitmask ships alongside a decoded
-    `capability_flags` object (named booleans), so clients never need
-    bitmask math.
-  - Filtering: any query param other than `limit`/`offset` is a filter.
-    Three well-known keys filter on top-level fields as `true`/`false`
-    (invalid values are a 400): `healthy`, `connected`, `via_gateway`. Any
-    other key is an exact-match filter against `AgentDescription`
-    attributes, checked against `identifying_attributes` first, then
-    `non_identifying_attributes`, e.g.
-    `?service.name=otelcol-contrib&deployment.environment=dev`. Multiple
-    filter params are ANDed, e.g. `?healthy=false&service.name=otelcol-contrib`.
-    The well-known keys take precedence: an agent-reported attribute
-    literally named `healthy` cannot be attribute-filtered, since the
-    top-level field always wins for that key; the registry counts this
-    shadowing as it happens (`grex_agent_reserved_attribute_conflicts_total`,
-    see Metrics below). Filtering happens before pagination, so `total` and
-    `limit`/`offset` apply to the filtered result, not the full fleet.
-- Same auth boundary as the UI (OIDC session, `viewer`/`admin`), same
-  listener, mounted alongside it (`server.UI{AgentsHandler: ...}`, the same
-  pattern as `server.OpAMP{Handler: ...}`). Read-only: no endpoint accepts a
-  write in 1.0.
+- Three read endpoints on the UI listener (same auth boundary as the UI).
+  Until the auth milestones land, the UI listener is open.
+
+#### `GET /api/agents`
+
+Paginated, filtered fleet list. Sorted by `instance_uid` before paging so
+pages are stable. Invalid pagination or filter values are 400.
+
+- **Pagination:** `limit` (default 100, cap 1000), `offset` (default 0).
+- **Filtering:** any query param other than `limit`/`offset` (and UI-only
+  form helpers `attr_key`/`attr_value`) is a filter. Multiple params are
+  ANDed. Filtering happens before pagination, so `total` is the filtered
+  set size.
+  - Well-known top-level booleans (`true`/`false`, invalid → 400):
+    `healthy`, `connected`, `via_gateway`. These take precedence over any
+    agent-reported attribute of the same name; the registry counts
+    shadowing via `grex_agent_reserved_attribute_conflicts_total` (see
+    Metrics).
+  - Any other key is an exact-match filter against `AgentDescription`
+    attributes (`identifying_attributes` first, then
+    `non_identifying_attributes`), e.g.
+    `?service.name=otelcol-contrib&deployment.environment=dev`.
+  - UI freeform attribute form fields `attr_key` + `attr_value` are
+    folded into a single attribute filter.
+- **Response:**
+  `{"agents": [...], "total": N, "limit": L, "offset": O}`.
+- **Projection (compact):** list items omit bulky fields the table never
+  needs — no `effective_config`, no `packages`. They include registry
+  summary fields plus computed helpers:
+  - `role` — see role heuristic below
+  - `display_name` — `service.name`, else `host.name`, else instance uid
+  - `host_name` — `host.name` when present
+  - `version` — `service.version` when present
+  - `capability_flags` (decoded booleans) alongside the raw `capabilities`
+    bitmask
+
+#### `GET /api/agents/{instance_uid}`
+
+Full agent document (every registry field including `effective_config` and
+`packages`, plus the same computed helpers). 404 when unknown.
+
+#### `GET /api/status`
+
+Server + fleet summary for the status page:
+
+- grex `version`, `commit`, `go_version`, `started_at`, `uptime_seconds`
+- fleet counts: `total`, `connected`, `disconnected`, `healthy`,
+  `unhealthy`, `health_unknown` (not yet reported), `awaiting_full_state`
+
+Read-only: no endpoint accepts a write in 1.0.
+
+#### Role heuristic
+
+OpAMP does not define agent vs gateway type. grex exposes a best-effort
+`role` string:
+
+1. If `service.component` is set (identifying or non-identifying), use it.
+2. Else if `service.name` contains `gateway` (case-insensitive), `"Gateway"`.
+3. Else `"Collector"`.
+
+`via_gateway` is a **connection** fact, not a type: agents behind an OpAMP
+gateway remain collectors.
 
 ### Web UI
 
-- Purpose: visualize the fleet. Read-only. Renders the read API; adds no
-  fleet-state logic of its own.
-- Pages:
-  - **Fleet overview** — table of agents: identity, type (agent/gateway),
-    version, health, last seen, connection transport. Shows connected and
-    not-yet-stale disconnected agents; evicted agents do not appear.
-  - **Agent detail** — full attribute set, health history for the session,
-    effective configuration (rendered YAML), capabilities, connection info.
-  - **Server status** — grex version, uptime, connected/stale counts, summary
-    of fleet health.
-- Served by the grex binary (embedded assets via `go:embed`) so a single
-  artifact deploys everything.
-- Stack: server-rendered `html/template` with [htmx](https://htmx.org/) for
-  polling refresh and partial page swaps. No Node toolchain; the only static
-  asset beyond templates is the htmx script, vendored and embedded. If the
-  template count grows past what stdlib templates handle cleanly, migrating to
-  [templ](https://github.com/a-h/templ) is the designated escape hatch.
+- Purpose: visualize the fleet. Read-only. Server-rendered views over the
+  read API; no fleet-state logic of its own beyond presentation helpers
+  (relative time, role/display name already computed by the API).
+- **Pages:**
+  - **Fleet overview** (`/`) — filter bar + dense table. Columns: status
+    (health + connected), display name (`service.name` primary, `host.name`
+    secondary), role, version, attributes (identifying + non-identifying as
+    compact chips), via (direct/gateway), transport, last seen, truncated
+    instance uid. Connected and not-yet-stale disconnected agents appear;
+    evicted agents do not. Filters map to the list API: `healthy`,
+    `connected`, `via_gateway`, freeform attribute key/value
+    (`attr_key`/`attr_value` → `?key=value`). Pagination prev/next with
+    `limit=100`. Auto-refreshes via htmx poll.
+  - **Agent detail** (`/agents/{instance_uid}`) — full attributes, health,
+    capabilities, connection info, effective configuration (YAML per file
+    key). Deep-linkable; 404 page when unknown. **No auto-refresh** (so
+    config scroll position is preserved); a manual Refresh button reloads
+    the partial on demand.
+  - **Server status** (`/status`) — grex version/uptime and fleet summary
+    counts from `GET /api/status`; auto-refreshes via htmx poll.
+- **Live updates:** [htmx](https://htmx.org/) polls HTML partials on the
+  fleet and status pages. Interval from `ui.poll_interval` (default `5s`,
+  override `GREX_UI_POLL_INTERVAL`). Filter query string is preserved on
+  poll URLs. `prefers-reduced-motion` respected for transitions.
+- **Stack:** `html/template` + vendored htmx + hand-written CSS design
+  tokens. No Node toolchain, no CDN at runtime. Assets embedded via
+  `go:embed` (templates, CSS, htmx, optimized logo mark/favicon — not the
+  full multi-MB README logo). If template count grows past what stdlib
+  templates handle cleanly, [templ](https://github.com/a-h/templ) is the
+  designated escape hatch.
+- **Visual system:** dark ops UI complementary to the grex logo palette:
+  - Background charcoal/slate `#263135` / elevated `#2A3438`
+  - Teal borders/rings `#2E5B5E`
+  - Cream text `#F5EFE6`
+  - Mint/sage accent `#98C9B1` (healthy, focus, links)
+  - Muted grey `#869296` (secondary text)
+  - Semantic unhealthy/warning accents (coral/amber) for status
+  - Dense dashboard spacing, system UI + monospace for uids/config
+  - SVG status icons (no emoji); visible focus rings; 4.5:1 contrast on
+    body text
+
 
 ### AuthN/AuthZ
 
@@ -444,7 +496,9 @@ the gateway's connect handshake needs grex to answer `connectResult`.
 3. **Telemetry** — Prometheus metrics, health probes.
 4. **Read API** — JSON endpoints over fleet registry state: fleet overview,
    agent detail, server status.
-5. **Web UI** — embedded `html/template` + htmx pages rendering the read API.
+5. **Web UI** — embedded `html/template` + htmx pages rendering the read API
+   (fleet overview with server-side filters, agent detail, server status;
+   configurable poll interval; logo-complementary dark theme).
 6. **Auth: mTLS** — TLS termination plus required client certificates on the
    UI/API listener, reusing the mTLS plumbing built for the OpAMP listener
    in milestone 2. Identity comes from the client cert's SPIFFE ID (URI SAN,

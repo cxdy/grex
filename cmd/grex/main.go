@@ -15,6 +15,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"net/http"
+
 	"github.com/dennisme/grex/internal/api"
 	"github.com/dennisme/grex/internal/buildinfo"
 	"github.com/dennisme/grex/internal/config"
@@ -22,6 +24,7 @@ import (
 	"github.com/dennisme/grex/internal/metrics"
 	"github.com/dennisme/grex/internal/opamp"
 	"github.com/dennisme/grex/internal/server"
+	"github.com/dennisme/grex/internal/ui"
 )
 
 const (
@@ -79,12 +82,19 @@ func run() error {
 		return err
 	}
 
+	startedAt := time.Now()
 	httpMetrics := metrics.NewHTTPMetrics(serverMetrics)
-	agentsHandler := httpMetrics.Instrument("/api/agents", api.New(registry))
+	uiMux := http.NewServeMux()
+	api.New(registry, startedAt).Mount(uiMux, httpMetrics.Instrument)
+	uiHandler, err := ui.New(registry, ui.Config{PollInterval: cfg.UI.PollInterval}, startedAt)
+	if err != nil {
+		return fmt.Errorf("ui: %w", err)
+	}
+	uiHandler.Mount(uiMux)
 
 	srv := server.New(cfg, logger,
 		server.OpAMP{Handler: handler, ConnContext: connCtx},
-		server.UI{AgentsHandler: agentsHandler},
+		server.UI{Handler: uiMux},
 		serverMetrics, fleetMetrics)
 	if err := srv.Start(); err != nil {
 		return err

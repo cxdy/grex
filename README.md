@@ -33,6 +33,11 @@ two Prometheus endpoints: `/metrics` (server health) and `/metrics/fleet`
 (fleet series), separated so they can be scraped as independent jobs with
 independent limits.
 
+The UI listener (default `:8080`) serves the fleet web UI (`/`,
+`/agents/{id}`, `/status`) and the JSON read API (`/api/agents`,
+`/api/agents/{id}`, `/api/status`). The UI auto-refreshes via htmx; interval
+is `ui.poll_interval` (default `5s`).
+
 ## Compose dev stack
 
 Requires Docker with Compose v2.

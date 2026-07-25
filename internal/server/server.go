@@ -33,11 +33,12 @@ type OpAMP struct {
 	ConnContext func(ctx context.Context, c net.Conn) context.Context
 }
 
-// UI carries the handlers mounted on the UI listener. A zero value leaves
-// the listener as a 501 stub.
+// UI carries the root handler mounted on the UI listener. A zero value leaves
+// the listener as a 501 stub. The handler typically serves the read API,
+// embedded web UI, and static assets.
 type UI struct {
-	// AgentsHandler serves GET /api/agents.
-	AgentsHandler http.Handler
+	// Handler is the root handler for the UI listener.
+	Handler http.Handler
 }
 
 // Server owns the grex listeners and their lifecycles.
@@ -111,11 +112,8 @@ func New(cfg *config.Config, logger *slog.Logger, opamp OpAMP, ui UI, serverRegi
 	}
 
 	uiHandler := http.Handler(notImplemented)
-	if ui.AgentsHandler != nil {
-		uiMux := http.NewServeMux()
-		uiMux.Handle("/api/agents", ui.AgentsHandler)
-		uiMux.Handle("/", notImplemented)
-		uiHandler = uiMux
+	if ui.Handler != nil {
+		uiHandler = ui.Handler
 	}
 
 	return &Server{

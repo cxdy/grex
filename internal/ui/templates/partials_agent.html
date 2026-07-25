@@ -1,0 +1,109 @@
+{{define "partials/agent.html"}}
+{{with .Agent}}
+<h1 class="page-title">{{.DisplayName}}</h1>
+<p class="mono detail-uid">{{.InstanceUID}}</p>
+
+<div class="stat-row">
+  <div class="stat">
+    <div class="label">Status</div>
+    <div class="value value-sm">
+      <span class="badge {{statusClass .}}" title="{{statusTitle .}}"><span class="badge-dot"></span>{{statusLabel .}}</span>
+    </div>
+  </div>
+  <div class="stat">
+    <div class="label">Role</div>
+    <div class="value value-md">{{.Role}}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Version</div>
+    <div class="value value-md">{{if .Version}}{{.Version}}{{else}}—{{end}}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Last seen</div>
+    <div class="value value-md" title="{{formatTime .LastSeen}}">{{relTime .LastSeen}}</div>
+  </div>
+</div>
+
+<div class="grid">
+  <section class="card">
+    <h2>Connection</h2>
+    <div class="kv-list">
+      <div class="kv-row"><span class="kv-key">Connected</span><span class="kv-val">{{if .Connected}}yes{{else}}no{{end}}</span></div>
+      <div class="kv-row"><span class="kv-key">Via</span><span class="kv-val">{{viaLabel .Conn.ViaGateway}}</span></div>
+      <div class="kv-row"><span class="kv-key">Transport</span><span class="kv-val mono">{{if .Conn.Transport}}{{.Conn.Transport}}{{else}}—{{end}}</span></div>
+      <div class="kv-row"><span class="kv-key">Remote</span><span class="kv-val mono">{{if .Conn.RemoteAddr}}{{.Conn.RemoteAddr}}{{else}}—{{end}}</span></div>
+      <div class="kv-row"><span class="kv-key">TLS subject</span><span class="kv-val mono">{{if .Conn.TLSSubject}}{{.Conn.TLSSubject}}{{else}}—{{end}}</span></div>
+      <div class="kv-row"><span class="kv-key">First seen</span><span class="kv-val">{{formatTime .FirstSeen}}</span></div>
+      <div class="kv-row"><span class="kv-key">Sequence</span><span class="kv-val mono">{{.SequenceNum}}</span></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Health</h2>
+    <div class="kv-list">
+      <div class="kv-row"><span class="kv-key">Reported</span><span class="kv-val">{{if .HealthReported}}yes{{else}}no{{end}}</span></div>
+      <div class="kv-row"><span class="kv-key">Healthy</span><span class="kv-val">{{if .HealthReported}}{{if .Healthy}}yes{{else}}no{{end}}{{else}}—{{end}}</span></div>
+      <div class="kv-row"><span class="kv-key">Status</span><span class="kv-val">{{if .HealthStatus}}{{.HealthStatus}}{{else}}—{{end}}</span></div>
+      <div class="kv-row"><span class="kv-key">Error</span><span class="kv-val">{{if .HealthError}}{{.HealthError}}{{else}}—{{end}}</span></div>
+      <div class="kv-row"><span class="kv-key">Start time</span><span class="kv-val">{{formatTime .HealthStartTime}}</span></div>
+      <div class="kv-row"><span class="kv-key">Status time</span><span class="kv-val">{{formatTime .HealthStatusTime}}</span></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Identifying attributes</h2>
+    {{$pairs := attrPairs .Identifying}}
+    {{if $pairs}}
+    <div class="kv-list">
+      {{range $pairs}}
+      <div class="kv-row"><span class="kv-key mono">{{index . 0}}</span><span class="kv-val">{{index . 1}}</span></div>
+      {{end}}
+    </div>
+    {{else}}
+    <p class="empty-inline">None reported yet.</p>
+    {{end}}
+  </section>
+
+  <section class="card">
+    <h2>Non-identifying attributes</h2>
+    {{$pairs := attrPairs .NonIdentifying}}
+    {{if $pairs}}
+    <div class="kv-list">
+      {{range $pairs}}
+      <div class="kv-row"><span class="kv-key mono">{{index . 0}}</span><span class="kv-val">{{index . 1}}</span></div>
+      {{end}}
+    </div>
+    {{else}}
+    <p class="empty-inline">None reported yet.</p>
+    {{end}}
+  </section>
+
+  <section class="card card-wide">
+    <h2>Capabilities</h2>
+    <div class="kv-list">
+      <div class="kv-row"><span class="kv-key">Reports status</span><span class="kv-val">{{.CapabilityFlags.ReportsStatus}}</span></div>
+      <div class="kv-row"><span class="kv-key">Reports health</span><span class="kv-val">{{.CapabilityFlags.ReportsHealth}}</span></div>
+      <div class="kv-row"><span class="kv-key">Reports effective config</span><span class="kv-val">{{.CapabilityFlags.ReportsEffectiveConfig}}</span></div>
+      <div class="kv-row"><span class="kv-key">Reports heartbeat</span><span class="kv-val">{{.CapabilityFlags.ReportsHeartbeat}}</span></div>
+      <div class="kv-row"><span class="kv-key">Reports available components</span><span class="kv-val">{{.CapabilityFlags.ReportsAvailableComponents}}</span></div>
+      <div class="kv-row"><span class="kv-key">Accepts remote config</span><span class="kv-val">{{.CapabilityFlags.AcceptsRemoteConfig}}</span></div>
+      <div class="kv-row"><span class="kv-key">Accepts packages</span><span class="kv-val">{{.CapabilityFlags.AcceptsPackages}}</span></div>
+      <div class="kv-row"><span class="kv-key">Accepts restart</span><span class="kv-val">{{.CapabilityFlags.AcceptsRestartCommand}}</span></div>
+      <div class="kv-row"><span class="kv-key">Raw bitmask</span><span class="kv-val mono">{{.Capabilities}}</span></div>
+    </div>
+  </section>
+
+  <section class="card card-wide">
+    <h2>Effective configuration</h2>
+    {{if .EffectiveConfig}}
+      {{range $name, $body := .EffectiveConfig}}
+        <p class="config-name mono">{{if $name}}{{$name}}{{else}}(default){{end}}</p>
+        <pre class="config" data-yaml><code class="language-yaml">{{yamlDisplay $body}}</code></pre>
+      {{end}}
+    {{else}}
+    <p class="empty-inline">No effective config reported.</p>
+    {{end}}
+  </section>
+</div>
+{{end}}
+{{end}}

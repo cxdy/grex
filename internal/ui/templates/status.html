@@ -1,0 +1,21 @@
+{{define "status.html"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body>
+  {{template "header" .}}
+  <main class="main">
+    <h1 class="page-title">Server status</h1>
+    <div
+      id="status-panel"
+      hx-get="/partials/status"
+      hx-trigger="every {{.PollInterval}}"
+      hx-swap="innerHTML"
+      hx-indicator=".htmx-indicator"
+    >
+      {{template "partials/status.html" .}}
+    </div>
+  </main>
+</body>
+</html>
+{{end}}
