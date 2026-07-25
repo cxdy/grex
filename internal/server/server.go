@@ -33,6 +33,13 @@ type OpAMP struct {
 	ConnContext func(ctx context.Context, c net.Conn) context.Context
 }
 
+// UI carries the handlers mounted on the UI listener. A zero value leaves
+// the listener as a 501 stub.
+type UI struct {
+	// AgentsHandler serves GET /api/agents.
+	AgentsHandler http.Handler
+}
+
 // Server owns the grex listeners and their lifecycles.
 type Server struct {
 	log      *slog.Logger
@@ -55,7 +62,7 @@ type listener struct {
 // backs /metrics/fleet (per-fleet series), kept separate so operators can
 // scrape them as independent jobs with independent limits. Call Start to
 // bind and serve.
-func New(cfg *config.Config, logger *slog.Logger, opamp OpAMP, serverRegistry, fleetRegistry *prometheus.Registry) *Server {
+func New(cfg *config.Config, logger *slog.Logger, opamp OpAMP, ui UI, serverRegistry, fleetRegistry *prometheus.Registry) *Server {
 	// Zero value false: not ready until Start binds and begins serving.
 	ready := &atomic.Bool{}
 
@@ -103,6 +110,14 @@ func New(cfg *config.Config, logger *slog.Logger, opamp OpAMP, serverRegistry, f
 		opampHandler = opampMux
 	}
 
+	uiHandler := http.Handler(notImplemented)
+	if ui.AgentsHandler != nil {
+		uiMux := http.NewServeMux()
+		uiMux.Handle("/api/agents", ui.AgentsHandler)
+		uiMux.Handle("/", notImplemented)
+		uiHandler = uiMux
+	}
+
 	return &Server{
 		log:      logger,
 		cfg:      cfg,
@@ -114,7 +129,7 @@ func New(cfg *config.Config, logger *slog.Logger, opamp OpAMP, serverRegistry, f
 				ConnContext:       opamp.ConnContext,
 				ReadHeaderTimeout: 10 * time.Second,
 			}},
-			"ui":        {addr: cfg.Listeners.UI, srv: &http.Server{Handler: notImplemented, ReadHeaderTimeout: 10 * time.Second}},
+			"ui":        {addr: cfg.Listeners.UI, srv: &http.Server{Handler: uiHandler, ReadHeaderTimeout: 10 * time.Second}},
 			"telemetry": {addr: cfg.Listeners.Telemetry, srv: &http.Server{Handler: telemetryMux, ReadHeaderTimeout: 10 * time.Second}},
 		},
 		fatal: make(chan error, 3),

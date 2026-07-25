@@ -50,7 +50,7 @@ func startStack(t *testing.T, certs testcert.Certs) (string, *fleet.Registry) {
 		Fleet: config.Fleet{HeartbeatInterval: 30 * time.Second, StaleMissedHeartbeats: 3},
 		Log:   config.Log{Level: "info", Format: "text"},
 	}
-	srv := server.New(cfg, logger, server.OpAMP{Handler: httpHandler, ConnContext: connCtx}, metrics.NewRegistry(), prometheus.NewRegistry())
+	srv := server.New(cfg, logger, server.OpAMP{Handler: httpHandler, ConnContext: connCtx}, server.UI{}, metrics.NewRegistry(), prometheus.NewRegistry())
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

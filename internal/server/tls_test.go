@@ -21,7 +21,7 @@ func startTLSServer(t *testing.T, certs testcert.Certs, mtls bool) *Server {
 	if mtls {
 		cfg.TLS.ClientCAFile = certs.CAFile
 	}
-	s := New(cfg, testLogger(), OpAMP{}, metrics.NewRegistry(), prometheus.NewRegistry())
+	s := New(cfg, testLogger(), OpAMP{}, UI{}, metrics.NewRegistry(), prometheus.NewRegistry())
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
