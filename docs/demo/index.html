@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>grex · Demo fleet</title>
+  <link rel="icon" href="static/favicon.png" type="image/png">
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("grex-theme");
+        if (t !== "light" && t !== "dark") {
+          t = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        }
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {
+        document.documentElement.setAttribute("data-theme", "dark");
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="static/app.css">
+  <link rel="stylesheet" href="demo.css">
+  <script src="static/theme.js" defer></script>
+  <script src="static/matcher.js" defer></script>
+  <script src="demo.js" defer></script>
+</head>
+<body class="demo-body">
+  <aside class="demo-banner" role="status">
+    <div class="demo-banner-inner">
+      <strong>Static demo</strong>
+      <span>Sample fleet data generated in your browser — not a live grex server.</span>
+      <span class="demo-banner-actions">
+        <button type="button" class="btn btn-ghost demo-banner-btn" id="reshuffle">Reshuffle data</button>
+        <a class="btn btn-ghost demo-banner-btn" id="docs-link" href="../">Docs</a>
+      </span>
+    </div>
+  </aside>
+
+  <header class="app-header">
+    <a class="brand" href="#/">
+      <img src="static/logo-mark.png" srcset="static/logo-mark.png 1x, static/logo-mark@2x.png 2x" width="32" height="32" alt="">
+      grex
+      <span class="demo-pill">demo</span>
+    </a>
+    <nav class="nav" aria-label="Primary">
+      <a href="#/" id="nav-fleet">Fleet</a>
+      <a href="#/status" id="nav-status">Status</a>
+    </nav>
+    <div class="header-meta">
+      <span class="live-dot" title="Static snapshot">Demo</span>
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle color theme" title="Toggle theme">
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="4"/>
+          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+        </svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M21 14.5A8.5 8.5 0 0 1 9.5 3 7 7 0 1 0 21 14.5z"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="main" id="app" aria-live="polite"></main>
+</body>
+</html>

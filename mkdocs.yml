@@ -8,6 +8,7 @@ copyright: Copyright &copy; grex contributors — Apache-2.0
 
 theme:
   name: material
+  custom_dir: overrides
   logo: assets/logo.png
   favicon: assets/logo.png
   palette:
@@ -66,6 +67,9 @@ extra:
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/dennisme/grex
+
+extra_css:
+  - stylesheets/extra.css
 
 nav:
   - Home: index.md

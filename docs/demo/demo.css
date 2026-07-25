@@ -1,0 +1,128 @@
+/* Demo-only chrome on top of the real grex app.css */
+
+.demo-body {
+  /* Banner sits above the sticky header */
+  --demo-banner-h: 44px;
+}
+
+.demo-banner {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: var(--accent-dim);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+
+.demo-banner-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: var(--space-2) var(--space-4);
+  min-height: var(--demo-banner-h);
+}
+
+.demo-banner-inner strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.demo-banner-inner > span:not(.demo-banner-actions) {
+  color: var(--text-muted);
+  flex: 1 1 12rem;
+}
+
+.demo-banner-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.demo-banner-btn {
+  font-size: var(--text-xs);
+  padding: 4px 10px;
+}
+
+.demo-pill {
+  display: inline-block;
+  margin-left: var(--space-2);
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--on-accent);
+  background: var(--accent);
+  vertical-align: middle;
+}
+
+.brand .demo-pill {
+  text-decoration: none;
+}
+
+/* Hash-router nav current state */
+.nav a.is-current {
+  color: var(--accent);
+}
+
+/* Compact config pre in detail view */
+.demo-config {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--text);
+}
+
+.config-name {
+  margin: var(--space-3) 0 var(--space-1);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.empty-inline {
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.detail-uid {
+  color: var(--text-muted);
+  margin: calc(-1 * var(--space-2)) 0 var(--space-4);
+  font-size: var(--text-sm);
+}
+
+.detail-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.back-link {
+  font-size: var(--text-sm);
+}
+
+/* Seed footer on status */
+.demo-meta {
+  margin-top: var(--space-4);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.demo-scale-hint {
+  margin: calc(-1 * var(--space-3)) 0 var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}

@@ -1,0 +1,63 @@
+/* Header Demo link — compact chip aligned with search/repo, not a tab */
+
+.grex-header-demo {
+  /* Sit in the header action row without inheriting icon-button geometry */
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  height: 1.35rem;
+  margin: 0 0.35rem 0 0.25rem;
+  padding: 0 0.5rem;
+  border-radius: 0.2rem;
+  border: 1px solid color-mix(in srgb, var(--md-primary-bg-color, #fff) 45%, transparent);
+  background: color-mix(in srgb, var(--md-primary-bg-color, #fff) 12%, transparent);
+  color: var(--md-primary-bg-color, #fff) !important;
+  font-family: var(--md-text-font-family);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  line-height: 1;
+  text-transform: uppercase;
+  text-decoration: none !important;
+  white-space: nowrap;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.grex-header-demo:hover,
+.grex-header-demo:focus {
+  background: color-mix(in srgb, var(--md-primary-bg-color, #fff) 22%, transparent);
+  border-color: color-mix(in srgb, var(--md-primary-bg-color, #fff) 80%, transparent);
+  color: var(--md-primary-bg-color, #fff) !important;
+}
+
+.grex-header-demo:focus-visible {
+  outline: 2px solid var(--md-primary-bg-color, #fff);
+  outline-offset: 2px;
+}
+
+/* Fallback when color-mix is unavailable */
+@supports not (background: color-mix(in srgb, white 10%, transparent)) {
+  .grex-header-demo {
+    border-color: rgba(255, 255, 255, 0.45);
+    background: rgba(255, 255, 255, 0.12);
+  }
+
+  .grex-header-demo:hover,
+  .grex-header-demo:focus {
+    border-color: rgba(255, 255, 255, 0.85);
+    background: rgba(255, 255, 255, 0.22);
+  }
+}
+
+@media screen and (max-width: 44.9375em) {
+  .grex-header-demo {
+    margin-inline: 0.15rem;
+    padding-inline: 0.4rem;
+    font-size: 0.58rem;
+  }
+}
