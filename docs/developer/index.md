@@ -36,6 +36,7 @@ internal/
   testcert/         # helpers for TLS tests
   ui/               # html/template + htmx + embedded static assets
 deploy/compose/     # local stack configs, certs script, smoke test
+deploy/charts/grex/ # Helm chart (K8s production shape; Pages /charts/ repo)
 docs/               # this MkDocs site
 ```
 

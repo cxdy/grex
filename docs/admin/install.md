@@ -1,7 +1,31 @@
 # Install
 
-grex ships as a **single Go binary** and as a **container image**. There is
-no external database to provision in 1.0: fleet state is in memory.
+grex ships as a **single Go binary**, a **container image**, and a
+**Helm chart** for Kubernetes. There is no external database to provision
+in 1.0: fleet state is in memory.
+
+| Method | Best for | Doc |
+|--------|----------|-----|
+| Binary / `go run` | Local development | [Getting started](../getting-started/index.md) |
+| Docker | Single-node smoke tests | below |
+| Docker Compose | Multi-collector lab | [Compose stack](../getting-started/compose-stack.md) |
+| **Helm** | Kubernetes (production shape) | [Deploy with Helm](helm.md) |
+
+## Helm (Kubernetes)
+
+```sh
+helm repo add grex https://dennisme.github.io/grex/charts/
+helm repo update
+helm install grex grex/grex --namespace grex --create-namespace
+```
+
+The chart repository is hosted on the project GitHub Pages site under
+`/charts/` (alongside docs at `/` and the static demo at `/demo/`). Full
+install guide: [Deploy with Helm](helm.md). Values reference:
+[Helm chart](../reference/helm-chart.md).
+
+Until GHCR release images exist, build and set `image.repository` /
+`image.tag` yourself (see the Helm guide).
 
 ## From source
 
@@ -35,7 +59,8 @@ Mount TLS material read-only when using `tls.cert_file` / `key_file` /
 `client_ca_file`.
 
 Release images (when published via GoReleaser / GHCR per the design) follow
-semver tags; until then, build from source or Compose.
+semver tags; until then, build from source, Compose, or load a local image
+into your cluster for Helm.
 
 ## Docker Compose (development)
 
@@ -45,8 +70,9 @@ make compose-down
 ```
 
 See [Compose stack](../getting-started/compose-stack.md). This is the
-supported local multi-collector environment, not a production topology
-template (no HA grex, no Kubernetes manifests in-repo yet).
+supported local multi-collector environment and functional-test harness.
+For Kubernetes production shape, use the [Helm chart](helm.md) instead
+(Compose is not a production topology template).
 
 ## Configuration file
 
@@ -58,7 +84,9 @@ grex -config config.yaml
 
 Default path if you omit the flag in code is `config.yaml` relative to the
 process working directory. Copy `config.example.yaml` as a starting point.
-Full field list: [Configuration](configuration.md).
+The Helm chart renders an equivalent ConfigMap from `values.yaml`
+(`config.*` / `listeners.*` / `tls.*`). Full field list:
+[Configuration](configuration.md).
 
 ## Runtime requirements
 

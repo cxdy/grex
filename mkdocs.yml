@@ -84,6 +84,7 @@ nav:
   - Admin:
       - admin/index.md
       - Install: admin/install.md
+      - Deploy with Helm: admin/helm.md
       - Configuration: admin/configuration.md
       - TLS and mTLS: admin/tls-mtls.md
       - Authentication: admin/authentication.md
@@ -113,6 +114,7 @@ nav:
   - Reference:
       - CLI: reference/cli.md
       - Endpoints: reference/endpoints.md
+      - Helm chart: reference/helm-chart.md
   - SPEC:
       - spec/index.md
       - Design: spec/design.md

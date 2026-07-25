@@ -37,6 +37,9 @@ deploy/compose/certs/
 # MkDocs build output
 site/
 
+# Local Helm package output (make helm-package)
+dist/
+
 # Coverage artifacts
 coverage.out
 coverage.html

@@ -1,0 +1,279 @@
+# Default values for grex.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+## @section Global
+## Override the name of the chart used in resource names.
+nameOverride: ""
+## Override the full name of resources (release-name by default).
+fullnameOverride: ""
+
+## @section Image
+## Container image for grex. Until GoReleaser publishes to GHCR, build from
+## source (`docker build -t grex:local .`) and set repository/tag accordingly.
+image:
+  repository: ghcr.io/dennisme/grex
+  ## Defaults to .Chart.AppVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+## @section Deployment
+## grex holds fleet state in memory only. Running more than one replica
+## without sticky routing and a shared store will split the fleet view.
+## Keep replicaCount at 1 until HA lands. See docs/admin/helm.md.
+replicaCount: 1
+
+## Additional labels/annotations applied to the grex pod template.
+podAnnotations: {}
+podLabels: {}
+
+## Match the non-root grex user created in the Dockerfile (Alpine adduser -S → uid 100).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 100
+  runAsGroup: 100
+  fsGroup: 100
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 100
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+## Priority class name for the grex pod (optional).
+priorityClassName: ""
+
+## @section Service account
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  ## If not set and create is true, a name is generated using the fullname template.
+  name: ""
+
+## @section Service
+## One ClusterIP Service exposing the three grex listeners on named ports.
+## Matches the separate-ports design (OpAMP / UI / telemetry).
+service:
+  type: ClusterIP
+  annotations: {}
+  ports:
+    opamp:
+      port: 4320
+      ## nodePort only used when type is NodePort or LoadBalancer.
+      nodePort: null
+      protocol: TCP
+    ui:
+      port: 8080
+      nodePort: null
+      protocol: TCP
+    telemetry:
+      port: 9090
+      nodePort: null
+      protocol: TCP
+
+## @section Listeners
+## Bind addresses inside the container. Ports must match service.ports.*.
+listeners:
+  opamp: ":4320"
+  ui: ":8080"
+  telemetry: ":9090"
+
+## @section Config
+## grex YAML configuration rendered into a ConfigMap and mounted at
+## /etc/grex/config.yaml. TLS file paths should point at the mount paths
+## under tls (default /etc/grex/certs/...).
+## Fields not listed here can still be set via extraEnv (GREX_* overrides).
+config:
+  metrics:
+    per_agent_series_limit: 1000
+  ui:
+    poll_interval: 5s
+  fleet:
+    heartbeat_interval: 30s
+    stale_missed_heartbeats: 3
+    ## Attribute keys every agent should report (observe-only in 1.0).
+    required_attributes: []
+  debug:
+    pprof_enabled: false
+  log:
+    level: info
+    format: json
+
+## Extra environment variables (list of {name, value} or valueFrom).
+## Useful for GREX_* overrides without editing the ConfigMap.
+extraEnv: []
+# - name: GREX_LOG_LEVEL
+#   value: debug
+
+## Extra volume mounts for the grex container.
+extraVolumeMounts: []
+## Extra volumes for the grex pod.
+extraVolumes: []
+
+## @section TLS (OpAMP listener)
+## Mount PEM material from an existing Secret. When enabled, config tls paths
+## are set automatically unless overridden below.
+tls:
+  enabled: false
+  ## Name of an existing Secret containing TLS PEMs.
+  existingSecret: ""
+  ## Keys inside the Secret.
+  certKey: tls.crt
+  keyKey: tls.key
+  ## Optional client CA for mTLS (empty key name = omit client CA / TLS only).
+  clientCAKey: ca.crt
+  ## Mount path inside the container.
+  mountPath: /etc/grex/certs
+  ## Override generated grex.yaml tls paths (defaults to mountPath + keys).
+  certFile: ""
+  keyFile: ""
+  clientCAFile: ""
+
+## @section Probes
+## Liveness and readiness probe the telemetry listener (/healthz, /readyz).
+## See docs/admin/health-and-lifecycle.md for drain semantics.
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: telemetry
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: telemetry
+  initialDelaySeconds: 3
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+## Termination grace should exceed grex drainDelay (5s) + shutdownGrace (10s).
+terminationGracePeriodSeconds: 30
+
+## @section Autoscaling
+## Not recommended while fleet state is in-memory and replicaCount is 1.
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+## @section Ingress (UI listener only)
+## Exposes the web UI / JSON API. Do not put OpAMP on HTTP Ingress without
+## careful WebSocket and TLS design; prefer a separate TCP Service/LB for OpAMP.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+    # nginx.ingress.kubernetes.io/proxy-body-size: 8m
+  hosts:
+    - host: grex.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  # - secretName: grex-ui-tls
+  #   hosts:
+  #     - grex.example.com
+
+## @section Metrics scraping
+## Two scrape jobs (/metrics and /metrics/fleet) match the compose Prometheus
+## layout. Prefer ServiceMonitor when the Prometheus Operator CRDs exist.
+serviceMonitor:
+  enabled: false
+  ## Namespace of the ServiceMonitor (defaults to release namespace).
+  namespace: ""
+  labels: {}
+  annotations: {}
+  ## Interval for the grex-server job (/metrics).
+  server:
+    interval: 15s
+    scrapeTimeout: 10s
+    path: /metrics
+    relabelings: []
+    metricRelabelings: []
+  ## Interval for the grex-fleet job (/metrics/fleet). Prefer ≈ heartbeat.
+  fleet:
+    interval: 30s
+    scrapeTimeout: 10s
+    path: /metrics/fleet
+    relabelings: []
+    metricRelabelings: []
+  honorLabels: true
+  scheme: http
+  tlsConfig: {}
+
+## When ServiceMonitor is disabled, optionally stamp Prometheus scrape
+## annotations on the Service for annotation-based discovery of /metrics only.
+## For dual-job scraping (/metrics + /metrics/fleet), use serviceMonitor or an
+## external scrape config (see docs/observability/scraping.md).
+metrics:
+  serviceAnnotations:
+    enabled: false
+
+## @section Optional OpAMP gateway
+## Deploys a collector running the observIQ opampgateway extension that
+## multiplexes many agent sessions over few upstream connections to grex.
+## Off by default — most fleets connect agents directly.
+## See docs/admin/scaling-with-gateways.md.
+opampGateway:
+  enabled: false
+  replicaCount: 1
+  image:
+    ## Build or pin an image that includes the opampgateway extension.
+    ## The compose stack builds one under deploy/compose/opamp-gateway-build/.
+    repository: ghcr.io/dennisme/grex-opamp-gateway
+    tag: ""
+    pullPolicy: IfNotPresent
+  ## Full collector config YAML. When empty, a minimal template is rendered
+  ## that points upstream at the grex OpAMP service.
+  config: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  service:
+    type: ClusterIP
+    ## Port agents dial on the gateway (OpAMP).
+    port: 4320
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  ## Mount TLS client material for the upstream hop to grex (mTLS).
+  tls:
+    enabled: false
+    existingSecret: ""
+    mountPath: /etc/otelcol/certs
+    certKey: tls.crt
+    keyKey: tls.key
+    caKey: ca.crt

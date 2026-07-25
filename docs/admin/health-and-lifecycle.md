@@ -51,3 +51,7 @@ There is **no persistent store**. After restart:
 - Do not put OpAMP and UI behind the same readiness semantics as telemetry
   without understanding that drain only marks the telemetry readiness flag
   used by grex’s own `/readyz`
+
+The [Helm chart](helm.md) follows this wiring by default (`livenessProbe` /
+`readinessProbe` on the named `telemetry` port,
+`terminationGracePeriodSeconds: 30`).

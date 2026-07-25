@@ -76,18 +76,37 @@ localhost: grex UI `8080`, grex telemetry `9090`, grex OpAMP `4320`, Dex
 `5556`, Prometheus `9091`. Dev certificates are minted once into `deploy/compose/certs/` by a
 one-shot container; delete the directory to regenerate.
 
+## Helm (Kubernetes)
+
+The chart lives at `deploy/charts/grex` and is published on GitHub Pages at
+`/charts/` (same site as docs and the demo, different path):
+
+```sh
+helm repo add grex https://dennisme.github.io/grex/charts/
+helm install grex grex/grex --namespace grex --create-namespace
+
+# from a checkout:
+make helm-lint
+helm install grex ./deploy/charts/grex -n grex --create-namespace
+```
+
+Docs: [Deploy with Helm](https://dennisme.github.io/grex/admin/helm/) ·
+[Chart values](https://dennisme.github.io/grex/reference/helm-chart/).
+
 ## Documentation site (local)
 
 ```sh
 pip install -r requirements-docs.txt
 make docs          # sync demo UI assets + mkdocs build --strict
+                   # also packages the Helm chart into site/charts/ when helm is installed
 # or interactive:
 make demo-static && mkdocs serve
 ```
 
 Local preview includes the [static demo](https://dennisme.github.io/grex/demo/)
 at `/demo/`. GitHub Pages is published from `main` via
-`.github/workflows/docs.yml`.
+`.github/workflows/docs.yml` (MkDocs site + Helm chart repository under
+`/charts/`).
 
 ## License
 

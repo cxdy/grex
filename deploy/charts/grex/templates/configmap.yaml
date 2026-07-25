@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "grex.fullname" . }}
+  labels:
+    {{- include "grex.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    listeners:
+      opamp: {{ .Values.listeners.opamp | quote }}
+      ui: {{ .Values.listeners.ui | quote }}
+      telemetry: {{ .Values.listeners.telemetry | quote }}
+    {{- if .Values.tls.enabled }}
+    tls:
+      cert_file: {{ include "grex.tlsCertFile" . | quote }}
+      key_file: {{ include "grex.tlsKeyFile" . | quote }}
+      {{- $clientCA := include "grex.tlsClientCAFile" . }}
+      {{- if $clientCA }}
+      client_ca_file: {{ $clientCA | quote }}
+      {{- end }}
+    {{- end }}
+    metrics:
+      per_agent_series_limit: {{ .Values.config.metrics.per_agent_series_limit }}
+    ui:
+      poll_interval: {{ .Values.config.ui.poll_interval }}
+    fleet:
+      heartbeat_interval: {{ .Values.config.fleet.heartbeat_interval }}
+      stale_missed_heartbeats: {{ .Values.config.fleet.stale_missed_heartbeats }}
+      required_attributes:
+        {{- if .Values.config.fleet.required_attributes }}
+        {{- toYaml .Values.config.fleet.required_attributes | nindent 8 }}
+        {{- else }}
+        []
+        {{- end }}
+    debug:
+      pprof_enabled: {{ .Values.config.debug.pprof_enabled }}
+    log:
+      level: {{ .Values.config.log.level | quote }}
+      format: {{ .Values.config.log.format | quote }}

@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "grex.fullname" . }}
+  labels:
+    {{- include "grex.labels" . | nindent 4 }}
+  {{- if or .Values.metrics.serviceAnnotations.enabled .Values.service.annotations }}
+  annotations:
+    {{- if .Values.metrics.serviceAnnotations.enabled }}
+    prometheus.io/scrape: "true"
+    prometheus.io/port: {{ .Values.service.ports.telemetry.port | quote }}
+    prometheus.io/path: "/metrics"
+    {{- end }}
+    {{- with .Values.service.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: opamp
+      port: {{ .Values.service.ports.opamp.port }}
+      targetPort: opamp
+      protocol: {{ .Values.service.ports.opamp.protocol }}
+      {{- if and (or (eq .Values.service.type "NodePort") (eq .Values.service.type "LoadBalancer")) .Values.service.ports.opamp.nodePort }}
+      nodePort: {{ .Values.service.ports.opamp.nodePort }}
+      {{- end }}
+    - name: ui
+      port: {{ .Values.service.ports.ui.port }}
+      targetPort: ui
+      protocol: {{ .Values.service.ports.ui.protocol }}
+      {{- if and (or (eq .Values.service.type "NodePort") (eq .Values.service.type "LoadBalancer")) .Values.service.ports.ui.nodePort }}
+      nodePort: {{ .Values.service.ports.ui.nodePort }}
+      {{- end }}
+    - name: telemetry
+      port: {{ .Values.service.ports.telemetry.port }}
+      targetPort: telemetry
+      protocol: {{ .Values.service.ports.telemetry.protocol }}
+      {{- if and (or (eq .Values.service.type "NodePort") (eq .Values.service.type "LoadBalancer")) .Values.service.ports.telemetry.nodePort }}
+      nodePort: {{ .Values.service.ports.telemetry.nodePort }}
+      {{- end }}
+  selector:
+    {{- include "grex.selectorLabels" . | nindent 4 }}

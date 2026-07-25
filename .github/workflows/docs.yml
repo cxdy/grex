@@ -9,6 +9,7 @@ on:
       - "requirements-docs.txt"
       - ".github/workflows/docs.yml"
       - "logo.png"
+      - "deploy/charts/**"
   pull_request:
     paths:
       - "docs/**"
@@ -16,6 +17,7 @@ on:
       - "requirements-docs.txt"
       - ".github/workflows/docs.yml"
       - "logo.png"
+      - "deploy/charts/**"
   workflow_dispatch:
 
 permissions:
@@ -45,6 +47,22 @@ jobs:
         run: make demo-static
       - name: Build site
         run: mkdocs build --strict
+      # Helm chart repository lives at /charts/ on the same GitHub Pages site
+      # as the docs and demo. That keeps a single Pages deployment (one
+      # concurrency group) and avoids a second repo or branch for charts.
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+      - name: Package Helm chart into site/charts
+        run: |
+          set -euo pipefail
+          mkdir -p site/charts
+          helm package deploy/charts/grex --destination site/charts
+          helm repo index site/charts \
+            --url https://dennisme.github.io/grex/charts
+          # Keep a copy of the chart source README for humans browsing the path.
+          cp deploy/charts/grex/README.md site/charts/README.md
       - name: Upload artifact
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3

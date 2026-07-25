@@ -160,3 +160,11 @@ Not used in production paths.
 
 Runtime configs, cert generation, custom OpAMP gateway OCB build, Prometheus
 scrape config, `smoke.sh`. Treat as the integration fixture for developers.
+
+## `deploy/charts/grex` (not a Go package)
+
+Helm chart for Kubernetes: Deployment, multi-port Service, ConfigMap, optional
+Ingress / ServiceMonitors / OpAMP gateway. Packaged into GitHub Pages at
+`/charts/` by the docs workflow. Operator docs:
+[Deploy with Helm](../admin/helm.md),
+[Helm chart reference](../reference/helm-chart.md).

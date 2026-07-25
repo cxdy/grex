@@ -103,6 +103,7 @@ When an agent connects, it appears on the fleet page after the next UI poll
 ## Next steps
 
 - [Compose stack](compose-stack.md) — full local environment
+- [Deploy with Helm](../admin/helm.md) — Kubernetes (production shape)
 - [User guide](../user/index.md) — using the fleet UI
 - [Admin: configuration](../admin/configuration.md) — all settings
 - [Developer: local development](../developer/local-development.md) — tests and layout

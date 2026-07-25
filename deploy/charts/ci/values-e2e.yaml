@@ -1,0 +1,40 @@
+# Values for local / CI cluster smoke tests (kind or k3d).
+# Image is built from the repo Dockerfile and loaded into the cluster nodes;
+# Never pull from a registry.
+
+image:
+  repository: grex
+  tag: e2e
+  pullPolicy: Never
+
+replicaCount: 1
+
+# Keep resource requests modest for small local clusters.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+config:
+  log:
+    level: info
+    format: json
+  debug:
+    pprof_enabled: false
+
+# No Ingress / ServiceMonitor / gateway in the baseline smoke path.
+ingress:
+  enabled: false
+
+serviceMonitor:
+  enabled: false
+
+opampGateway:
+  enabled: false
+
+metrics:
+  serviceAnnotations:
+    enabled: false
