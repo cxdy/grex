@@ -100,6 +100,13 @@ The living product plan is under [SPEC](spec/index.md)
 - **[Reference](reference/cli.md)** — CLI, HTTP endpoints, Helm values
 - **[SPEC](spec/index.md)** — living design documents
 
+## Why "grex"?
+
+!!! info "Latin: *grex, gregis* (n.) — flock, herd, group"
+    The same root gives English *gregarious* and *congregate*.
+    Fitting for a control plane that manages a flock of OpenTelemetry
+    Collectors as one fleet.
+
 ## License
 
 Apache-2.0. Source: [github.com/dennisme/grex](https://github.com/dennisme/grex).
