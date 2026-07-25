@@ -54,6 +54,11 @@ The living product plan is under [SPEC](spec/index.md)
 
 ## Quick start
 
+=== "Demo UI (static)"
+
+    No install required — open the **[static fleet demo](demo/)** on this
+    site (sample data generated in your browser).
+
 === "Compose (full stack)"
 
     ```sh
@@ -76,6 +81,7 @@ The living product plan is under [SPEC](spec/index.md)
 
 ## Documentation map
 
+- **[Demo](demo/)** — static sample fleet UI (no grex process)
 - **[Getting started](getting-started/index.md)** — tutorials to a first success
 - **[User](user/index.md)** — fleet UI for operators
 - **[Admin](admin/index.md)** — deploy, config, TLS, lifecycle

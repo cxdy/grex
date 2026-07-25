@@ -12,6 +12,17 @@ identity, health, and effective configuration.
 
 **Documentation:** [https://dennisme.github.io/grex/](https://dennisme.github.io/grex/)
 
+## Demo
+
+Try the fleet UI without installing anything — a static demo with sample
+collectors and gateways runs entirely in the browser (100–300 synthetic
+agents, filters, agent detail, status):
+
+**[Open the demo →](https://dennisme.github.io/grex/demo/)**
+
+This is sample data only, not a live grex process. For a real fleet locally,
+use the compose stack below.
+
 The living 1.0 design (changes frequently) is under
 [docs/spec/design.md](docs/spec/design.md).
 
@@ -65,11 +76,14 @@ one-shot container; delete the directory to regenerate.
 
 ```sh
 pip install -r requirements-docs.txt
-mkdir -p docs/assets && cp logo.png docs/assets/logo.png
-mkdocs serve
+make docs          # sync demo UI assets + mkdocs build --strict
+# or interactive:
+make demo-static && mkdocs serve
 ```
 
-GitHub Pages is published from `main` via `.github/workflows/docs.yml`.
+Local preview includes the [static demo](https://dennisme.github.io/grex/demo/)
+at `/demo/`. GitHub Pages is published from `main` via
+`.github/workflows/docs.yml`.
 
 ## License
 

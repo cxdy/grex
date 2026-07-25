@@ -41,6 +41,8 @@ jobs:
         run: pip install -r requirements-docs.txt
       - name: Sync logo into docs assets
         run: mkdir -p docs/assets && cp logo.png docs/assets/logo.png
+      - name: Sync grex UI assets into static demo
+        run: make demo-static
       - name: Build site
         run: mkdocs build --strict
       - name: Upload artifact
