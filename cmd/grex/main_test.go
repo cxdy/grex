@@ -199,7 +199,7 @@ func TestShutdownHelper(t *testing.T) {
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := prometheus.NewRegistry()
-	srv := server.New(cfg, log, server.OpAMP{}, server.UI{}, reg, prometheus.NewRegistry())
+	srv := server.New(cfg, log, server.OpAMP{}, server.UI{}, nil, reg, prometheus.NewRegistry())
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
 	}

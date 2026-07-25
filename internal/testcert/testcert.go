@@ -13,6 +13,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -27,6 +28,9 @@ type Certs struct {
 	ServerKeyFile  string
 	ClientTLSCert  tls.Certificate
 	ClientCertFile string
+
+	caCert *x509.Certificate
+	caKey  *ecdsa.PrivateKey
 }
 
 // genDeps are overridable hooks so tests can exercise failure paths.
@@ -106,31 +110,8 @@ func gen(tb testing.TB, deps genDeps) Certs {
 		tb.Fatal(err)
 	}
 
-	issue := func(name string, extUsage x509.ExtKeyUsage, ips []net.IP) (certPEM, keyPEM []byte) {
-		key, err := deps.generateKey()
-		if err != nil {
-			tb.Fatal(err)
-		}
-		tmpl := &x509.Certificate{
-			SerialNumber: big.NewInt(time.Now().UnixNano()),
-			Subject:      pkix.Name{CommonName: name},
-			NotBefore:    time.Now().Add(-time.Hour),
-			NotAfter:     time.Now().Add(time.Hour),
-			KeyUsage:     x509.KeyUsageDigitalSignature,
-			ExtKeyUsage:  []x509.ExtKeyUsage{extUsage},
-			IPAddresses:  ips,
-		}
-		der, err := deps.createCertificate(rand.Reader, tmpl, caCert, &key.PublicKey, caKey)
-		if err != nil {
-			tb.Fatal(err)
-		}
-		keyDER, err := deps.marshalECPrivateKey(key)
-		if err != nil {
-			tb.Fatal(err)
-		}
-		certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-		keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-		return certPEM, keyPEM
+	issue := func(name string, extUsage x509.ExtKeyUsage, ips []net.IP, uris []*url.URL) (certPEM, keyPEM []byte) {
+		return issueCert(tb, deps, caCert, caKey, name, extUsage, ips, uris)
 	}
 
 	write := func(name string, data []byte) string {
@@ -142,8 +123,8 @@ func gen(tb testing.TB, deps genDeps) Certs {
 	}
 
 	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
-	serverCertPEM, serverKeyPEM := issue("grex", x509.ExtKeyUsageServerAuth, []net.IP{net.ParseIP("127.0.0.1")})
-	clientCertPEM, clientKeyPEM := issue("otelcol", x509.ExtKeyUsageClientAuth, nil)
+	serverCertPEM, serverKeyPEM := issue("grex", x509.ExtKeyUsageServerAuth, []net.IP{net.ParseIP("127.0.0.1")}, nil)
+	clientCertPEM, clientKeyPEM := issue("otelcol", x509.ExtKeyUsageClientAuth, nil, nil)
 
 	clientTLSCert, err := deps.x509KeyPair(clientCertPEM, clientKeyPEM)
 	if err != nil {
@@ -159,5 +140,51 @@ func gen(tb testing.TB, deps genDeps) Certs {
 		ServerKeyFile:  write("server-key.pem", serverKeyPEM),
 		ClientTLSCert:  clientTLSCert,
 		ClientCertFile: write("client.pem", clientCertPEM),
+		caCert:         caCert,
+		caKey:          caKey,
 	}
+}
+
+// issueCert mints a certificate signed by caCert/caKey for name, with the
+// given extended key usage, IP SANs, and URI SANs.
+func issueCert(tb testing.TB, deps genDeps, caCert *x509.Certificate, caKey *ecdsa.PrivateKey, name string, extUsage x509.ExtKeyUsage, ips []net.IP, uris []*url.URL) (certPEM, keyPEM []byte) {
+	tb.Helper()
+	key, err := deps.generateKey()
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject:      pkix.Name{CommonName: name},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{extUsage},
+		IPAddresses:  ips,
+		URIs:         uris,
+	}
+	der, err := deps.createCertificate(rand.Reader, tmpl, caCert, &key.PublicKey, caKey)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	keyDER, err := deps.marshalECPrivateKey(key)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	return certPEM, keyPEM
+}
+
+// IssueClient mints an additional client certificate signed by the same CA
+// as Gen, carrying the given URI SANs (e.g. a spiffe:// identity).
+func (c Certs) IssueClient(tb testing.TB, name string, uris []*url.URL) tls.Certificate {
+	tb.Helper()
+	deps := genDeps{}.withDefaults()
+	certPEM, keyPEM := issueCert(tb, deps, c.caCert, c.caKey, name, x509.ExtKeyUsageClientAuth, nil, uris)
+	cert, err := deps.x509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return cert
 }
