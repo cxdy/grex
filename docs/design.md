@@ -57,10 +57,28 @@ auth boundary:
    built on [`open-telemetry/opamp-go`](https://github.com/open-telemetry/opamp-go)
    server packages. TLS terminated here; client certificates (mTLS) required for
    collectors when enabled.
-2. **UI + read API** — serves the web UI and a JSON API the UI consumes. Guarded
-   by OIDC login and roles.
+2. **UI listener** — serves the JSON read API and the web UI that consumes it,
+   on one port. Guarded by OIDC login and roles. Built as two milestones (API,
+   then UI) but not split across listeners: the split is about sequencing
+   work and testing the API on its own before a UI sits on top of it, not
+   about a different auth boundary.
 3. **Telemetry endpoint** — Prometheus `/metrics` (server health) and
    `/metrics/fleet` (fleet series) plus health/readiness probes.
+
+### Health probes
+
+- `/healthz` — liveness only: process is up and its handlers respond. Never
+  reflects readiness or a downstream dependency, so it cannot flap on
+  transient issues and never changes during a graceful drain. Always 200
+  once the telemetry listener is serving.
+- `/readyz` — 200 normally; 503 once a graceful shutdown begins
+  (`Server.BeginDraining`), before any listener closes. On SIGINT/SIGTERM
+  grex flips `/readyz` to 503, waits a fixed `drainDelay` (5s) so an
+  orchestrator's readiness probe has time to notice and stop routing new
+  traffic, then closes listeners with the existing `shutdownGrace` (10s).
+  Compose healthchecks intentionally probe `/healthz`, not `/readyz`, so
+  `docker compose` does not report the container unhealthy during that
+  drain window.
 
 ### OpAMP server
 
@@ -115,9 +133,25 @@ auth boundary:
   `ReportFullState` flag on replies to any agent whose entry has no
   description, and the agent resends everything on its next check-in.
 
+### Read API
+
+- Purpose: JSON view over fleet registry state, consumed by the web UI and
+  usable directly (scripting, other tooling) without a browser.
+- Endpoints mirror the UI pages one-to-one so the UI milestone is a thin
+  rendering layer over an API that already has its own tests:
+  - Fleet overview: list of agents with the same fields the overview table
+    shows.
+  - Agent detail: full attribute set, health, effective config, capabilities,
+    connection info for one `instance_uid`.
+  - Server status: grex version, uptime, connected/disconnected/noncompliant
+    counts.
+- Same auth boundary as the UI (OIDC session, `viewer`/`admin`), same
+  listener. Read-only: no endpoint accepts a write in 1.0.
+
 ### Web UI
 
-- Purpose: visualize the fleet. Read-only.
+- Purpose: visualize the fleet. Read-only. Renders the read API; adds no
+  fleet-state logic of its own.
 - Pages:
   - **Fleet overview** — table of agents: identity, type (agent/gateway),
     version, health, last seen, connection transport. Shows connected and
@@ -216,6 +250,13 @@ The two groups:
 
 **Server health:**
 
+- `grex_build_info{version,commit,go_version}` (gauge, always 1; standard
+  Prometheus info-metric pattern, version comes from `-ldflags` at build time
+  via `internal/buildinfo`, `dev`/`none`/`unknown` when unset)
+- `grex_config_info{log_level,log_format,tls_enabled,mtls_enabled,
+  heartbeat_interval,stale_missed_heartbeats,per_agent_series_limit}` (gauge,
+  always 1; non-secret settings only, lets a dashboard confirm a config
+  rollout actually took effect without grepping logs)
 - `grex_opamp_messages_total` / `grex_opamp_message_errors_total`
 - HTTP API request counts/latency/status (arrives with the read API milestone)
 - Auth outcomes (arrives with the auth milestone)
@@ -224,7 +265,12 @@ The two groups:
 Cardinality note: per-instance_uid series (`grex_agent_health`,
 `grex_agent_last_seen_timestamp_seconds`) are capped by
 `metrics.per_agent_series_limit` (default 1000); above the cap they are
-omitted entirely and only aggregates remain.
+omitted entirely and only aggregates remain. The cap firing is itself
+observable, not just inferable from per-agent series disappearing:
+`grex_fleet_size` (gauge, total registered agents) is always emitted, and
+`grex_agent_series_capped` (gauge, 1/0) is explicit about whether the cap is
+currently suppressing per-agent series. Alert on
+`grex_agent_series_capped == 1`.
 
 Exposing `/metrics` for Prometheus scrape is the only export path in 1.0; no
 OTLP export of grex's own telemetry.
@@ -316,12 +362,14 @@ the gateway's connect handshake needs grex to answer `connectResult`.
    (connect/connectResult handling, forwarded connection metadata), compose
    stack amended to route collectors through the OpAMP gateway service.
 3. **Telemetry** — Prometheus metrics, health probes.
-4. **Read API + UI** — JSON API, embedded UI, the three pages.
-5. **Auth** — OIDC client against Dex, claims-based roles, Dex dev config
-   with static users.
-6. **Local dev** — compose stack with collectors and dev certs (built;
+4. **Read API** — JSON endpoints over fleet registry state: fleet overview,
+   agent detail, server status.
+5. **Web UI** — embedded `html/template` + htmx pages rendering the read API.
+6. **Auth** — OIDC client against Dex, claims-based roles, Dex dev config
+   with static users; gates the UI/API listener.
+7. **Local dev** — compose stack with collectors and dev certs (built;
    OpAMP gateway insertion lands with milestone 2).
-7. **Release** — GoReleaser, svu, image publishing, first tagged 1.0.
+8. **Release** — GoReleaser, svu, image publishing, first tagged 1.0.
 
 Each milestone is independently testable; TDD applies throughout (unit tests
 per package, compose stack as the end-to-end harness).

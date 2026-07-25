@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -36,6 +37,7 @@ type Server struct {
 	log      *slog.Logger
 	cfg      *config.Config
 	registry *prometheus.Registry
+	ready    *atomic.Bool
 
 	listeners map[string]*listener
 	fatal     chan error
@@ -53,12 +55,23 @@ type listener struct {
 // scrape them as independent jobs with independent limits. Call Start to
 // bind and serve.
 func New(cfg *config.Config, logger *slog.Logger, opamp OpAMP, serverRegistry, fleetRegistry *prometheus.Registry) *Server {
+	// Zero value false: not ready until Start binds and begins serving.
+	ready := &atomic.Bool{}
+
 	telemetryMux := http.NewServeMux()
 	telemetryMux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		// Liveness only: is the process alive and its handlers responsive.
+		// Never reflects readiness or downstream state, so it does not flip
+		// during a graceful drain and cannot flap on transient dependency
+		// issues.
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintln(w, "ok")
 	})
 	telemetryMux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if !ready.Load() {
+			http.Error(w, "draining", http.StatusServiceUnavailable)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintln(w, "ok")
 	})
@@ -81,6 +94,7 @@ func New(cfg *config.Config, logger *slog.Logger, opamp OpAMP, serverRegistry, f
 		log:      logger,
 		cfg:      cfg,
 		registry: serverRegistry,
+		ready:    ready,
 		listeners: map[string]*listener{
 			"opamp": {addr: cfg.Listeners.OpAMP, srv: &http.Server{
 				Handler:           opampHandler,
@@ -123,8 +137,15 @@ func (s *Server) Start() error {
 			}
 		}(name, l)
 	}
+	s.ready.Store(true)
 	return nil
 }
+
+// BeginDraining marks the server not ready so /readyz starts returning 503,
+// before any listener closes. Callers should give orchestrators a window to
+// observe this (their readiness probe interval) before calling Shutdown, so
+// new traffic stops arriving before in-flight connections are cut.
+func (s *Server) BeginDraining() { s.ready.Store(false) }
 
 // Fatal reports the first unrecoverable serve error.
 func (s *Server) Fatal() <-chan error { return s.fatal }
@@ -146,8 +167,12 @@ func (s *Server) boundAddr(name string) string {
 	return l.lis.Addr().String()
 }
 
-// Shutdown gracefully stops all listeners, waiting up to the context deadline.
+// Shutdown gracefully stops all listeners, waiting up to the context
+// deadline. Marks the server not ready first (idempotent with BeginDraining)
+// so a caller that skips the explicit drain step still fails /readyz before
+// listeners close.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.BeginDraining()
 	var errs []error
 	for name, l := range s.listeners {
 		if l.lis == nil {

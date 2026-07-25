@@ -81,6 +81,28 @@ func TestTelemetryEndpoints(t *testing.T) {
 	}
 }
 
+// /readyz must flip to unready as soon as a graceful drain begins, before
+// listeners close, so an orchestrator's readiness probe can stop routing new
+// traffic during the drain window. /healthz stays a pure liveness signal and
+// does not flip: the process is still alive and not deadlocked.
+func TestReadyzReflectsDraining(t *testing.T) {
+	s := startServer(t)
+	base := "http://" + s.TelemetryAddr()
+
+	if code, _ := get(t, base+"/readyz"); code != http.StatusOK {
+		t.Fatalf("/readyz before draining = %d, want 200", code)
+	}
+
+	s.BeginDraining()
+
+	if code, _ := get(t, base+"/readyz"); code != http.StatusServiceUnavailable {
+		t.Errorf("/readyz while draining = %d, want 503", code)
+	}
+	if code, _ := get(t, base+"/healthz"); code != http.StatusOK {
+		t.Errorf("/healthz while draining = %d, want 200 (liveness unaffected)", code)
+	}
+}
+
 func TestOpAMPAndUIAreStubs(t *testing.T) {
 	s := startServer(t)
 	for name, addr := range map[string]string{

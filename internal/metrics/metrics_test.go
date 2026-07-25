@@ -125,6 +125,24 @@ func TestEventCounters(t *testing.T) {
 	assert("gateway_connections", 1, events.gatewayConnections)
 }
 
+func TestNewInfoGauge(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	NewInfoGauge(reg, "grex_build_info", "Build information.", prometheus.Labels{
+		"version":    "1.2.3",
+		"commit":     "abc123",
+		"go_version": "go1.26",
+	})
+
+	expected := `
+# HELP grex_build_info Build information.
+# TYPE grex_build_info gauge
+grex_build_info{commit="abc123",go_version="go1.26",version="1.2.3"} 1
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "grex_build_info"); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestFleetCollectorAggregates(t *testing.T) {
 	registry := newFleet("team")
 	direct := uuid.New()
@@ -222,5 +240,41 @@ func TestFleetCollectorCapDropsPerAgentSeries(t *testing.T) {
 	}
 	if got := testutil.CollectAndCount(collector, "grex_agents_connected"); got == 0 {
 		t.Error("aggregate series missing when over cap")
+	}
+
+	// The cap firing must be directly observable, not just inferable from
+	// per-agent series disappearing.
+	expected := `
+# HELP grex_fleet_size Total agents registered, regardless of the per-agent series cap.
+# TYPE grex_fleet_size gauge
+grex_fleet_size 2
+# HELP grex_agent_series_capped Whether per-agent series are currently omitted because the fleet exceeds metrics.per_agent_series_limit.
+# TYPE grex_agent_series_capped gauge
+grex_agent_series_capped 1
+`
+	err := testutil.CollectAndCompare(collector, strings.NewReader(expected),
+		"grex_fleet_size", "grex_agent_series_capped")
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestFleetCollectorSizeAndCappedUnderLimit(t *testing.T) {
+	registry := newFleet()
+	report(registry, uuid.New(), fleet.ConnMeta{Transport: "ws"}, true)
+
+	collector := NewFleetCollector(registry, 1000)
+	expected := `
+# HELP grex_fleet_size Total agents registered, regardless of the per-agent series cap.
+# TYPE grex_fleet_size gauge
+grex_fleet_size 1
+# HELP grex_agent_series_capped Whether per-agent series are currently omitted because the fleet exceeds metrics.per_agent_series_limit.
+# TYPE grex_agent_series_capped gauge
+grex_agent_series_capped 0
+`
+	err := testutil.CollectAndCompare(collector, strings.NewReader(expected),
+		"grex_fleet_size", "grex_agent_series_capped")
+	if err != nil {
+		t.Error(err)
 	}
 }

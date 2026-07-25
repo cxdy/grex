@@ -21,6 +21,21 @@ func NewRegistry() *prometheus.Registry {
 	return registry
 }
 
+// NewInfoGauge registers a static gauge set to 1 with labels as its only
+// data, the standard Prometheus pattern for exposing build or config values
+// (e.g. `grex_build_info{version="1.2.3"} 1`) as queryable label values
+// rather than log lines.
+func NewInfoGauge(reg prometheus.Registerer, name, help string, labels prometheus.Labels) prometheus.Gauge {
+	gauge := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name:        name,
+		Help:        help,
+		ConstLabels: labels,
+	})
+	gauge.Set(1)
+	reg.MustRegister(gauge)
+	return gauge
+}
+
 // Events holds the event-driven fleet and OpAMP counters. It implements
 // fleet.Events and the opamp handler's metrics hooks.
 type Events struct {
@@ -139,6 +154,14 @@ var (
 		"grex_agents_awaiting_full_state",
 		"Agents that have not yet reported their description.",
 		nil, nil)
+	descFleetSize = prometheus.NewDesc(
+		"grex_fleet_size",
+		"Total agents registered, regardless of the per-agent series cap.",
+		nil, nil)
+	descAgentSeriesCapped = prometheus.NewDesc(
+		"grex_agent_series_capped",
+		"Whether per-agent series are currently omitted because the fleet exceeds metrics.per_agent_series_limit.",
+		nil, nil)
 	descAgentHealth = prometheus.NewDesc(
 		"grex_agent_health",
 		"Agent health as reported: 1 healthy, 0 unhealthy.",
@@ -168,6 +191,8 @@ func (c *FleetCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- descAgentsDisconnected
 	ch <- descAgentsNoncompliant
 	ch <- descAgentsAwaitingFullState
+	ch <- descFleetSize
+	ch <- descAgentSeriesCapped
 	ch <- descAgentHealth
 	ch <- descAgentLastSeen
 }
@@ -205,6 +230,15 @@ func (c *FleetCollector) Collect(ch chan<- prometheus.Metric) {
 		prometheus.GaugeValue, noncompliant)
 	ch <- prometheus.MustNewConstMetric(descAgentsAwaitingFullState,
 		prometheus.GaugeValue, awaiting)
+	ch <- prometheus.MustNewConstMetric(descFleetSize,
+		prometheus.GaugeValue, float64(len(agents)))
+
+	capped := 0.0
+	if len(agents) > c.perAgentLimit {
+		capped = 1.0
+	}
+	ch <- prometheus.MustNewConstMetric(descAgentSeriesCapped,
+		prometheus.GaugeValue, capped)
 
 	if len(agents) > c.perAgentLimit {
 		return
