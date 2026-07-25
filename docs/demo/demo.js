@@ -578,6 +578,19 @@
     return DEFAULT_SEED;
   }
 
+  /** Active demo seed: URL wins, else in-memory state, else default. */
+  function activeSeed() {
+    if (state) return state.seed >>> 0;
+    return seedFromURL();
+  }
+
+  /** Ensure seed is always present on query params used for in-demo links. */
+  function withSeed(params) {
+    const p = params instanceof URLSearchParams ? new URLSearchParams(params) : new URLSearchParams();
+    p.set("seed", String(activeSeed()));
+    return p;
+  }
+
   function ensureState() {
     const seed = seedFromURL();
     if (!state || state.seed !== seed) {
@@ -600,15 +613,23 @@
     else status.removeAttribute("aria-current");
   }
 
+  /** Keep header brand / Fleet / Status links on the current seed. */
+  function updateChromeLinks() {
+    const qs = "?seed=" + activeSeed();
+    const brand = document.querySelector("a.brand");
+    const fleet = document.getElementById("nav-fleet");
+    const status = document.getElementById("nav-status");
+    if (brand) brand.href = "#/" + qs;
+    if (fleet) fleet.href = "#/" + qs;
+    if (status) status.href = "#/status" + qs;
+  }
+
   function sortHref(params, col, curSort, curOrder) {
-    const p = new URLSearchParams(params);
+    const p = withSeed(params);
     const nextOrder = curSort === col && curOrder === "asc" ? "desc" : "asc";
     p.set("sort", col);
     p.set("order", curSort === col ? nextOrder : "asc");
     p.delete("offset");
-    const seed = p.get("seed");
-    // keep seed
-    if (seed) p.set("seed", seed);
     return "#/?" + p.toString();
   }
 
@@ -625,13 +646,12 @@
   }
 
   function pageHref(params, pageNum) {
-    const p = new URLSearchParams(params);
+    const p = withSeed(params);
     // Preserve repeated match= params (URLSearchParams copy keeps them).
     const offset = (pageNum - 1) * PAGE_SIZE;
     if (offset <= 0) p.delete("offset");
     else p.set("offset", String(offset));
-    const qs = p.toString();
-    return "#/" + (qs ? "?" + qs : "");
+    return "#/?" + p.toString();
   }
 
   function renderPager(total, offset, params) {
@@ -799,12 +819,14 @@
   }
 
   function seedQuery(params, onlySeed) {
-    const seed = params.get("seed") || String(state.seed);
-    if (onlySeed) return seed && seed !== String(DEFAULT_SEED) ? "?seed=" + seed : "";
+    // Always pin seed so Status / agent / clear never reset the fleet.
+    const seed = String(
+      (params && params.get("seed")) || (state && state.seed) || activeSeed()
+    );
+    if (onlySeed) return "?seed=" + seed;
     const p = new URLSearchParams();
-    if (seed && seed !== String(DEFAULT_SEED)) p.set("seed", seed);
-    const s = p.toString();
-    return s ? "?" + s : "";
+    p.set("seed", seed);
+    return "?" + p.toString();
   }
 
   function kvRows(obj) {
@@ -949,10 +971,29 @@
   }
 
   function render() {
-    ensureState();
-    installDemoAttributeAPI();
     const { path, params } = parseHash();
+    // Preserve in-memory fleet when chrome links omit seed (must run before
+    // ensureState, which would otherwise rebuild from DEFAULT_SEED).
+    if (!params.get("seed") && state) {
+      const p = new URLSearchParams(params);
+      p.set("seed", String(state.seed));
+      const next = "#" + path + "?" + p.toString();
+      location.replace(location.pathname + location.search + next);
+      return;
+    }
+    ensureState();
+    // First load / bare hash: pin seed in the URL for shareable chrome links.
+    if (!params.get("seed")) {
+      const p = withSeed(params);
+      const next = "#" + path + "?" + p.toString();
+      if (location.hash !== next) {
+        location.replace(location.pathname + location.search + next);
+        return;
+      }
+    }
+    installDemoAttributeAPI();
     navHighlight(path);
+    updateChromeLinks();
     const app = document.getElementById("app");
     if (!app) return;
 
@@ -1004,9 +1045,7 @@
             seen.add(m);
             p.append("match", m);
           }
-          const seed =
-            params.get("seed") || (state.seed !== DEFAULT_SEED ? String(state.seed) : "");
-          if (seed) p.set("seed", seed);
+          p.set("seed", String(activeSeed()));
           p.delete("offset");
           setHash("/", p);
         };
