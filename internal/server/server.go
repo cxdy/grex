@@ -22,6 +22,16 @@ import (
 	"github.com/dennisme/grex/internal/config"
 )
 
+// OpAMP carries the protocol handler mounted on the OpAMP listener. A zero
+// value leaves the listener as a 501 stub.
+type OpAMP struct {
+	// Handler serves /v1/opamp.
+	Handler http.Handler
+	// ConnContext is installed on the listener's http.Server so the plain
+	// HTTP OpAMP transport can reach the underlying net.Conn.
+	ConnContext func(ctx context.Context, c net.Conn) context.Context
+}
+
 // Server owns the grex listeners and their lifecycles.
 type Server struct {
 	log      *slog.Logger
@@ -39,7 +49,7 @@ type listener struct {
 }
 
 // New builds a Server from the configuration. Call Start to bind and serve.
-func New(cfg *config.Config, logger *slog.Logger) *Server {
+func New(cfg *config.Config, logger *slog.Logger, opamp OpAMP) *Server {
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(
 		collectors.NewGoCollector(),
@@ -61,12 +71,24 @@ func New(cfg *config.Config, logger *slog.Logger) *Server {
 		http.Error(w, "not implemented", http.StatusNotImplemented)
 	})
 
+	opampHandler := http.Handler(notImplemented)
+	if opamp.Handler != nil {
+		opampMux := http.NewServeMux()
+		opampMux.Handle("/v1/opamp", opamp.Handler)
+		opampMux.Handle("/", notImplemented)
+		opampHandler = opampMux
+	}
+
 	return &Server{
 		log:      logger,
 		cfg:      cfg,
 		registry: registry,
 		listeners: map[string]*listener{
-			"opamp":     {addr: cfg.Listeners.OpAMP, srv: &http.Server{Handler: notImplemented, ReadHeaderTimeout: 10 * time.Second}},
+			"opamp": {addr: cfg.Listeners.OpAMP, srv: &http.Server{
+				Handler:           opampHandler,
+				ConnContext:       opamp.ConnContext,
+				ReadHeaderTimeout: 10 * time.Second,
+			}},
 			"ui":        {addr: cfg.Listeners.UI, srv: &http.Server{Handler: notImplemented, ReadHeaderTimeout: 10 * time.Second}},
 			"telemetry": {addr: cfg.Listeners.Telemetry, srv: &http.Server{Handler: telemetryMux, ReadHeaderTimeout: 10 * time.Second}},
 		},

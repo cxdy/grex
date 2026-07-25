@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -44,6 +45,9 @@ type Fleet struct {
 	// StaleMissedHeartbeats is how many consecutive check-ins an agent may
 	// miss before it is evicted from fleet state.
 	StaleMissedHeartbeats int `yaml:"stale_missed_heartbeats"`
+	// RequiredAttributes lists AgentDescription attribute keys every agent
+	// must report. Empty means no enforcement.
+	RequiredAttributes []string `yaml:"required_attributes"`
 }
 
 // Log holds logging settings.
@@ -81,6 +85,18 @@ func (c *Config) envOverrides() []struct {
 			return nil
 		}
 	}
+	setStringList := func(dst *[]string) func(string) error {
+		return func(v string) error {
+			var list []string
+			for part := range strings.SplitSeq(v, ",") {
+				if part = strings.TrimSpace(part); part != "" {
+					list = append(list, part)
+				}
+			}
+			*dst = list
+			return nil
+		}
+	}
 	return []struct {
 		name string
 		set  func(string) error
@@ -93,6 +109,7 @@ func (c *Config) envOverrides() []struct {
 		{"GREX_TLS_CLIENT_CA_FILE", setString(&c.TLS.ClientCAFile)},
 		{"GREX_FLEET_HEARTBEAT_INTERVAL", setDuration(&c.Fleet.HeartbeatInterval)},
 		{"GREX_FLEET_STALE_MISSED_HEARTBEATS", setInt(&c.Fleet.StaleMissedHeartbeats)},
+		{"GREX_FLEET_REQUIRED_ATTRIBUTES", setStringList(&c.Fleet.RequiredAttributes)},
 		{"GREX_LOG_LEVEL", setString(&c.Log.Level)},
 		{"GREX_LOG_FORMAT", setString(&c.Log.Format)},
 	}

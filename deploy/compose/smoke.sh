@@ -26,11 +26,25 @@ curl -fsS http://127.0.0.1:9090/metrics | grep -q '^go_' || fail "grex /metrics 
 curl -fsS http://127.0.0.1:5556/dex/.well-known/openid-configuration |
     grep -q '"issuer"' || fail "dex openid-configuration"
 
-# The OpAMP endpoint is a stub until the protocol milestone, so a completed
-# session is not expected; each collector must at least be dialing grex.
+# Full chain: three collectors connect through the OpAMP gateway, grex
+# answers their connect delegations and registers each agent.
+# grep -c reads the whole stream, avoiding a SIGPIPE to docker under
+# pipefail; -q would exit at the first match and break the pipeline.
+wait_for_count() {
+    label="$1" want="$2" svc="$3" pattern="$4"
+    for _ in $(seq 1 30); do
+        got=$(docker compose logs --no-color "$svc" | grep -c "$pattern" || true)
+        [ "$got" -ge "$want" ] && return 0
+        sleep 2
+    done
+    fail "$label: want >= $want, got ${got:-0}"
+}
+
+wait_for_count "gateway connects accepted by grex" 3 grex "gateway connect accepted"
+wait_for_count "agents registered via gateway" 3 grex '"agent registered".*"via_gateway":true'
+wait_for_count "gateway authentication results" 3 opamp-gateway "authentication result"
+
 for svc in otelcol-agent-1 otelcol-agent-2 otelcol-gateway; do
-    # grep -c reads the whole stream, avoiding a SIGPIPE to docker under
-    # pipefail; -q would exit at the first match and break the pipeline.
     docker compose logs --no-color "$svc" | grep -ic opamp > /dev/null ||
         fail "$svc logs show no OpAMP activity"
 done

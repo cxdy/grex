@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/dennisme/grex/internal/config"
+	"github.com/dennisme/grex/internal/fleet"
+	"github.com/dennisme/grex/internal/opamp"
 	"github.com/dennisme/grex/internal/server"
 )
 
@@ -36,13 +38,24 @@ func run() error {
 	logger := newLogger(cfg.Log)
 	slog.SetDefault(logger)
 
-	srv := server.New(cfg, logger)
+	registry := fleet.New(fleet.Config{
+		HeartbeatInterval:     cfg.Fleet.HeartbeatInterval,
+		StaleMissedHeartbeats: cfg.Fleet.StaleMissedHeartbeats,
+		RequiredAttributes:    cfg.Fleet.RequiredAttributes,
+	}, logger)
+	handler, connCtx, err := opamp.New(logger, registry).Attach()
+	if err != nil {
+		return err
+	}
+
+	srv := server.New(cfg, logger, server.OpAMP{Handler: handler, ConnContext: connCtx})
 	if err := srv.Start(); err != nil {
 		return err
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	go registry.Run(ctx)
 
 	select {
 	case <-ctx.Done():

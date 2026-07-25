@@ -41,6 +41,19 @@ services:
       timeout: 3s
       retries: 12
 
+  opamp-gateway:
+    # Built from source: opampgateway v1.10.0 never wires its upstream TLS
+    # settings into the websocket dialer, so the stock observIQ image cannot
+    # do mTLS to grex. The build patches that (accepted fork-and-fix risk).
+    build: deploy/compose/opamp-gateway-build
+    command: ["--config", "/etc/otelcol/config.yaml"]
+    volumes:
+      - ./deploy/compose/opamp-gateway.yaml:/etc/otelcol/config.yaml:ro
+      - ./deploy/compose/certs:/certs:ro
+    depends_on:
+      grex:
+        condition: service_healthy
+
   otelcol-agent-1:
     image: otel/opentelemetry-collector-contrib:0.157.0
     command: ["--config", "/etc/otelcol/config.yaml"]
@@ -50,8 +63,7 @@ services:
       - ./deploy/compose/otelcol-agent.yaml:/etc/otelcol/config.yaml:ro
       - ./deploy/compose/certs:/certs:ro
     depends_on:
-      grex:
-        condition: service_healthy
+      - opamp-gateway
 
   otelcol-agent-2:
     image: otel/opentelemetry-collector-contrib:0.157.0
@@ -62,8 +74,7 @@ services:
       - ./deploy/compose/otelcol-agent.yaml:/etc/otelcol/config.yaml:ro
       - ./deploy/compose/certs:/certs:ro
     depends_on:
-      grex:
-        condition: service_healthy
+      - opamp-gateway
 
   otelcol-gateway:
     image: otel/opentelemetry-collector-contrib:0.157.0
@@ -72,5 +83,4 @@ services:
       - ./deploy/compose/otelcol-gateway.yaml:/etc/otelcol/config.yaml:ro
       - ./deploy/compose/certs:/certs:ro
     depends_on:
-      grex:
-        condition: service_healthy
+      - opamp-gateway

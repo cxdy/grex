@@ -31,7 +31,7 @@ func testLogger() *slog.Logger {
 
 func startServer(t *testing.T) *Server {
 	t.Helper()
-	s := New(testConfig(), testLogger())
+	s := New(testConfig(), testLogger(), OpAMP{})
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -90,8 +90,30 @@ func TestOpAMPAndUIAreStubs(t *testing.T) {
 	}
 }
 
+func TestOpAMPHandlerMounted(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	s := New(testConfig(), testLogger(), OpAMP{Handler: handler})
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.Shutdown(ctx)
+	})
+
+	if code, _ := get(t, "http://"+s.OpAMPAddr()+"/v1/opamp"); code != http.StatusOK {
+		t.Errorf("/v1/opamp = %d, want 200 from mounted handler", code)
+	}
+	if code, _ := get(t, "http://"+s.OpAMPAddr()+"/other"); code != http.StatusNotImplemented {
+		t.Errorf("/other = %d, want 501", code)
+	}
+}
+
 func TestShutdownClosesListeners(t *testing.T) {
-	s := New(testConfig(), testLogger())
+	s := New(testConfig(), testLogger(), OpAMP{})
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -115,7 +137,7 @@ func TestStartFailsOnUnbindableAddress(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.Listeners.OpAMP = lis.Addr().String()
-	s := New(cfg, testLogger())
+	s := New(cfg, testLogger(), OpAMP{})
 	if err := s.Start(); err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
