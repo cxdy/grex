@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -658,5 +659,85 @@ func TestConcurrentAccess(t *testing.T) {
 	wg.Wait()
 	if len(r.List()) != 8 {
 		t.Errorf("List len = %d, want 8", len(r.List()))
+	}
+}
+
+func TestRegistryRunCancels(t *testing.T) {
+	r, _ := testRegistry()
+	// Short heartbeat so the ticker fires at least once before cancel.
+	r.cfg.HeartbeatInterval = 20 * time.Millisecond
+	uid := testUID()
+	r.Report(statusMsg(uid), ConnMeta{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		r.Run(ctx)
+		close(done)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+}
+
+func TestAnyValueStringNonString(t *testing.T) {
+	// Report with a non-string AnyValue exercises the default branch.
+	r, _ := testRegistry()
+	uid := testUID()
+	r.Report(&protobufs.AgentToServer{
+		InstanceUid: uid[:],
+		AgentDescription: &protobufs.AgentDescription{
+			IdentifyingAttributes: []*protobufs.KeyValue{{
+				Key: "service.name",
+				Value: &protobufs.AnyValue{Value: &protobufs.AnyValue_IntValue{
+					IntValue: 42,
+				}},
+			}},
+		},
+	}, ConnMeta{})
+	agent, ok := r.Get(uid.String())
+	if !ok {
+		t.Fatal("agent missing")
+	}
+	if agent.Identifying["service.name"] == "" {
+		t.Fatal("expected non-empty stringified int value")
+	}
+}
+
+func TestNoopEventsMethods(t *testing.T) {
+	// Exercise the nil-events implementation so coverage includes the stubs.
+	var n noopEvents
+	n.AgentConnected()
+	n.AgentDisconnected()
+	n.AgentEvicted()
+	n.ReportReceived("status")
+	n.MissingAttribute("service.name")
+	n.ReservedAttributeConflict("healthy")
+}
+
+func TestSetConnectedToggles(t *testing.T) {
+	r, _, ev := testRegistryEvents()
+	uid := testUID()
+	r.Report(statusMsg(uid), ConnMeta{})
+	id := uid.String()
+	// Already connected from Report; disconnect then reconnect.
+	beforeDisc := ev.disconnects
+	beforeConn := ev.connects
+	r.SetConnected(id, false)
+	r.SetConnected(id, true)
+	r.SetConnected("missing", false) // no-op
+	if ev.disconnects <= beforeDisc {
+		t.Error("expected AgentDisconnected on SetConnected(false)")
+	}
+	if ev.connects <= beforeConn {
+		t.Error("expected AgentConnected on SetConnected(true)")
+	}
+	agent, _ := r.Get(id)
+	if !agent.Connected {
+		t.Fatal("expected connected after toggle")
 	}
 }

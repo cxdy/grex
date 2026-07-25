@@ -27,24 +27,30 @@ import (
 	"github.com/dennisme/grex/internal/ui"
 )
 
-const (
-	shutdownGrace = 10 * time.Second
-	// drainDelay gives an orchestrator's readiness probe time to observe
-	// /readyz turning unready before listeners actually close, so new
-	// traffic stops arriving before in-flight connections are cut.
-	drainDelay = 5 * time.Second
-)
+const shutdownGrace = 10 * time.Second
+
+// drainDelay gives an orchestrator's readiness probe time to observe
+// /readyz turning unready before listeners actually close, so new
+// traffic stops arriving before in-flight connections are cut.
+// Overridable in tests to avoid sleeping the full production window.
+var drainDelay = 5 * time.Second
+
+// exitFunc is os.Exit in production; tests may override to avoid process exit.
+var exitFunc = os.Exit
 
 func main() {
-	if err := run(); err != nil {
+	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "grex:", err)
-		os.Exit(1)
+		exitFunc(1)
 	}
 }
 
-func run() error {
-	configPath := flag.String("config", "config.yaml", "path to the grex config file")
-	flag.Parse()
+func run(args []string) error {
+	fs := flag.NewFlagSet("grex", flag.ContinueOnError)
+	configPath := fs.String("config", "config.yaml", "path to the grex config file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {

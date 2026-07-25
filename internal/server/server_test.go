@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/dennisme/grex/internal/config"
 	"github.com/dennisme/grex/internal/metrics"
+	"github.com/dennisme/grex/internal/testcert"
 )
 
 func testConfig() *config.Config {
@@ -268,5 +270,70 @@ func TestStartFailsOnUnbindableAddress(t *testing.T) {
 		defer cancel()
 		_ = s.Shutdown(ctx)
 		t.Fatal("Start succeeded on an already-bound port")
+	}
+}
+
+func TestBoundAddrBeforeStartAndFatalChannel(t *testing.T) {
+	s := New(testConfig(), testLogger(), OpAMP{}, UI{}, metrics.NewRegistry(), prometheus.NewRegistry())
+	if s.OpAMPAddr() != "" || s.UIAddr() != "" || s.TelemetryAddr() != "" {
+		t.Fatal("bound addresses should be empty before Start")
+	}
+	// Fatal is a non-nil receive-only channel.
+	ch := s.Fatal()
+	if ch == nil {
+		t.Fatal("Fatal channel nil")
+	}
+	select {
+	case <-ch:
+		t.Fatal("unexpected fatal before Start")
+	default:
+	}
+}
+
+func TestShutdownBeforeStartIsNoop(t *testing.T) {
+	s := New(testConfig(), testLogger(), OpAMP{}, UI{}, metrics.NewRegistry(), prometheus.NewRegistry())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown before Start: %v", err)
+	}
+}
+
+func TestOpAMPTLSConfigErrors(t *testing.T) {
+	// Missing keypair files.
+	_, err := opampTLSConfig(config.TLS{CertFile: "/no/such/cert.pem", KeyFile: "/no/such/key.pem"})
+	if err == nil {
+		t.Fatal("expected keypair load error")
+	}
+
+	// Valid keypair + missing client CA file.
+	certs := testcert.Gen(t)
+	_, err = opampTLSConfig(config.TLS{
+		CertFile:     certs.ServerCertFile,
+		KeyFile:      certs.ServerKeyFile,
+		ClientCAFile: "/no/such/ca.pem",
+	})
+	if err == nil {
+		t.Fatal("expected client CA read error")
+	}
+
+	// Valid keypair + empty/non-PEM client CA file.
+	badCA := t.TempDir() + "/empty-ca.pem"
+	if err := os.WriteFile(badCA, []byte("not a cert"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = opampTLSConfig(config.TLS{
+		CertFile:     certs.ServerCertFile,
+		KeyFile:      certs.ServerKeyFile,
+		ClientCAFile: badCA,
+	})
+	if err == nil {
+		t.Fatal("expected empty CA bundle error")
+	}
+
+	// Happy path: no TLS.
+	cfg, err := opampTLSConfig(config.TLS{})
+	if err != nil || cfg != nil {
+		t.Fatalf("empty TLS: cfg=%v err=%v", cfg, err)
 	}
 }
