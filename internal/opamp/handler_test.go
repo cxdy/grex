@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -37,12 +38,37 @@ func newFakeConn(t *testing.T) *fakeConn {
 	return &fakeConn{c: server}
 }
 
+// recordingMetrics counts handler metric hook firings.
+type recordingMetrics struct {
+	messages, messageErrors              int
+	accepted, rejected                   int
+	connectionsOpened, connectionsClosed int
+}
+
+func (m *recordingMetrics) Message()      { m.messages++ }
+func (m *recordingMetrics) MessageError() { m.messageErrors++ }
+func (m *recordingMetrics) GatewayConnect(accepted bool) {
+	if accepted {
+		m.accepted++
+	} else {
+		m.rejected++
+	}
+}
+func (m *recordingMetrics) GatewayConnectionOpened() { m.connectionsOpened++ }
+func (m *recordingMetrics) GatewayConnectionClosed() { m.connectionsClosed++ }
+
 func testHandler() (*Handler, *fleet.Registry) {
+	h, registry, _ := testHandlerMetrics()
+	return h, registry
+}
+
+func testHandlerMetrics() (*Handler, *fleet.Registry, *recordingMetrics) {
 	registry := fleet.New(fleet.Config{
 		HeartbeatInterval:     30 * time.Second,
 		StaleMissedHeartbeats: 3,
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	return New(slog.New(slog.NewTextHandler(io.Discard, nil)), registry), registry
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	rec := &recordingMetrics{}
+	return New(slog.New(slog.NewTextHandler(io.Discard, nil)), registry, rec), registry, rec
 }
 
 func connectMsg(t *testing.T, requestUID string) *protobufs.AgentToServer {
@@ -158,6 +184,55 @@ func TestReportFeedsRegistry(t *testing.T) {
 	}
 	if agent.Conn.RemoteAddr == "" {
 		t.Error("RemoteAddr not recorded")
+	}
+}
+
+func TestHandlerMetrics(t *testing.T) {
+	h, _, rec := testHandlerMetrics()
+	conn := newFakeConn(t)
+	uid := uuid.New()
+
+	// Two accepted connects on one connection: the gateway gauge opens once.
+	h.onMessage(context.Background(), conn, connectMsg(t, "req-1"))
+	h.onMessage(context.Background(), conn, connectMsg(t, "req-2"))
+	// One malformed connect: rejected.
+	bad := connectMsg(t, "req-3")
+	bad.CustomMessage.Data = []byte("{not json")
+	h.onMessage(context.Background(), conn, bad)
+	// A regular report.
+	h.onMessage(context.Background(), conn, &protobufs.AgentToServer{InstanceUid: uid[:]})
+	// Closing the gateway connection closes the gauge.
+	h.onConnectionClose(conn)
+	// Closing a non-gateway connection does not.
+	h.onConnectionClose(newFakeConn(t))
+	// Read errors are counted.
+	h.onReadMessageError(nil, 0, nil, io.ErrUnexpectedEOF)
+
+	if rec.messages != 4 {
+		t.Errorf("messages = %d, want 4", rec.messages)
+	}
+	if rec.accepted != 2 || rec.rejected != 1 {
+		t.Errorf("connects = %d accepted %d rejected, want 2/1", rec.accepted, rec.rejected)
+	}
+	if rec.connectionsOpened != 1 {
+		t.Errorf("connectionsOpened = %d, want 1", rec.connectionsOpened)
+	}
+	if rec.connectionsClosed != 1 {
+		t.Errorf("connectionsClosed = %d, want 1", rec.connectionsClosed)
+	}
+	if rec.messageErrors != 1 {
+		t.Errorf("messageErrors = %d, want 1", rec.messageErrors)
+	}
+}
+
+func TestTransportDetection(t *testing.T) {
+	wsReq := httptest.NewRequest(http.MethodGet, "/v1/opamp", nil)
+	wsReq.Header.Set("Upgrade", "websocket")
+	if got := transportFor(wsReq); got != "ws" {
+		t.Errorf("transportFor(upgrade) = %q, want ws", got)
+	}
+	if got := transportFor(httptest.NewRequest(http.MethodPost, "/v1/opamp", nil)); got != "http" {
+		t.Errorf("transportFor(plain) = %q, want http", got)
 	}
 }
 

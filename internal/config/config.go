@@ -19,7 +19,16 @@ type Config struct {
 	Listeners Listeners `yaml:"listeners"`
 	TLS       TLS       `yaml:"tls"`
 	Fleet     Fleet     `yaml:"fleet"`
+	Metrics   Metrics   `yaml:"metrics"`
 	Log       Log       `yaml:"log"`
+}
+
+// Metrics holds telemetry exposure settings.
+type Metrics struct {
+	// PerAgentSeriesLimit caps per-agent metric series. When the fleet
+	// exceeds the limit, per-agent series are omitted entirely; aggregate
+	// series always remain.
+	PerAgentSeriesLimit int `yaml:"per_agent_series_limit"`
 }
 
 // Listeners holds the bind addresses for the three server listeners.
@@ -110,6 +119,7 @@ func (c *Config) envOverrides() []struct {
 		{"GREX_FLEET_HEARTBEAT_INTERVAL", setDuration(&c.Fleet.HeartbeatInterval)},
 		{"GREX_FLEET_STALE_MISSED_HEARTBEATS", setInt(&c.Fleet.StaleMissedHeartbeats)},
 		{"GREX_FLEET_REQUIRED_ATTRIBUTES", setStringList(&c.Fleet.RequiredAttributes)},
+		{"GREX_METRICS_PER_AGENT_SERIES_LIMIT", setInt(&c.Metrics.PerAgentSeriesLimit)},
 		{"GREX_LOG_LEVEL", setString(&c.Log.Level)},
 		{"GREX_LOG_FORMAT", setString(&c.Log.Format)},
 	}
@@ -122,8 +132,9 @@ func defaults() *Config {
 			UI:        ":8080",
 			Telemetry: ":9090",
 		},
-		Fleet: Fleet{HeartbeatInterval: 30 * time.Second, StaleMissedHeartbeats: 3},
-		Log:   Log{Level: "info", Format: "text"},
+		Fleet:   Fleet{HeartbeatInterval: 30 * time.Second, StaleMissedHeartbeats: 3},
+		Metrics: Metrics{PerAgentSeriesLimit: 1000},
+		Log:     Log{Level: "info", Format: "text"},
 	}
 }
 
@@ -181,6 +192,9 @@ func (c *Config) validate() error {
 	}
 	if c.Fleet.StaleMissedHeartbeats <= 0 {
 		return fmt.Errorf("fleet.stale_missed_heartbeats: must be positive, got %d", c.Fleet.StaleMissedHeartbeats)
+	}
+	if c.Metrics.PerAgentSeriesLimit < 0 {
+		return fmt.Errorf("metrics.per_agent_series_limit: must be non-negative, got %d", c.Metrics.PerAgentSeriesLimit)
 	}
 	return nil
 }

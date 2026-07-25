@@ -59,7 +59,8 @@ auth boundary:
    collectors when enabled.
 2. **UI + read API** — serves the web UI and a JSON API the UI consumes. Guarded
    by OIDC login and roles.
-3. **Telemetry endpoint** — Prometheus `/metrics` plus health/readiness probes.
+3. **Telemetry endpoint** — Prometheus `/metrics` (server health) and
+   `/metrics/fleet` (fleet series) plus health/readiness probes.
 
 ### OpAMP server
 
@@ -161,12 +162,33 @@ auth boundary:
 
 ### Metrics
 
-grex exposes Prometheus metrics on the telemetry endpoint. Two groups:
+grex exposes Prometheus metrics on the telemetry listener as two separate
+endpoints, one per group:
+
+- `/metrics` — server health (Go runtime, process, OpAMP message counters).
+- `/metrics/fleet` — fleet health (everything prefixed with agent/gateway
+  semantics below).
+
+They are separate so operators can scrape them as independent jobs:
+
+1. Different scrape economics: server internals are cheap and useful at short
+   intervals; fleet series change at heartbeat granularity and cost a fleet
+   snapshot per scrape, so they suit a slower interval.
+2. Independent protection: Prometheus `sample_limit` is per scrape job. A
+   fleet cardinality blowout trips only the fleet job, leaving the server
+   health samples needed to diagnose it intact.
+3. Limit scoping: `metrics.per_agent_series_limit` governs only fleet data;
+   a fleet-only endpoint makes that boundary visible.
+4. Routing: fleet series can go to a different Prometheus/Mimir tenant with
+   shorter retention than server SLO metrics.
+
+The two groups:
 
 **Fleet health** (the point of the product):
 
-- `grex_agents_connected` (gauge, by transport, agent type, and `via`:
-  direct or gateway)
+- `grex_agents_connected` (gauge, by `transport`: ws/http and `via`:
+  direct/gateway; agent type is not derivable from the protocol and carries
+  no label)
 - `grex_gateway_connections` (gauge: multiplexed gateway connections open)
 - `grex_gateway_connects_total` (counter, by result: accepted/rejected
   `connectResult` answers)
@@ -176,8 +198,8 @@ grex exposes Prometheus metrics on the telemetry endpoint. Two groups:
   check-in threshold)
 - `grex_agent_health` (gauge, by instance_uid: 1 healthy / 0 unhealthy)
 - `grex_agent_last_seen_timestamp_seconds` (gauge, by instance_uid)
-- `grex_agent_reports_total` (counter, by message type: status, health,
-  effective config)
+- `grex_agent_reports_total` (counter, by `type`: status, health,
+  effective_config)
 - `grex_agent_missing_attributes_total` (counter, by attribute key: agent
   reports lacking a required AgentDescription attribute)
 - `grex_agents_noncompliant` (gauge: agents currently missing at least one
@@ -186,14 +208,15 @@ grex exposes Prometheus metrics on the telemetry endpoint. Two groups:
 
 **Server health:**
 
-- OpAMP message processing counts/errors/latency
-- HTTP API request counts/latency/status
-- Auth outcomes (login success/failure, mTLS verification failures)
-- Go runtime metrics (standard collectors)
+- `grex_opamp_messages_total` / `grex_opamp_message_errors_total`
+- HTTP API request counts/latency/status (arrives with the read API milestone)
+- Auth outcomes (arrives with the auth milestone)
+- Go runtime and process metrics (standard collectors)
 
-Cardinality note: per-instance_uid metrics are capped by a configurable fleet
-size limit; above the cap, per-agent series are dropped and only aggregates
-remain.
+Cardinality note: per-instance_uid series (`grex_agent_health`,
+`grex_agent_last_seen_timestamp_seconds`) are capped by
+`metrics.per_agent_series_limit` (default 1000); above the cap they are
+omitted entirely and only aggregates remain.
 
 Exposing `/metrics` for Prometheus scrape is the only export path in 1.0; no
 OTLP export of grex's own telemetry.

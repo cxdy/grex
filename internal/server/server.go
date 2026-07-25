@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/dennisme/grex/internal/config"
@@ -48,14 +47,12 @@ type listener struct {
 	lis  net.Listener
 }
 
-// New builds a Server from the configuration. Call Start to bind and serve.
-func New(cfg *config.Config, logger *slog.Logger, opamp OpAMP) *Server {
-	registry := prometheus.NewRegistry()
-	registry.MustRegister(
-		collectors.NewGoCollector(),
-		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-	)
-
+// New builds a Server from the configuration. The serverRegistry backs the
+// telemetry listener's /metrics endpoint (server internals); fleetRegistry
+// backs /metrics/fleet (per-fleet series), kept separate so operators can
+// scrape them as independent jobs with independent limits. Call Start to
+// bind and serve.
+func New(cfg *config.Config, logger *slog.Logger, opamp OpAMP, serverRegistry, fleetRegistry *prometheus.Registry) *Server {
 	telemetryMux := http.NewServeMux()
 	telemetryMux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -65,7 +62,8 @@ func New(cfg *config.Config, logger *slog.Logger, opamp OpAMP) *Server {
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintln(w, "ok")
 	})
-	telemetryMux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
+	telemetryMux.Handle("/metrics", promhttp.HandlerFor(serverRegistry, promhttp.HandlerOpts{}))
+	telemetryMux.Handle("/metrics/fleet", promhttp.HandlerFor(fleetRegistry, promhttp.HandlerOpts{}))
 
 	notImplemented := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "not implemented", http.StatusNotImplemented)
@@ -82,7 +80,7 @@ func New(cfg *config.Config, logger *slog.Logger, opamp OpAMP) *Server {
 	return &Server{
 		log:      logger,
 		cfg:      cfg,
-		registry: registry,
+		registry: serverRegistry,
 		listeners: map[string]*listener{
 			"opamp": {addr: cfg.Listeners.OpAMP, srv: &http.Server{
 				Handler:           opampHandler,
