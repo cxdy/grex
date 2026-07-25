@@ -46,8 +46,8 @@ func TestRoleOf(t *testing.T) {
 func TestDisplayNameOf(t *testing.T) {
 	t.Parallel()
 	a := Agent{
-		InstanceUID: "uid-1",
-		Identifying: map[string]string{"service.name": "otelcol"},
+		InstanceUID:    "uid-1",
+		Identifying:    map[string]string{"service.name": "otelcol"},
 		NonIdentifying: map[string]string{"host.name": "host-a"},
 	}
 	if got := DisplayNameOf(a); got != "otelcol" {
@@ -66,10 +66,10 @@ func TestDisplayNameOf(t *testing.T) {
 func TestSummaryViewOmitsBulkyFields(t *testing.T) {
 	t.Parallel()
 	a := Agent{
-		InstanceUID: "uid-1",
-		Identifying: map[string]string{"service.name": "x", "service.version": "1.0"},
+		InstanceUID:     "uid-1",
+		Identifying:     map[string]string{"service.name": "x", "service.version": "1.0"},
 		EffectiveConfig: map[string]string{"": "receivers: {}"},
-		Packages: map[string]Package{"p": {Name: "p"}},
+		Packages:        map[string]Package{"p": {Name: "p"}},
 	}
 	v := SummaryView(a)
 	if v.EffectiveConfig != nil {

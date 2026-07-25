@@ -1,5 +1,11 @@
 # grex 1.0 Design Spec
 
+!!! warning "Living document"
+    This design spec **changes frequently** as grex evolves. Treat it as the
+    current plan of record, not a frozen contract. Implementation may lag or
+    diverge briefly; prefer the rest of this documentation site and the source
+    for what ships today.
+
 grex is an OpAMP control plane for OpenTelemetry Collector fleets, written in Go and
 licensed under Apache 2.0. It implements the server side of the
 [OpAMP specification](https://opentelemetry.io/docs/specs/opamp/) and gives operators

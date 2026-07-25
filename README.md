@@ -8,8 +8,12 @@ grex is an OpAMP control plane for OpenTelemetry Collector fleets. It
 implements the server side of the
 [OpAMP specification](https://opentelemetry.io/docs/specs/opamp/) and gives
 operators a read-only view of fleet health: connected collectors, their
-identity, health, and effective configuration. See
-[docs/design.md](docs/design.md) for the 1.0 design.
+identity, health, and effective configuration.
+
+**Documentation:** [https://dennisme.github.io/grex/](https://dennisme.github.io/grex/)
+
+The living 1.0 design (changes frequently) is under
+[docs/spec/design.md](docs/spec/design.md).
 
 ## Development
 
@@ -35,7 +39,8 @@ independent limits.
 
 The UI listener (default `:8080`) serves the fleet web UI (`/`,
 `/agents/{id}`, `/status`) and the JSON read API (`/api/agents`,
-`/api/agents/{id}`, `/api/status`). The UI auto-refreshes via htmx; interval
+`/api/agents/{id}`, `/api/status`, `/api/attributes`,
+`/api/attributes/values`). The UI auto-refreshes via htmx; interval
 is `ui.poll_interval` (default `5s`).
 
 ## Compose dev stack
@@ -55,6 +60,16 @@ Prometheus scraping both grex metrics endpoints as separate jobs. Ports on
 localhost: grex UI `8080`, grex telemetry `9090`, grex OpAMP `4320`, Dex
 `5556`, Prometheus `9091`. Dev certificates are minted once into `deploy/compose/certs/` by a
 one-shot container; delete the directory to regenerate.
+
+## Documentation site (local)
+
+```sh
+pip install -r requirements-docs.txt
+mkdir -p docs/assets && cp logo.png docs/assets/logo.png
+mkdocs serve
+```
+
+GitHub Pages is published from `main` via `.github/workflows/docs.yml`.
 
 ## License
 
