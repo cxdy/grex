@@ -110,7 +110,10 @@ auth boundary:
   metadata (remote address, TLS client identity), and timestamps.
 - Concurrency-safe; the OpAMP callbacks write, the API reads.
 - No persistence in 1.0 (see non-goals). State survives agent reconnects
-  because agents re-report on connect.
+  because agents re-report on connect. Agents behind a gateway never observe
+  a grex restart (their connections are to the gateway), so grex sets the
+  `ReportFullState` flag on replies to any agent whose entry has no
+  description, and the agent resends everything on its next check-in.
 
 ### Web UI
 
@@ -196,7 +199,12 @@ The two groups:
   evicted)
 - `grex_agents_evicted_total` (counter: agents removed after missing the
   check-in threshold)
-- `grex_agent_health` (gauge, by instance_uid: 1 healthy / 0 unhealthy)
+- `grex_agent_health` (gauge, by instance_uid: 1 healthy / 0 unhealthy;
+  omitted for agents that have not yet sent a health report, so a server
+  restart cannot read as a fleet-wide health drop)
+- `grex_agents_awaiting_full_state` (gauge: agents registered without a
+  description yet, i.e. the post-restart convergence window while
+  `ReportFullState` requests are answered)
 - `grex_agent_last_seen_timestamp_seconds` (gauge, by instance_uid)
 - `grex_agent_reports_total` (counter, by `type`: status, health,
   effective_config)
@@ -254,7 +262,10 @@ agent attributes, metric cardinality cap.
    both roles, so the full login flow is exercised offline without GitHub
    credentials. Production swaps the connector config to GitHub; grex config
    is unchanged.
-6. **Dev certificate generation** — an init step (script or one-shot container)
+6. **Prometheus** — scrapes grex with two jobs mirroring production layout:
+   `grex-server` on `/metrics` at the default interval, `grex-fleet` on
+   `/metrics/fleet` at heartbeat granularity with its own `sample_limit`.
+7. **Dev certificate generation** — an init step (script or one-shot container)
    that mints a local CA, server certs for grex and the OpAMP gateway, and
    client certs for the collectors so mTLS is exercised on both hops in dev,
    not just prod.

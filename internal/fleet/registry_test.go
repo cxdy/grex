@@ -302,6 +302,35 @@ func TestSetConnected(t *testing.T) {
 	}
 }
 
+func TestReportedFlags(t *testing.T) {
+	r, _ := testRegistry()
+	uid := testUID()
+
+	r.Report(&protobufs.AgentToServer{InstanceUid: uid[:]}, ConnMeta{})
+	agent, _ := r.Get(uid.String())
+	if agent.DescriptionReported || agent.HealthReported {
+		t.Errorf("flags set from bare heartbeat: %+v", agent)
+	}
+
+	r.Report(statusMsg(uid), ConnMeta{})
+	agent, _ = r.Get(uid.String())
+	if !agent.DescriptionReported {
+		t.Error("DescriptionReported false after description report")
+	}
+	if agent.HealthReported {
+		t.Error("HealthReported true without a health report")
+	}
+
+	r.Report(&protobufs.AgentToServer{
+		InstanceUid: uid[:],
+		Health:      &protobufs.ComponentHealth{Healthy: true},
+	}, ConnMeta{})
+	agent, _ = r.Get(uid.String())
+	if !agent.HealthReported {
+		t.Error("HealthReported false after health report")
+	}
+}
+
 func TestEventsFire(t *testing.T) {
 	r, _, events := testRegistryEvents()
 	base := time.Now()

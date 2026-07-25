@@ -225,6 +225,45 @@ func TestHandlerMetrics(t *testing.T) {
 	}
 }
 
+// A grex restart behind a gateway leaves agents connected on the agent side,
+// so they never resend their full state on their own. The server must request
+// it when an agent's entry has no description.
+func TestRequestsFullStateFromDescriptionlessAgent(t *testing.T) {
+	h, _ := testHandler()
+	conn := newFakeConn(t)
+	uid := uuid.New()
+	fullState := uint64(protobufs.ServerToAgentFlags_ServerToAgentFlags_ReportFullState)
+
+	heartbeat := &protobufs.AgentToServer{InstanceUid: uid[:]}
+	reply := h.onMessage(context.Background(), conn, heartbeat)
+	if reply.Flags&fullState == 0 {
+		t.Error("first heartbeat from unknown agent did not request full state")
+	}
+
+	reply = h.onMessage(context.Background(), conn, heartbeat)
+	if reply.Flags&fullState == 0 {
+		t.Error("repeat heartbeat without description did not request full state")
+	}
+
+	reply = h.onMessage(context.Background(), conn, &protobufs.AgentToServer{
+		InstanceUid: uid[:],
+		AgentDescription: &protobufs.AgentDescription{
+			IdentifyingAttributes: []*protobufs.KeyValue{{
+				Key:   "service.name",
+				Value: &protobufs.AnyValue{Value: &protobufs.AnyValue_StringValue{StringValue: "otelcol"}},
+			}},
+		},
+	})
+	if reply.Flags&fullState != 0 {
+		t.Error("full-state report still flagged for full state")
+	}
+
+	reply = h.onMessage(context.Background(), conn, heartbeat)
+	if reply.Flags&fullState != 0 {
+		t.Error("heartbeat after description recorded still flagged for full state")
+	}
+}
+
 func TestTransportDetection(t *testing.T) {
 	wsReq := httptest.NewRequest(http.MethodGet, "/v1/opamp", nil)
 	wsReq.Header.Set("Upgrade", "websocket")

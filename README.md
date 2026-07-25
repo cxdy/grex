@@ -45,9 +45,10 @@ make compose-down    # tear down, removing volumes
 
 The stack runs grex (built from local source, OpAMP listener terminating TLS
 with generated dev certificates), two OpenTelemetry Collector agents and one
-gateway connecting to grex over mTLS, and Dex as the dev OIDC issuer. Ports on
+gateway connecting to grex over mTLS, Dex as the dev OIDC issuer, and
+Prometheus scraping both grex metrics endpoints as separate jobs. Ports on
 localhost: grex UI `8080`, grex telemetry `9090`, grex OpAMP `4320`, Dex
-`5556`. Dev certificates are minted once into `deploy/compose/certs/` by a
+`5556`, Prometheus `9091`. Dev certificates are minted once into `deploy/compose/certs/` by a
 one-shot container; delete the directory to regenerate.
 
 ## License

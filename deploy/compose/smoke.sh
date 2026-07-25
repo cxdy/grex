@@ -54,6 +54,17 @@ wait_metric 'grex_gateway_connections' eq 2
 wait_metric 'grex_gateway_connects_total{result="accepted"}' ge 3
 wait_metric 'grex_agents_noncompliant' eq 0
 wait_metric 'grex_agent_reports_total{type="status"}' ge 3
+wait_metric 'grex_agents_awaiting_full_state' eq 0
+
+# Prometheus scrapes both grex endpoints as separate healthy jobs, plus the
+# three collectors' internal telemetry.
+for _ in $(seq 1 30); do
+    up=$(curl -s http://127.0.0.1:9091/api/v1/targets |
+        python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(1 for t in d['data']['activeTargets'] if t['health']=='up' and t['labels']['job'] in ('grex-server','grex-fleet','otelcol')))" 2>/dev/null || echo 0)
+    [ "$up" = 5 ] && break
+    sleep 2
+done
+[ "$up" = 5 ] || fail "prometheus targets up: want 5, got ${up:-0}"
 
 for svc in otelcol-agent-1 otelcol-agent-2 otelcol-gateway; do
     docker compose logs --no-color "$svc" | grep -ic opamp > /dev/null ||
