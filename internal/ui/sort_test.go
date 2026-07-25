@@ -26,8 +26,8 @@ func TestParseSortToggleFields(t *testing.T) {
 	// invalid column falls back
 	q = url.Values{"sort": {"attributes"}, "order": {"asc"}}
 	sortKey, order = parseSort(q)
-	if sortKey != "instance" {
-		t.Fatalf("invalid sort column: got %s", sortKey)
+	if sortKey != "instance" || order != "asc" {
+		t.Fatalf("invalid sort column: got %s %s, want instance asc", sortKey, order)
 	}
 }
 

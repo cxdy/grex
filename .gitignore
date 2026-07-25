@@ -33,3 +33,6 @@ go.work.sum
 
 # Compose dev certificates
 deploy/compose/certs/
+
+# MkDocs build output
+site/

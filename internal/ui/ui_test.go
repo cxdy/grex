@@ -108,7 +108,7 @@ func TestUIFilterQuery(t *testing.T) {
 			InstanceUid: uid[:],
 			AgentDescription: &protobufs.AgentDescription{
 				IdentifyingAttributes: []*protobufs.KeyValue{{
-					Key: "service.name",
+					Key:   "service.name",
 					Value: &protobufs.AnyValue{Value: &protobufs.AnyValue_StringValue{StringValue: name}},
 				}},
 			},
@@ -150,11 +150,11 @@ func TestNormalizeAttrForm(t *testing.T) {
 		InstanceUid: uid[:],
 		AgentDescription: &protobufs.AgentDescription{
 			IdentifyingAttributes: []*protobufs.KeyValue{{
-				Key: "service.name",
+				Key:   "service.name",
 				Value: &protobufs.AnyValue{Value: &protobufs.AnyValue_StringValue{StringValue: "x"}},
 			}},
 			NonIdentifyingAttributes: []*protobufs.KeyValue{{
-				Key: "deployment.environment",
+				Key:   "deployment.environment",
 				Value: &protobufs.AnyValue{Value: &protobufs.AnyValue_StringValue{StringValue: "prod"}},
 			}},
 		},

@@ -1,0 +1,114 @@
+site_name: grex
+site_description: OpAMP control plane for OpenTelemetry Collector fleets
+site_url: https://dennisme.github.io/grex/
+repo_url: https://github.com/dennisme/grex
+repo_name: dennisme/grex
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; grex contributors — Apache-2.0
+
+theme:
+  name: material
+  logo: assets/logo.png
+  favicon: assets/logo.png
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+    - toc.follow
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/dennisme/grex
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - getting-started/index.md
+      - Compose stack: getting-started/compose-stack.md
+  - User:
+      - user/index.md
+      - Fleet overview: user/fleet-overview.md
+      - Agent detail: user/agent-detail.md
+      - Server status: user/server-status.md
+  - Admin:
+      - admin/index.md
+      - Install: admin/install.md
+      - Configuration: admin/configuration.md
+      - TLS and mTLS: admin/tls-mtls.md
+      - Authentication: admin/authentication.md
+      - Health and lifecycle: admin/health-and-lifecycle.md
+      - Scaling with gateways: admin/scaling-with-gateways.md
+  - Developer:
+      - developer/index.md
+      - Architecture: developer/architecture.md
+      - Local development: developer/local-development.md
+      - Package map: developer/package-map.md
+      - OpAMP and gateway: developer/opamp-and-gateway.md
+      - Fleet state: developer/fleet-state.md
+      - Read API: developer/read-api.md
+      - Web UI: developer/ui.md
+      - Testing: developer/testing.md
+      - Extending grex: developer/extending.md
+      - Contributing: developer/contributing.md
+  - Observability:
+      - observability/index.md
+      - Metrics: observability/metrics.md
+      - Scraping: observability/scraping.md
+      - Cardinality: observability/cardinality.md
+      - Logging: observability/logging.md
+      - Tracing: observability/tracing.md
+      - Alerts: observability/alerts.md
+      - Debug pprof: observability/debug-pprof.md
+  - Reference:
+      - CLI: reference/cli.md
+      - Endpoints: reference/endpoints.md
+  - SPEC:
+      - spec/index.md
+      - Design: spec/design.md
