@@ -804,7 +804,8 @@ func dict(pairs ...any) (map[string]any, error) {
 		return nil, fmt.Errorf("dict requires even args")
 	}
 	m := make(map[string]any, len(pairs)/2)
-	for i := 0; i < len(pairs); i += 2 {
+	// Loop condition includes i+1 so pairs[i+1] is always in range (gosec G602).
+	for i := 0; i+1 < len(pairs); i += 2 {
 		k, ok := pairs[i].(string)
 		if !ok {
 			return nil, fmt.Errorf("dict keys must be strings")

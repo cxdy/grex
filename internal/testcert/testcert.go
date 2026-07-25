@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net"
 	"os"
@@ -28,13 +29,62 @@ type Certs struct {
 	ClientCertFile string
 }
 
+// genDeps are overridable hooks so tests can exercise failure paths.
+// Zero value uses production crypto and filesystem behavior.
+type genDeps struct {
+	// generateKey mints a P-256 private key. Defaults to ecdsa.GenerateKey.
+	// (crypto/ecdsa ignores a custom rand.Reader since Go 1.26, so keygen is
+	// injected as a whole rather than via io.Reader.)
+	generateKey func() (*ecdsa.PrivateKey, error)
+	// writeFile writes PEM material. Defaults to os.WriteFile.
+	writeFile func(name string, data []byte, perm os.FileMode) error
+	// createCertificate defaults to x509.CreateCertificate.
+	createCertificate func(rand io.Reader, template, parent *x509.Certificate, pub, priv any) ([]byte, error)
+	// parseCertificate defaults to x509.ParseCertificate.
+	parseCertificate func(der []byte) (*x509.Certificate, error)
+	// marshalECPrivateKey defaults to x509.MarshalECPrivateKey.
+	marshalECPrivateKey func(key *ecdsa.PrivateKey) ([]byte, error)
+	// x509KeyPair defaults to tls.X509KeyPair.
+	x509KeyPair func(certPEMBlock, keyPEMBlock []byte) (tls.Certificate, error)
+}
+
+func (d genDeps) withDefaults() genDeps {
+	if d.generateKey == nil {
+		d.generateKey = func() (*ecdsa.PrivateKey, error) {
+			return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		}
+	}
+	if d.writeFile == nil {
+		d.writeFile = os.WriteFile
+	}
+	if d.createCertificate == nil {
+		d.createCertificate = x509.CreateCertificate
+	}
+	if d.parseCertificate == nil {
+		d.parseCertificate = x509.ParseCertificate
+	}
+	if d.marshalECPrivateKey == nil {
+		d.marshalECPrivateKey = x509.MarshalECPrivateKey
+	}
+	if d.x509KeyPair == nil {
+		d.x509KeyPair = tls.X509KeyPair
+	}
+	return d
+}
+
 // Gen writes a fresh CA, server, and client certificate into a temp dir owned
 // by the test.
 func Gen(tb testing.TB) Certs {
 	tb.Helper()
+	return gen(tb, genDeps{})
+}
+
+func gen(tb testing.TB, deps genDeps) Certs {
+	tb.Helper()
+	deps = deps.withDefaults()
 	dir := tb.TempDir()
 
-	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	caKey, err := deps.generateKey()
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -47,17 +97,17 @@ func Gen(tb testing.TB) Certs {
 		KeyUsage:              x509.KeyUsageCertSign,
 		BasicConstraintsValid: true,
 	}
-	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
+	caDER, err := deps.createCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
 	if err != nil {
 		tb.Fatal(err)
 	}
-	caCert, err := x509.ParseCertificate(caDER)
+	caCert, err := deps.parseCertificate(caDER)
 	if err != nil {
 		tb.Fatal(err)
 	}
 
 	issue := func(name string, extUsage x509.ExtKeyUsage, ips []net.IP) (certPEM, keyPEM []byte) {
-		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		key, err := deps.generateKey()
 		if err != nil {
 			tb.Fatal(err)
 		}
@@ -70,11 +120,11 @@ func Gen(tb testing.TB) Certs {
 			ExtKeyUsage:  []x509.ExtKeyUsage{extUsage},
 			IPAddresses:  ips,
 		}
-		der, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, &key.PublicKey, caKey)
+		der, err := deps.createCertificate(rand.Reader, tmpl, caCert, &key.PublicKey, caKey)
 		if err != nil {
 			tb.Fatal(err)
 		}
-		keyDER, err := x509.MarshalECPrivateKey(key)
+		keyDER, err := deps.marshalECPrivateKey(key)
 		if err != nil {
 			tb.Fatal(err)
 		}
@@ -85,7 +135,7 @@ func Gen(tb testing.TB) Certs {
 
 	write := func(name string, data []byte) string {
 		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, data, 0o600); err != nil {
+		if err := deps.writeFile(path, data, 0o600); err != nil {
 			tb.Fatal(err)
 		}
 		return path
@@ -95,7 +145,7 @@ func Gen(tb testing.TB) Certs {
 	serverCertPEM, serverKeyPEM := issue("grex", x509.ExtKeyUsageServerAuth, []net.IP{net.ParseIP("127.0.0.1")})
 	clientCertPEM, clientKeyPEM := issue("otelcol", x509.ExtKeyUsageClientAuth, nil)
 
-	clientTLSCert, err := tls.X509KeyPair(clientCertPEM, clientKeyPEM)
+	clientTLSCert, err := deps.x509KeyPair(clientCertPEM, clientKeyPEM)
 	if err != nil {
 		tb.Fatal(err)
 	}

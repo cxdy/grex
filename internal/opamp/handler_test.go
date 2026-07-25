@@ -18,6 +18,27 @@ import (
 	"github.com/dennisme/grex/internal/fleet"
 )
 
+func TestNoopMetricsAndNilNew(t *testing.T) {
+	t.Parallel()
+	var n noopMetrics
+	n.Message()
+	n.MessageError()
+	n.GatewayConnect(true)
+	n.GatewayConnect(false)
+	n.GatewayConnectionOpened()
+	n.GatewayConnectionClosed()
+
+	// nil metrics → noopMetrics
+	r := fleet.New(fleet.Config{
+		HeartbeatInterval:     30 * time.Second,
+		StaleMissedHeartbeats: 3,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	h := New(slog.New(slog.NewTextHandler(io.Discard, nil)), r, nil)
+	if h == nil {
+		t.Fatal("New with nil metrics")
+	}
+}
+
 type fakeConn struct {
 	c net.Conn
 }

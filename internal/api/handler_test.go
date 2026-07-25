@@ -637,3 +637,56 @@ func TestGetAgentAndStatus(t *testing.T) {
 		t.Fatalf("status = %d", rec.Code)
 	}
 }
+
+func TestNewZeroStartedAt(t *testing.T) {
+	h := New(newRegistry(t), time.Time{})
+	if h.startedAt.IsZero() {
+		t.Fatal("startedAt should default when zero")
+	}
+}
+
+func TestGetAgentNotFoundAndStatusMix(t *testing.T) {
+	r := newRegistry(t)
+	// Connected healthy
+	reportAgent(r, true, fleet.ConnMeta{})
+	// Unhealthy connected
+	reportAgent(r, false, fleet.ConnMeta{})
+	// Awaiting description (no health, no description) — Report always sets something;
+	// use agent without health for health_unknown.
+	uid := uuid.New()
+	r.Report(&protobufs.AgentToServer{
+		InstanceUid: uid[:],
+		AgentDescription: &protobufs.AgentDescription{
+			IdentifyingAttributes: []*protobufs.KeyValue{{
+				Key:   "service.name",
+				Value: &protobufs.AnyValue{Value: &protobufs.AnyValue_StringValue{StringValue: "awaiting-health"}},
+			}},
+		},
+		// no Health → HealthReported false
+	}, fleet.ConnMeta{})
+	// Disconnected
+	id := reportAgent(r, true, fleet.ConnMeta{})
+	r.SetConnected(id, false)
+
+	mux := newMux(t, r)
+	code, raw := doGetRaw(t, mux, "/api/agents/"+uuid.New().String())
+	if code != http.StatusNotFound {
+		t.Fatalf("missing agent = %d body=%s", code, raw)
+	}
+
+	code, raw = doGetRaw(t, mux, "/api/status")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+	var st map[string]any
+	if err := json.Unmarshal(raw, &st); err != nil {
+		t.Fatal(err)
+	}
+	fleetStats, ok := st["fleet"].(map[string]any)
+	if !ok {
+		t.Fatalf("fleet stats missing: %v", st)
+	}
+	if fleetStats["total"].(float64) < 3 {
+		t.Errorf("total = %v", fleetStats["total"])
+	}
+}
