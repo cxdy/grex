@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/open-telemetry/opamp-go/protobufs"
@@ -44,11 +45,29 @@ type gatewayConnectResult struct {
 	ResponseHeaders map[string]string `json:"response_headers,omitempty"`
 }
 
+// Metrics receives handler telemetry events.
+type Metrics interface {
+	Message()
+	MessageError()
+	GatewayConnect(accepted bool)
+	GatewayConnectionOpened()
+	GatewayConnectionClosed()
+}
+
+type noopMetrics struct{}
+
+func (noopMetrics) Message()                 {}
+func (noopMetrics) MessageError()            {}
+func (noopMetrics) GatewayConnect(bool)      {}
+func (noopMetrics) GatewayConnectionOpened() {}
+func (noopMetrics) GatewayConnectionClosed() {}
+
 // Handler serves the OpAMP protocol and folds agent state into the registry.
 type Handler struct {
 	log      *slog.Logger
 	registry *fleet.Registry
 	srv      opampserver.OpAMPServer
+	metrics  Metrics
 
 	mu sync.Mutex
 	// connAgents maps a connection to the instance uids reported over it so
@@ -57,29 +76,52 @@ type Handler struct {
 	// gatewayConns marks connections that have sent a gateway connect
 	// message; agents on them are recorded as relayed.
 	gatewayConns map[servertypes.Connection]struct{}
+	// connTransports records each connection's OpAMP transport (ws or http).
+	connTransports map[servertypes.Connection]string
 }
 
-// New builds a Handler feeding the given registry.
-func New(logger *slog.Logger, registry *fleet.Registry) *Handler {
-	return &Handler{
-		log:          logger,
-		registry:     registry,
-		srv:          opampserver.New(slogOpAMPLogger{logger}),
-		connAgents:   make(map[servertypes.Connection]map[string]struct{}),
-		gatewayConns: make(map[servertypes.Connection]struct{}),
+// New builds a Handler feeding the given registry. A nil metrics receives no
+// telemetry events.
+func New(logger *slog.Logger, registry *fleet.Registry, metrics Metrics) *Handler {
+	if metrics == nil {
+		metrics = noopMetrics{}
 	}
+	return &Handler{
+		log:            logger,
+		registry:       registry,
+		srv:            opampserver.New(slogOpAMPLogger{logger}),
+		metrics:        metrics,
+		connAgents:     make(map[servertypes.Connection]map[string]struct{}),
+		gatewayConns:   make(map[servertypes.Connection]struct{}),
+		connTransports: make(map[servertypes.Connection]string),
+	}
+}
+
+// transportFor classifies an incoming OpAMP request by transport.
+func transportFor(r *http.Request) string {
+	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return "ws"
+	}
+	return "http"
 }
 
 // Attach returns the HTTP handler and ConnContext to mount on the OpAMP
 // listener.
 func (h *Handler) Attach() (http.HandlerFunc, func(ctx context.Context, c net.Conn) context.Context, error) {
 	callbacks := servertypes.Callbacks{
-		OnConnecting: func(*http.Request) servertypes.ConnectionResponse {
+		OnConnecting: func(r *http.Request) servertypes.ConnectionResponse {
+			transport := transportFor(r)
 			return servertypes.ConnectionResponse{
 				Accept: true,
 				ConnectionCallbacks: servertypes.ConnectionCallbacks{
-					OnMessage:         h.onMessage,
-					OnConnectionClose: h.onConnectionClose,
+					OnConnected: func(_ context.Context, conn servertypes.Connection) {
+						h.mu.Lock()
+						h.connTransports[conn] = transport
+						h.mu.Unlock()
+					},
+					OnMessage:          h.onMessage,
+					OnConnectionClose:  h.onConnectionClose,
+					OnReadMessageError: h.onReadMessageError,
 				},
 			}
 		},
@@ -95,6 +137,7 @@ func (h *Handler) Attach() (http.HandlerFunc, func(ctx context.Context, c net.Co
 }
 
 func (h *Handler) onMessage(_ context.Context, conn servertypes.Connection, msg *protobufs.AgentToServer) *protobufs.ServerToAgent {
+	h.metrics.Message()
 	if custom := msg.GetCustomMessage(); custom.GetCapability() == GatewayCapability &&
 		custom.GetType() == gatewayConnectType {
 		return h.onGatewayConnect(conn, msg)
@@ -115,7 +158,10 @@ func (h *Handler) onMessage(_ context.Context, conn servertypes.Connection, msg 
 // message), so it is logged here and agents carry gateway-level metadata.
 func (h *Handler) onGatewayConnect(conn servertypes.Connection, msg *protobufs.AgentToServer) *protobufs.ServerToAgent {
 	h.mu.Lock()
-	h.gatewayConns[conn] = struct{}{}
+	if _, known := h.gatewayConns[conn]; !known {
+		h.gatewayConns[conn] = struct{}{}
+		h.metrics.GatewayConnectionOpened()
+	}
 	h.mu.Unlock()
 
 	var connect gatewayConnect
@@ -130,6 +176,7 @@ func (h *Handler) onGatewayConnect(conn servertypes.Connection, msg *protobufs.A
 			"agent_remote_address", connect.RemoteAddress,
 			"user_agent", connect.Headers.Get("User-Agent"))
 	}
+	h.metrics.GatewayConnect(result.Accept)
 
 	data, err := json.Marshal(result)
 	if err != nil {
@@ -149,12 +196,22 @@ func (h *Handler) onGatewayConnect(conn servertypes.Connection, msg *protobufs.A
 func (h *Handler) onConnectionClose(conn servertypes.Connection) {
 	h.mu.Lock()
 	agents := h.connAgents[conn]
+	_, wasGateway := h.gatewayConns[conn]
 	delete(h.connAgents, conn)
 	delete(h.gatewayConns, conn)
+	delete(h.connTransports, conn)
 	h.mu.Unlock()
+	if wasGateway {
+		h.metrics.GatewayConnectionClosed()
+	}
 	for id := range agents {
 		h.registry.SetConnected(id, false)
 	}
+}
+
+func (h *Handler) onReadMessageError(_ servertypes.Connection, _ int, _ []byte, err error) {
+	h.metrics.MessageError()
+	h.log.Warn("opamp message read failed", "error", err)
 }
 
 func (h *Handler) trackAgent(conn servertypes.Connection, msg *protobufs.AgentToServer) {
@@ -174,6 +231,7 @@ func (h *Handler) connMeta(conn servertypes.Connection) fleet.ConnMeta {
 	meta := fleet.ConnMeta{}
 	h.mu.Lock()
 	_, meta.ViaGateway = h.gatewayConns[conn]
+	meta.Transport = h.connTransports[conn]
 	h.mu.Unlock()
 
 	netConn := conn.Connection()

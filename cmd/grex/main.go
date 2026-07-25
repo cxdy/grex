@@ -11,8 +11,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/dennisme/grex/internal/config"
 	"github.com/dennisme/grex/internal/fleet"
+	"github.com/dennisme/grex/internal/metrics"
 	"github.com/dennisme/grex/internal/opamp"
 	"github.com/dennisme/grex/internal/server"
 )
@@ -38,17 +41,21 @@ func run() error {
 	logger := newLogger(cfg.Log)
 	slog.SetDefault(logger)
 
+	serverMetrics := metrics.NewRegistry()
+	fleetMetrics := prometheus.NewRegistry()
+	events := metrics.NewEvents(serverMetrics, fleetMetrics)
 	registry := fleet.New(fleet.Config{
 		HeartbeatInterval:     cfg.Fleet.HeartbeatInterval,
 		StaleMissedHeartbeats: cfg.Fleet.StaleMissedHeartbeats,
 		RequiredAttributes:    cfg.Fleet.RequiredAttributes,
-	}, logger)
-	handler, connCtx, err := opamp.New(logger, registry).Attach()
+	}, logger, events)
+	fleetMetrics.MustRegister(metrics.NewFleetCollector(registry, cfg.Metrics.PerAgentSeriesLimit))
+	handler, connCtx, err := opamp.New(logger, registry, events).Attach()
 	if err != nil {
 		return err
 	}
 
-	srv := server.New(cfg, logger, server.OpAMP{Handler: handler, ConnContext: connCtx})
+	srv := server.New(cfg, logger, server.OpAMP{Handler: handler, ConnContext: connCtx}, serverMetrics, fleetMetrics)
 	if err := srv.Start(); err != nil {
 		return err
 	}

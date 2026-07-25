@@ -12,9 +12,11 @@ import (
 	"github.com/open-telemetry/opamp-go/client"
 	clienttypes "github.com/open-telemetry/opamp-go/client/types"
 	"github.com/open-telemetry/opamp-go/protobufs"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/dennisme/grex/internal/config"
 	"github.com/dennisme/grex/internal/fleet"
+	"github.com/dennisme/grex/internal/metrics"
 	"github.com/dennisme/grex/internal/server"
 	"github.com/dennisme/grex/internal/testcert"
 )
@@ -27,8 +29,8 @@ func startStack(t *testing.T, certs testcert.Certs) (string, *fleet.Registry) {
 	registry := fleet.New(fleet.Config{
 		HeartbeatInterval:     30 * time.Second,
 		StaleMissedHeartbeats: 3,
-	}, logger)
-	handler := New(logger, registry)
+	}, logger, nil)
+	handler := New(logger, registry, nil)
 	httpHandler, connCtx, err := handler.Attach()
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
@@ -48,7 +50,7 @@ func startStack(t *testing.T, certs testcert.Certs) (string, *fleet.Registry) {
 		Fleet: config.Fleet{HeartbeatInterval: 30 * time.Second, StaleMissedHeartbeats: 3},
 		Log:   config.Log{Level: "info", Format: "text"},
 	}
-	srv := server.New(cfg, logger, server.OpAMP{Handler: httpHandler, ConnContext: connCtx})
+	srv := server.New(cfg, logger, server.OpAMP{Handler: httpHandler, ConnContext: connCtx}, metrics.NewRegistry(), prometheus.NewRegistry())
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -133,6 +135,9 @@ func TestWebSocketAgentEndToEnd(t *testing.T) {
 	if agent.Conn.TLSSubject == "" {
 		t.Error("TLSSubject empty; client certificate identity not recorded")
 	}
+	if agent.Conn.Transport != "ws" {
+		t.Errorf("Transport = %q, want ws", agent.Conn.Transport)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -157,4 +162,8 @@ func TestHTTPPollingAgentEndToEnd(t *testing.T) {
 		agent, ok := registry.Get(uid.String())
 		return ok && agent.Identifying["service.name"] == "e2e-agent"
 	})
+	agent, _ := registry.Get(uid.String())
+	if agent.Conn.Transport != "http" {
+		t.Errorf("Transport = %q, want http", agent.Conn.Transport)
+	}
 }

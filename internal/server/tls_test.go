@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/dennisme/grex/internal/metrics"
 	"github.com/dennisme/grex/internal/testcert"
 )
 
@@ -18,7 +21,7 @@ func startTLSServer(t *testing.T, certs testcert.Certs, mtls bool) *Server {
 	if mtls {
 		cfg.TLS.ClientCAFile = certs.CAFile
 	}
-	s := New(cfg, testLogger(), OpAMP{})
+	s := New(cfg, testLogger(), OpAMP{}, metrics.NewRegistry(), prometheus.NewRegistry())
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

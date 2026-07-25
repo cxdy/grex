@@ -29,7 +29,9 @@ go run ./cmd/grex -config config.yaml
 ```
 
 The telemetry listener (default `:9090`) serves `/healthz`, `/readyz`, and
-Prometheus `/metrics`.
+two Prometheus endpoints: `/metrics` (server health) and `/metrics/fleet`
+(fleet series), separated so they can be scraped as independent jobs with
+independent limits.
 
 ## Compose dev stack
 

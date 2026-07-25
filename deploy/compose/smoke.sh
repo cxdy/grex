@@ -26,23 +26,34 @@ curl -fsS http://127.0.0.1:9090/metrics | grep -q '^go_' || fail "grex /metrics 
 curl -fsS http://127.0.0.1:5556/dex/.well-known/openid-configuration |
     grep -q '"issuer"' || fail "dex openid-configuration"
 
-# Full chain: three collectors connect through the OpAMP gateway, grex
-# answers their connect delegations and registers each agent.
-# grep -c reads the whole stream, avoiding a SIGPIPE to docker under
-# pipefail; -q would exit at the first match and break the pipeline.
-wait_for_count() {
-    label="$1" want="$2" svc="$3" pattern="$4"
-    for _ in $(seq 1 30); do
-        got=$(docker compose logs --no-color "$svc" | grep -c "$pattern" || true)
-        [ "$got" -ge "$want" ] && return 0
-        sleep 2
-    done
-    fail "$label: want >= $want, got ${got:-0}"
+# Full chain asserted via grex metrics: three collectors connect through the
+# OpAMP gateway, grex answers their connect delegations and registers each
+# agent.
+metric() {
+    curl -s http://127.0.0.1:9090/metrics/fleet |
+        awk -v name="$1" 'index($0, name) == 1 {print $NF; exit}'
 }
 
-wait_for_count "gateway connects accepted by grex" 3 grex "gateway connect accepted"
-wait_for_count "agents registered via gateway" 3 grex '"agent registered".*"via_gateway":true'
-wait_for_count "gateway authentication results" 3 opamp-gateway "authentication result"
+wait_metric() {
+    name="$1" op="$2" want="$3"
+    for _ in $(seq 1 30); do
+        got=$(metric "$name")
+        if [ -n "$got" ]; then
+            case "$op" in
+            eq) [ "${got%.*}" -eq "$want" ] && return 0 ;;
+            ge) [ "${got%.*}" -ge "$want" ] && return 0 ;;
+            esac
+        fi
+        sleep 2
+    done
+    fail "$name: want $op $want, got ${got:-absent}"
+}
+
+wait_metric 'grex_agents_connected{transport="ws",via="gateway"}' eq 3
+wait_metric 'grex_gateway_connections' eq 2
+wait_metric 'grex_gateway_connects_total{result="accepted"}' ge 3
+wait_metric 'grex_agents_noncompliant' eq 0
+wait_metric 'grex_agent_reports_total{type="status"}' ge 3
 
 for svc in otelcol-agent-1 otelcol-agent-2 otelcol-gateway; do
     docker compose logs --no-color "$svc" | grep -ic opamp > /dev/null ||

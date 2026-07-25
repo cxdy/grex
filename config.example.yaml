@@ -18,12 +18,21 @@ tls:
   # certificates (mTLS). Requires cert_file and key_file.
   client_ca_file: ""
 
+metrics:
+  # Per-agent metric series (grex_agent_health,
+  # grex_agent_last_seen_timestamp_seconds) are omitted entirely when the
+  # fleet exceeds this limit; aggregate series always remain.
+  per_agent_series_limit: 1000
+
 fleet:
   # How often each agent is expected to check in.
   heartbeat_interval: 30s
   # How many consecutive check-ins an agent may miss before it is
   # evicted from fleet state and the UI.
   stale_missed_heartbeats: 3
+  # AgentDescription attribute keys every agent must report. Missing keys
+  # are logged and counted in metrics; empty disables enforcement.
+  required_attributes: []
 
 log:
   # debug, info, warn, error

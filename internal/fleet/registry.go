@@ -26,7 +26,32 @@ type ConnMeta struct {
 	TLSSubject string
 	// ViaGateway is true when the agent is relayed through an OpAMP gateway.
 	ViaGateway bool
+	// Transport is the OpAMP transport in use: "ws" or "http".
+	Transport string
 }
+
+// Events receives fleet lifecycle notifications, e.g. for metrics. All
+// methods are called with the registry lock held; implementations must not
+// call back into the registry.
+type Events interface {
+	AgentConnected()
+	AgentDisconnected()
+	AgentEvicted()
+	// ReportReceived is called per report kind present in a message:
+	// "status", "health", or "effective_config".
+	ReportReceived(kind string)
+	// MissingAttribute is called for each newly missing required attribute
+	// when an agent's compliance state changes.
+	MissingAttribute(key string)
+}
+
+type noopEvents struct{}
+
+func (noopEvents) AgentConnected()         {}
+func (noopEvents) AgentDisconnected()      {}
+func (noopEvents) AgentEvicted()           {}
+func (noopEvents) ReportReceived(string)   {}
+func (noopEvents) MissingAttribute(string) {}
 
 // Agent is a point-in-time snapshot of one agent's state.
 type Agent struct {
@@ -58,20 +83,25 @@ type Config struct {
 
 // Registry is the concurrency-safe fleet state.
 type Registry struct {
-	cfg Config
-	log *slog.Logger
-	now func() time.Time
+	cfg    Config
+	log    *slog.Logger
+	now    func() time.Time
+	events Events
 
 	mu     sync.RWMutex
 	agents map[string]*Agent
 }
 
-// New builds an empty registry.
-func New(cfg Config, logger *slog.Logger) *Registry {
+// New builds an empty registry. A nil events receives no notifications.
+func New(cfg Config, logger *slog.Logger, events Events) *Registry {
+	if events == nil {
+		events = noopEvents{}
+	}
 	return &Registry{
 		cfg:    cfg,
 		log:    logger,
 		now:    time.Now,
+		events: events,
 		agents: make(map[string]*Agent),
 	}
 }
@@ -108,6 +138,9 @@ func (r *Registry) Report(msg *protobufs.AgentToServer, meta ConnMeta) {
 			"remote_addr", meta.RemoteAddr,
 			"via_gateway", meta.ViaGateway)
 	}
+	if !agent.Connected {
+		r.events.AgentConnected()
+	}
 	agent.LastSeen = now
 	agent.Connected = true
 	agent.Conn = meta
@@ -115,15 +148,18 @@ func (r *Registry) Report(msg *protobufs.AgentToServer, meta ConnMeta) {
 		agent.Capabilities = msg.Capabilities
 	}
 	if desc := msg.GetAgentDescription(); desc != nil {
+		r.events.ReportReceived("status")
 		agent.Identifying = attrsToMap(desc.GetIdentifyingAttributes())
 		agent.NonIdentifying = attrsToMap(desc.GetNonIdentifyingAttributes())
 		r.checkRequiredAttributes(agent)
 	}
 	if health := msg.GetHealth(); health != nil {
+		r.events.ReportReceived("health")
 		agent.Healthy = health.GetHealthy()
 		agent.HealthError = health.GetLastError()
 	}
 	if cfgMap := msg.GetEffectiveConfig().GetConfigMap().GetConfigMap(); len(cfgMap) > 0 {
+		r.events.ReportReceived("effective_config")
 		names := make([]string, 0, len(cfgMap))
 		for name := range cfgMap {
 			names = append(names, name)
@@ -157,6 +193,9 @@ func (r *Registry) checkRequiredAttributes(agent *Agent) {
 	changed := !slices.Equal(agent.MissingAttributes, missing)
 	agent.MissingAttributes = missing
 	if len(missing) > 0 && changed {
+		for _, key := range missing {
+			r.events.MissingAttribute(key)
+		}
 		r.log.Warn("agent missing required attributes",
 			"instance_uid", agent.InstanceUID, "missing", missing)
 	}
@@ -167,9 +206,16 @@ func (r *Registry) checkRequiredAttributes(agent *Agent) {
 func (r *Registry) SetConnected(id string, connected bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if agent, ok := r.agents[id]; ok {
-		agent.Connected = connected
+	agent, ok := r.agents[id]
+	if !ok {
+		return
 	}
+	if agent.Connected && !connected {
+		r.events.AgentDisconnected()
+	} else if !agent.Connected && connected {
+		r.events.AgentConnected()
+	}
+	agent.Connected = connected
 }
 
 // Get returns a snapshot of one agent.
@@ -205,6 +251,7 @@ func (r *Registry) Sweep(now time.Time) []string {
 		if now.Sub(agent.LastSeen) > threshold {
 			delete(r.agents, id)
 			evicted = append(evicted, id)
+			r.events.AgentEvicted()
 			r.log.Info("agent evicted",
 				"instance_uid", id, "last_seen", agent.LastSeen)
 		}

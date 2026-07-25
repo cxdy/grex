@@ -3,6 +3,7 @@ package fleet
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"log/slog"
 	"slices"
 	"strings"
@@ -14,14 +15,67 @@ import (
 	"github.com/open-telemetry/opamp-go/protobufs"
 )
 
+// recordingEvents counts event hook firings for assertions.
+type recordingEvents struct {
+	mu                sync.Mutex
+	connects          int
+	disconnects       int
+	evictions         int
+	reports           map[string]int
+	missingAttributes map[string]int
+}
+
+func newRecordingEvents() *recordingEvents {
+	return &recordingEvents{
+		reports:           make(map[string]int),
+		missingAttributes: make(map[string]int),
+	}
+}
+
+func (e *recordingEvents) AgentConnected() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.connects++
+}
+
+func (e *recordingEvents) AgentDisconnected() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.disconnects++
+}
+
+func (e *recordingEvents) AgentEvicted() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.evictions++
+}
+
+func (e *recordingEvents) ReportReceived(kind string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.reports[kind]++
+}
+
+func (e *recordingEvents) MissingAttribute(key string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.missingAttributes[key]++
+}
+
 func testRegistry(required ...string) (*Registry, *bytes.Buffer) {
+	r, logBuf, _ := testRegistryEvents(required...)
+	return r, logBuf
+}
+
+func testRegistryEvents(required ...string) (*Registry, *bytes.Buffer, *recordingEvents) {
 	var logBuf bytes.Buffer
+	events := newRecordingEvents()
 	r := New(Config{
 		HeartbeatInterval:     30 * time.Second,
 		StaleMissedHeartbeats: 3,
 		RequiredAttributes:    required,
-	}, slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	return r, &logBuf
+	}, slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})), events)
+	return r, &logBuf, events
 }
 
 func strAttr(key, value string) *protobufs.KeyValue {
@@ -100,7 +154,7 @@ func TestRegistrationSilentAtInfoLevel(t *testing.T) {
 	r := New(Config{
 		HeartbeatInterval:     30 * time.Second,
 		StaleMissedHeartbeats: 3,
-	}, slog.New(slog.NewTextHandler(&logBuf, nil)))
+	}, slog.New(slog.NewTextHandler(&logBuf, nil)), nil)
 
 	r.Report(statusMsg(testUID()), ConnMeta{})
 	if strings.Contains(logBuf.String(), "agent registered") {
@@ -246,6 +300,75 @@ func TestSetConnected(t *testing.T) {
 	if agent.Connected {
 		t.Error("Connected = true after SetConnected(false)")
 	}
+}
+
+func TestEventsFire(t *testing.T) {
+	r, _, events := testRegistryEvents()
+	base := time.Now()
+	r.now = func() time.Time { return base }
+	uid := testUID()
+
+	// Registration fires a connect and a status report.
+	r.Report(statusMsg(uid), ConnMeta{})
+	// Health and effective config reports are counted by kind.
+	r.Report(&protobufs.AgentToServer{
+		InstanceUid: uid[:],
+		Health:      &protobufs.ComponentHealth{Healthy: true},
+		EffectiveConfig: &protobufs.EffectiveConfig{
+			ConfigMap: &protobufs.AgentConfigMap{
+				ConfigMap: map[string]*protobufs.AgentConfigFile{"": {Body: []byte("x")}},
+			},
+		},
+	}, ConnMeta{})
+	// Disconnect fires once; repeating it does not.
+	r.SetConnected(uid.String(), false)
+	r.SetConnected(uid.String(), false)
+	// Reconnect fires a second connect.
+	r.Report(statusMsg(uid), ConnMeta{})
+	// Eviction fires.
+	r.Sweep(base.Add(time.Hour))
+
+	if events.connects != 2 {
+		t.Errorf("connects = %d, want 2 (register + reconnect)", events.connects)
+	}
+	if events.disconnects != 1 {
+		t.Errorf("disconnects = %d, want 1", events.disconnects)
+	}
+	if events.evictions != 1 {
+		t.Errorf("evictions = %d, want 1", events.evictions)
+	}
+	if events.reports["status"] != 2 {
+		t.Errorf("status reports = %d, want 2", events.reports["status"])
+	}
+	if events.reports["health"] != 1 || events.reports["effective_config"] != 1 {
+		t.Errorf("reports = %v", events.reports)
+	}
+}
+
+func TestMissingAttributeEvents(t *testing.T) {
+	r, _, events := testRegistryEvents("team", "deployment.environment")
+	uid := testUID()
+
+	r.Report(statusMsg(uid), ConnMeta{}) // has deployment.environment, missing team
+	r.Report(statusMsg(uid), ConnMeta{}) // unchanged: no second event
+
+	if events.missingAttributes["team"] != 1 {
+		t.Errorf("missing team events = %d, want 1 (state change only)", events.missingAttributes["team"])
+	}
+	if events.missingAttributes["deployment.environment"] != 0 {
+		t.Errorf("deployment.environment counted missing: %v", events.missingAttributes)
+	}
+}
+
+func TestNilEventsSafe(t *testing.T) {
+	r := New(Config{
+		HeartbeatInterval:     30 * time.Second,
+		StaleMissedHeartbeats: 3,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	uid := testUID()
+	r.Report(statusMsg(uid), ConnMeta{})
+	r.SetConnected(uid.String(), false)
+	r.Sweep(time.Now().Add(time.Hour))
 }
 
 func TestReportIgnoresInvalidInstanceUID(t *testing.T) {

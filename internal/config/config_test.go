@@ -42,6 +42,9 @@ func TestLoadDefaults(t *testing.T) {
 	if len(cfg.Fleet.RequiredAttributes) != 0 {
 		t.Errorf("RequiredAttributes = %v, want empty", cfg.Fleet.RequiredAttributes)
 	}
+	if cfg.Metrics.PerAgentSeriesLimit != 1000 {
+		t.Errorf("PerAgentSeriesLimit = %d, want 1000", cfg.Metrics.PerAgentSeriesLimit)
+	}
 	if cfg.Log.Level != "info" {
 		t.Errorf("Level = %q, want %q", cfg.Log.Level, "info")
 	}
@@ -62,6 +65,8 @@ fleet:
   required_attributes:
     - deployment.environment
     - service.namespace
+metrics:
+  per_agent_series_limit: 50
 log:
   level: debug
   format: json
@@ -82,6 +87,9 @@ log:
 	want := []string{"deployment.environment", "service.namespace"}
 	if !slices.Equal(cfg.Fleet.RequiredAttributes, want) {
 		t.Errorf("RequiredAttributes = %v, want %v", cfg.Fleet.RequiredAttributes, want)
+	}
+	if cfg.Metrics.PerAgentSeriesLimit != 50 {
+		t.Errorf("PerAgentSeriesLimit = %d, want 50", cfg.Metrics.PerAgentSeriesLimit)
 	}
 	if cfg.Log.Level != "debug" || cfg.Log.Format != "json" {
 		t.Errorf("Log = %+v", cfg.Log)
@@ -198,6 +206,7 @@ func TestLoadEnvOverrides(t *testing.T) {
 	t.Setenv("GREX_FLEET_HEARTBEAT_INTERVAL", "90s")
 	t.Setenv("GREX_FLEET_STALE_MISSED_HEARTBEATS", "7")
 	t.Setenv("GREX_FLEET_REQUIRED_ATTRIBUTES", "team, deployment.environment")
+	t.Setenv("GREX_METRICS_PER_AGENT_SERIES_LIMIT", "25")
 	path := writeFile(t, "config.yaml", "listeners:\n  opamp: \"127.0.0.1:14320\"\n")
 	cfg, err := Load(path)
 	if err != nil {
@@ -218,6 +227,16 @@ func TestLoadEnvOverrides(t *testing.T) {
 	want := []string{"team", "deployment.environment"}
 	if !slices.Equal(cfg.Fleet.RequiredAttributes, want) {
 		t.Errorf("RequiredAttributes = %v, want %v (env, comma separated, trimmed)", cfg.Fleet.RequiredAttributes, want)
+	}
+	if cfg.Metrics.PerAgentSeriesLimit != 25 {
+		t.Errorf("PerAgentSeriesLimit = %d, want 25", cfg.Metrics.PerAgentSeriesLimit)
+	}
+}
+
+func TestLoadNegativePerAgentSeriesLimit(t *testing.T) {
+	path := writeFile(t, "config.yaml", "metrics:\n  per_agent_series_limit: -1\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("want error for negative per-agent series limit")
 	}
 }
 
