@@ -34,6 +34,13 @@ fleet:
   # are logged and counted in metrics; empty disables enforcement.
   required_attributes: []
 
+debug:
+  # Mounts net/http/pprof under /debug/pprof on the telemetry listener.
+  # Off by default: exposes memory contents and profiling itself adds load.
+  # Only enable when the telemetry listener is not reachable from untrusted
+  # networks.
+  pprof_enabled: false
+
 log:
   # debug, info, warn, error
   level: info

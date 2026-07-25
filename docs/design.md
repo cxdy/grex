@@ -80,6 +80,21 @@ auth boundary:
   `docker compose` does not report the container unhealthy during that
   drain window.
 
+### Debug endpoints
+
+- `/debug/pprof/*` — standard `net/http/pprof` handlers (index, cmdline,
+  profile, symbol, trace, and the runtime profiles pprof's index dispatches
+  to: heap, goroutine, block, mutex, threadcreate) mounted on the telemetry
+  listener. Off by default, gated by `debug.pprof_enabled`
+  (`GREX_DEBUG_PPROF_ENABLED`): profiling exposes memory contents and CPU
+  profiling is itself a load, so it is opt-in and grex logs a warning on
+  startup when enabled. Registered on grex's own mux, never on
+  `http.DefaultServeMux`. Intended for operators who can reach the
+  telemetry listener but should not be exposed publicly; the telemetry
+  listener is already the least-trusted-network-exposed of the three by
+  design (see the separate-ports decision), and this makes clear it still
+  needs network-level restriction when pprof is turned on.
+
 ### OpAMP server
 
 - Library: `open-telemetry/opamp-go`. grex implements the server callbacks;

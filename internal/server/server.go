@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"sync/atomic"
 	"time"
@@ -77,6 +78,18 @@ func New(cfg *config.Config, logger *slog.Logger, opamp OpAMP, serverRegistry, f
 	})
 	telemetryMux.Handle("/metrics", promhttp.HandlerFor(serverRegistry, promhttp.HandlerOpts{}))
 	telemetryMux.Handle("/metrics/fleet", promhttp.HandlerFor(fleetRegistry, promhttp.HandlerOpts{}))
+	if cfg.Debug.PprofEnabled {
+		// Registered on our own mux, not http.DefaultServeMux, and gated
+		// behind an explicit opt-in: pprof exposes memory contents and its
+		// profiling handlers are themselves a load an operator must choose
+		// to accept.
+		telemetryMux.HandleFunc("/debug/pprof/", pprof.Index)
+		telemetryMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		telemetryMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		telemetryMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		telemetryMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		logger.Warn("pprof endpoints enabled", "path", "/debug/pprof")
+	}
 
 	notImplemented := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "not implemented", http.StatusNotImplemented)

@@ -103,6 +103,40 @@ func TestReadyzReflectsDraining(t *testing.T) {
 	}
 }
 
+func TestPprofDisabledByDefault(t *testing.T) {
+	s := startServer(t)
+	base := "http://" + s.TelemetryAddr()
+
+	if code, _ := get(t, base+"/debug/pprof/"); code != http.StatusNotFound {
+		t.Errorf("/debug/pprof/ with pprof disabled = %d, want 404", code)
+	}
+}
+
+func TestPprofEnabled(t *testing.T) {
+	cfg := testConfig()
+	cfg.Debug.PprofEnabled = true
+	s := New(cfg, testLogger(), OpAMP{}, metrics.NewRegistry(), prometheus.NewRegistry())
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.Shutdown(ctx)
+	})
+	base := "http://" + s.TelemetryAddr()
+
+	if code, body := get(t, base+"/debug/pprof/"); code != http.StatusOK || !strings.Contains(body, "profile") {
+		t.Errorf("/debug/pprof/ = %d %q, want 200 with profile index", code, body)
+	}
+	if code, _ := get(t, base+"/debug/pprof/cmdline"); code != http.StatusOK {
+		t.Errorf("/debug/pprof/cmdline = %d, want 200", code)
+	}
+	if code, _ := get(t, base+"/debug/pprof/goroutine"); code != http.StatusOK {
+		t.Errorf("/debug/pprof/goroutine = %d, want 200", code)
+	}
+}
+
 func TestOpAMPAndUIAreStubs(t *testing.T) {
 	s := startServer(t)
 	for name, addr := range map[string]string{
