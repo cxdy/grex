@@ -199,7 +199,12 @@ The two groups:
   evicted)
 - `grex_agents_evicted_total` (counter: agents removed after missing the
   check-in threshold)
-- `grex_agent_health` (gauge, by instance_uid: 1 healthy / 0 unhealthy)
+- `grex_agent_health` (gauge, by instance_uid: 1 healthy / 0 unhealthy;
+  omitted for agents that have not yet sent a health report, so a server
+  restart cannot read as a fleet-wide health drop)
+- `grex_agents_awaiting_full_state` (gauge: agents registered without a
+  description yet, i.e. the post-restart convergence window while
+  `ReportFullState` requests are answered)
 - `grex_agent_last_seen_timestamp_seconds` (gauge, by instance_uid)
 - `grex_agent_reports_total` (counter, by `type`: status, health,
   effective_config)

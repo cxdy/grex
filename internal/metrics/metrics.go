@@ -135,6 +135,10 @@ var (
 		"grex_agents_noncompliant",
 		"Agents missing at least one required attribute.",
 		nil, nil)
+	descAgentsAwaitingFullState = prometheus.NewDesc(
+		"grex_agents_awaiting_full_state",
+		"Agents that have not yet reported their description.",
+		nil, nil)
 	descAgentHealth = prometheus.NewDesc(
 		"grex_agent_health",
 		"Agent health as reported: 1 healthy, 0 unhealthy.",
@@ -163,6 +167,7 @@ func (c *FleetCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- descAgentsConnected
 	ch <- descAgentsDisconnected
 	ch <- descAgentsNoncompliant
+	ch <- descAgentsAwaitingFullState
 	ch <- descAgentHealth
 	ch <- descAgentLastSeen
 }
@@ -172,7 +177,7 @@ func (c *FleetCollector) Collect(ch chan<- prometheus.Metric) {
 	agents := c.registry.List()
 
 	connected := make(map[[2]string]float64)
-	var disconnected, noncompliant float64
+	var disconnected, noncompliant, awaiting float64
 	for _, agent := range agents {
 		if agent.Connected {
 			via := "direct"
@@ -186,6 +191,9 @@ func (c *FleetCollector) Collect(ch chan<- prometheus.Metric) {
 		if len(agent.MissingAttributes) > 0 {
 			noncompliant++
 		}
+		if !agent.DescriptionReported {
+			awaiting++
+		}
 	}
 	for labels, count := range connected {
 		ch <- prometheus.MustNewConstMetric(descAgentsConnected,
@@ -195,17 +203,24 @@ func (c *FleetCollector) Collect(ch chan<- prometheus.Metric) {
 		prometheus.GaugeValue, disconnected)
 	ch <- prometheus.MustNewConstMetric(descAgentsNoncompliant,
 		prometheus.GaugeValue, noncompliant)
+	ch <- prometheus.MustNewConstMetric(descAgentsAwaitingFullState,
+		prometheus.GaugeValue, awaiting)
 
 	if len(agents) > c.perAgentLimit {
 		return
 	}
 	for _, agent := range agents {
-		health := 0.0
-		if agent.Healthy {
-			health = 1.0
+		// Health is omitted until the agent reports it; a bare registry
+		// entry (e.g. right after a server restart) must not read as
+		// unhealthy.
+		if agent.HealthReported {
+			health := 0.0
+			if agent.Healthy {
+				health = 1.0
+			}
+			ch <- prometheus.MustNewConstMetric(descAgentHealth,
+				prometheus.GaugeValue, health, agent.InstanceUID)
 		}
-		ch <- prometheus.MustNewConstMetric(descAgentHealth,
-			prometheus.GaugeValue, health, agent.InstanceUID)
 		ch <- prometheus.MustNewConstMetric(descAgentLastSeen,
 			prometheus.GaugeValue, float64(agent.LastSeen.Unix()), agent.InstanceUID)
 	}

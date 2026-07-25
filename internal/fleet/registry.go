@@ -55,18 +55,24 @@ func (noopEvents) MissingAttribute(string) {}
 
 // Agent is a point-in-time snapshot of one agent's state.
 type Agent struct {
-	InstanceUID       string
-	Identifying       map[string]string
-	NonIdentifying    map[string]string
-	Capabilities      uint64
-	Healthy           bool
-	HealthError       string
-	EffectiveConfig   string
-	Conn              ConnMeta
-	Connected         bool
-	FirstSeen         time.Time
-	LastSeen          time.Time
-	MissingAttributes []string
+	InstanceUID    string
+	Identifying    map[string]string
+	NonIdentifying map[string]string
+	Capabilities   uint64
+	Healthy        bool
+	HealthError    string
+	// HealthReported is true once the agent has sent a health report;
+	// Healthy is meaningless before then.
+	HealthReported bool
+	// DescriptionReported is true once the agent has sent its
+	// AgentDescription. False means grex is awaiting the agent's full state.
+	DescriptionReported bool
+	EffectiveConfig     string
+	Conn                ConnMeta
+	Connected           bool
+	FirstSeen           time.Time
+	LastSeen            time.Time
+	MissingAttributes   []string
 }
 
 // Config holds the registry settings.
@@ -149,12 +155,14 @@ func (r *Registry) Report(msg *protobufs.AgentToServer, meta ConnMeta) {
 	}
 	if desc := msg.GetAgentDescription(); desc != nil {
 		r.events.ReportReceived("status")
+		agent.DescriptionReported = true
 		agent.Identifying = attrsToMap(desc.GetIdentifyingAttributes())
 		agent.NonIdentifying = attrsToMap(desc.GetNonIdentifyingAttributes())
 		r.checkRequiredAttributes(agent)
 	}
 	if health := msg.GetHealth(); health != nil {
 		r.events.ReportReceived("health")
+		agent.HealthReported = true
 		agent.Healthy = health.GetHealthy()
 		agent.HealthError = health.GetLastError()
 	}

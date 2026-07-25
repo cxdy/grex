@@ -165,7 +165,7 @@ func (h *Handler) needsFullState(msg *protobufs.AgentToServer) bool {
 		return false
 	}
 	agent, ok := h.registry.Get(id)
-	return ok && len(agent.Identifying) == 0 && len(agent.NonIdentifying) == 0
+	return ok && !agent.DescriptionReported
 }
 
 // onGatewayConnect answers a gateway's per-agent auth delegation. The

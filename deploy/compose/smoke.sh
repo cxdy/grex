@@ -54,6 +54,7 @@ wait_metric 'grex_gateway_connections' eq 2
 wait_metric 'grex_gateway_connects_total{result="accepted"}' ge 3
 wait_metric 'grex_agents_noncompliant' eq 0
 wait_metric 'grex_agent_reports_total{type="status"}' ge 3
+wait_metric 'grex_agents_awaiting_full_state' eq 0
 
 # Prometheus scrapes both grex endpoints as separate healthy jobs, plus the
 # three collectors' internal telemetry.

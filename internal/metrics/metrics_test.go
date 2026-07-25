@@ -34,12 +34,12 @@ func report(r *fleet.Registry, uid uuid.UUID, meta fleet.ConnMeta, healthy bool)
 	}, meta)
 }
 
-func newFleet(events fleet.Events, required ...string) *fleet.Registry {
+func newFleet(required ...string) *fleet.Registry {
 	return fleet.New(fleet.Config{
 		HeartbeatInterval:     30 * time.Second,
 		StaleMissedHeartbeats: 3,
 		RequiredAttributes:    required,
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)), events)
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 }
 
 func TestNewRegistryHasRuntimeCollectors(t *testing.T) {
@@ -126,7 +126,7 @@ func TestEventCounters(t *testing.T) {
 }
 
 func TestFleetCollectorAggregates(t *testing.T) {
-	registry := newFleet(nil, "team")
+	registry := newFleet("team")
 	direct := uuid.New()
 	relayed := uuid.New()
 	gone := uuid.New()
@@ -157,7 +157,7 @@ grex_agents_noncompliant 3
 }
 
 func TestFleetCollectorPerAgentSeries(t *testing.T) {
-	registry := newFleet(nil)
+	registry := newFleet()
 	uid := uuid.New()
 	report(registry, uid, fleet.ConnMeta{Transport: "ws"}, true)
 
@@ -175,8 +175,44 @@ grex_agent_health{instance_uid="` + uid.String() + `"} 1
 	}
 }
 
+// Agents that have not yet reported health or description, e.g. right after
+// a grex restart behind a gateway, must not read as unhealthy.
+func TestFleetCollectorOmitsUnreportedState(t *testing.T) {
+	registry := newFleet()
+	uid := uuid.New()
+	// Bare heartbeat: registered, nothing reported yet.
+	registry.Report(&protobufs.AgentToServer{InstanceUid: uid[:]}, fleet.ConnMeta{Transport: "ws"})
+
+	collector := NewFleetCollector(registry, 1000)
+	if got := testutil.CollectAndCount(collector, "grex_agent_health"); got != 0 {
+		t.Errorf("agent_health series for unreported agent = %d, want 0", got)
+	}
+	expected := `
+# HELP grex_agents_awaiting_full_state Agents that have not yet reported their description.
+# TYPE grex_agents_awaiting_full_state gauge
+grex_agents_awaiting_full_state 1
+`
+	if err := testutil.CollectAndCompare(collector, strings.NewReader(expected), "grex_agents_awaiting_full_state"); err != nil {
+		t.Error(err)
+	}
+
+	// Full state arrives: health appears, awaiting drops to zero.
+	report(registry, uid, fleet.ConnMeta{Transport: "ws"}, true)
+	if got := testutil.CollectAndCount(collector, "grex_agent_health"); got != 1 {
+		t.Errorf("agent_health series after report = %d, want 1", got)
+	}
+	expected = `
+# HELP grex_agents_awaiting_full_state Agents that have not yet reported their description.
+# TYPE grex_agents_awaiting_full_state gauge
+grex_agents_awaiting_full_state 0
+`
+	if err := testutil.CollectAndCompare(collector, strings.NewReader(expected), "grex_agents_awaiting_full_state"); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestFleetCollectorCapDropsPerAgentSeries(t *testing.T) {
-	registry := newFleet(nil)
+	registry := newFleet()
 	report(registry, uuid.New(), fleet.ConnMeta{Transport: "ws"}, true)
 	report(registry, uuid.New(), fleet.ConnMeta{Transport: "ws"}, true)
 
