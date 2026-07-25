@@ -1,7 +1,7 @@
 dist:
   name: opamp-gateway
-  description: Minimal collector shipping the patched opampgateway extension
-  version: 1.10.0-grex.1
+  description: Minimal collector shipping opampgateway with the upstream TLS fix
+  version: 1.10.0-grex.2
   output_path: /build/out
 
 extensions:
@@ -13,5 +13,15 @@ receivers:
 exporters:
   - gomod: go.opentelemetry.io/collector/exporter/nopexporter v0.156.0
 
+# Tracks the tip of dennisme/bindplane-otel-contrib@dennisme/fix-server-tls-config,
+# which fixes an upstream bug: server.tls settings never reach the gateway's
+# websocket dialer, so mTLS to a private-CA OpAMP server silently fails.
+# Resolved to a
+# pseudo-version because the fork's go.mod still declares its module path as
+# the upstream one; a plain `gomod:` require of the fork path fails that
+# check, but a replace target is not subject to it.
+#
+# Remove this replace and go back to the plain observiq/observiq-otel-collector
+# image once the fix lands upstream in a tagged opampgateway release.
 replaces:
-  - github.com/observiq/bindplane-otel-contrib/extension/opampgateway => /build/opampgateway
+  - github.com/observiq/bindplane-otel-contrib/extension/opampgateway => github.com/dennisme/bindplane-otel-contrib/extension/opampgateway v0.0.0-20260725053755-bd7c35a42de9

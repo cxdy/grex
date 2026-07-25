@@ -334,11 +334,16 @@ agent attributes, metric cardinality cap.
 2. **OpAMP gateway × 1** — a collector running the observIQ `opampgateway`
    extension: TLS listener for the agents (dev certs), N upstream WebSocket
    connections to grex with its own client certificate. The image is a small
-   OCB build from source with a grex patch applied: extension v1.10.0
-   declares upstream TLS settings but never wires them into its websocket
-   dialer, so the stock observIQ distribution image cannot reach a
-   private-CA/mTLS OpAMP server. That is the accepted fork-and-fix risk,
-   realized; the patch is a candidate for upstreaming.
+   OCB build (`deploy/compose/opamp-gateway-build/`) whose manifest replaces
+   the extension module with a commit on
+   `dennisme/bindplane-otel-contrib@dennisme/fix-server-tls-config`: extension
+   v1.10.0 declares upstream TLS settings but never wires them into its
+   websocket dialer, so the stock observIQ distribution image cannot reach a
+   private-CA/mTLS OpAMP server. That is the
+   accepted fork-and-fix risk, realized; the fork branch is a candidate for
+   an upstream PR. Once a tagged release ships the fix, drop the `replaces`
+   entry and switch back to the stock `observiq/observiq-otel-collector`
+   image.
 3. **otelcol agent × 2** — OpenTelemetry Collector containers running the
    `opamp` extension pointed at the OpAMP gateway, each generating some
    internal telemetry so the fleet view has real data.
