@@ -145,10 +145,27 @@ func (h *Handler) onMessage(_ context.Context, conn servertypes.Connection, msg 
 
 	h.trackAgent(conn, msg)
 	h.registry.Report(msg, h.connMeta(conn))
-	return &protobufs.ServerToAgent{
+	reply := &protobufs.ServerToAgent{
 		InstanceUid:  msg.GetInstanceUid(),
 		Capabilities: uint64(protobufs.ServerCapabilities_ServerCapabilities_AcceptsStatus),
 	}
+	// An agent whose entry lacks a description has state this server has
+	// never seen, e.g. agents connected through a gateway when grex
+	// restarts: their connections never drop, so they do not re-report on
+	// their own. Ask for everything.
+	if h.needsFullState(msg) {
+		reply.Flags = uint64(protobufs.ServerToAgentFlags_ServerToAgentFlags_ReportFullState)
+	}
+	return reply
+}
+
+func (h *Handler) needsFullState(msg *protobufs.AgentToServer) bool {
+	id, err := fleet.InstanceUID(msg.GetInstanceUid())
+	if err != nil {
+		return false
+	}
+	agent, ok := h.registry.Get(id)
+	return ok && len(agent.Identifying) == 0 && len(agent.NonIdentifying) == 0
 }
 
 // onGatewayConnect answers a gateway's per-agent auth delegation. The

@@ -1,0 +1,27 @@
+# Prometheus for the compose dev stack. Two jobs, one per grex metrics
+# endpoint, mirroring the intended production layout: server health scraped
+# fast, fleet series scraped at heartbeat granularity with its own
+# sample_limit so a fleet cardinality blowout cannot drop server health
+# samples.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: grex-server
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["grex:9090"]
+
+  - job_name: grex-fleet
+    metrics_path: /metrics/fleet
+    scrape_interval: 30s
+    sample_limit: 5000
+    static_configs:
+      - targets: ["grex:9090"]
+
+  - job_name: otelcol
+    static_configs:
+      - targets:
+          - "otelcol-agent-1:8888"
+          - "otelcol-agent-2:8888"
+          - "otelcol-gateway:8888"

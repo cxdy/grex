@@ -10,7 +10,9 @@ services:
       - ./deploy/compose/certs:/certs
 
   grex:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     command: ["-config", "/etc/grex/config.yaml"]
     ports:
       - "127.0.0.1:8080:8080"
@@ -24,6 +26,21 @@ services:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  prometheus:
+    image: prom/prometheus:v3.13.1
+    ports:
+      - "127.0.0.1:9091:9090"
+    volumes:
+      - ./deploy/compose/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      grex:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/-/healthy"]
       interval: 5s
       timeout: 3s
       retries: 12
