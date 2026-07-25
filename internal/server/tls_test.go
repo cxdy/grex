@@ -16,12 +16,12 @@ import (
 func startTLSServer(t *testing.T, certs testcert.Certs, mtls bool) *Server {
 	t.Helper()
 	cfg := testConfig()
-	cfg.TLS.CertFile = certs.ServerCertFile
-	cfg.TLS.KeyFile = certs.ServerKeyFile
+	cfg.OpAMPTLS.CertFile = certs.ServerCertFile
+	cfg.OpAMPTLS.KeyFile = certs.ServerKeyFile
 	if mtls {
-		cfg.TLS.ClientCAFile = certs.CAFile
+		cfg.OpAMPTLS.ClientCAFile = certs.CAFile
 	}
-	s := New(cfg, testLogger(), OpAMP{}, UI{}, metrics.NewRegistry(), prometheus.NewRegistry())
+	s := New(cfg, testLogger(), OpAMP{}, UI{}, nil, metrics.NewRegistry(), prometheus.NewRegistry())
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

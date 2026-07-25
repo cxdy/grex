@@ -10,13 +10,45 @@ listeners:
   # Health probes and Prometheus /metrics.
   telemetry: ":9090"
 
-tls:
+opamp_tls:
   # cert_file and key_file enable TLS on the OpAMP listener.
   cert_file: ""
   key_file: ""
   # client_ca_file additionally requires and verifies client
-  # certificates (mTLS). Requires cert_file and key_file.
+  # certificates (mTLS). Requires cert_file and key_file. Collectors and
+  # OpAMP gateways are the peers.
   client_ca_file: ""
+
+ui_tls:
+  # Same shape as opamp_tls, for the UI/API listener. Human and
+  # script/automation callers are the peers. A client cert is optional
+  # at the TLS handshake (so a caller with no cert still connects); the
+  # request is then rejected with 403 unless auth resolves a role for it.
+  cert_file: ""
+  key_file: ""
+  client_ca_file: ""
+
+telemetry_tls:
+  # Same shape, for the telemetry listener. Prometheus is the peer.
+  # /healthz and /readyz are exempt from the role check even when
+  # client_ca_file is set, since orchestrator health probes present no
+  # client certificate.
+  cert_file: ""
+  key_file: ""
+  client_ca_file: ""
+
+auth:
+  # Applies only to a listener whose *_tls block above also sets
+  # client_ca_file. Identity comes from the client cert's SPIFFE ID (a
+  # single URI SAN, spiffe://<trust-domain>/<path>); certs with zero or
+  # more than one URI SAN, or a non-spiffe:// URI SAN, are rejected.
+  role_mapping:
+    []
+    # - match: exact           # exact | prefix
+    #   spiffe_id: spiffe://grex-api.internal/user/alice
+    #   role: viewer            # viewer | admin
+  # Role for an authenticated caller matching no rule. "none" denies access.
+  default_role: none
 
 metrics:
   # Per-agent metric series (grex_agent_health,

@@ -61,18 +61,27 @@ type listener struct {
 // New builds a Server from the configuration. The serverRegistry backs the
 // telemetry listener's /metrics endpoint (server internals); fleetRegistry
 // backs /metrics/fleet (per-fleet series), kept separate so operators can
-// scrape them as independent jobs with independent limits. Call Start to
-// bind and serve.
-func New(cfg *config.Config, logger *slog.Logger, opamp OpAMP, ui UI, serverRegistry, fleetRegistry *prometheus.Registry) *Server {
+// scrape them as independent jobs with independent limits. authMetrics
+// records mTLS authorization outcomes on the UI and telemetry listeners; a
+// nil authMetrics is treated as a no-op. Call Start to bind and serve.
+func New(cfg *config.Config, logger *slog.Logger, opamp OpAMP, ui UI, authMetrics AuthMetrics, serverRegistry, fleetRegistry *prometheus.Registry) *Server {
 	// Zero value false: not ready until Start binds and begins serving.
 	ready := &atomic.Bool{}
+
+	wrap := func(next http.Handler, clientCAFile string) http.Handler {
+		if clientCAFile == "" {
+			return next
+		}
+		return requireSPIFFERole(cfg.Auth.RoleMapping, cfg.Auth.DefaultRole, authMetrics, logger, next)
+	}
 
 	telemetryMux := http.NewServeMux()
 	telemetryMux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		// Liveness only: is the process alive and its handlers responsive.
 		// Never reflects readiness or downstream state, so it does not flip
 		// during a graceful drain and cannot flap on transient dependency
-		// issues.
+		// issues. Never gated behind mTLS: orchestrator health probes cannot
+		// present a client certificate.
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintln(w, "ok")
 	})
@@ -84,18 +93,18 @@ func New(cfg *config.Config, logger *slog.Logger, opamp OpAMP, ui UI, serverRegi
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintln(w, "ok")
 	})
-	telemetryMux.Handle("/metrics", promhttp.HandlerFor(serverRegistry, promhttp.HandlerOpts{}))
-	telemetryMux.Handle("/metrics/fleet", promhttp.HandlerFor(fleetRegistry, promhttp.HandlerOpts{}))
+	telemetryMux.Handle("/metrics", wrap(promhttp.HandlerFor(serverRegistry, promhttp.HandlerOpts{}), cfg.TelemetryTLS.ClientCAFile))
+	telemetryMux.Handle("/metrics/fleet", wrap(promhttp.HandlerFor(fleetRegistry, promhttp.HandlerOpts{}), cfg.TelemetryTLS.ClientCAFile))
 	if cfg.Debug.PprofEnabled {
 		// Registered on our own mux, not http.DefaultServeMux, and gated
 		// behind an explicit opt-in: pprof exposes memory contents and its
 		// profiling handlers are themselves a load an operator must choose
 		// to accept.
-		telemetryMux.HandleFunc("/debug/pprof/", pprof.Index)
-		telemetryMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-		telemetryMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-		telemetryMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-		telemetryMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		telemetryMux.Handle("/debug/pprof/", wrap(http.HandlerFunc(pprof.Index), cfg.TelemetryTLS.ClientCAFile))
+		telemetryMux.Handle("/debug/pprof/cmdline", wrap(http.HandlerFunc(pprof.Cmdline), cfg.TelemetryTLS.ClientCAFile))
+		telemetryMux.Handle("/debug/pprof/profile", wrap(http.HandlerFunc(pprof.Profile), cfg.TelemetryTLS.ClientCAFile))
+		telemetryMux.Handle("/debug/pprof/symbol", wrap(http.HandlerFunc(pprof.Symbol), cfg.TelemetryTLS.ClientCAFile))
+		telemetryMux.Handle("/debug/pprof/trace", wrap(http.HandlerFunc(pprof.Trace), cfg.TelemetryTLS.ClientCAFile))
 		logger.Warn("pprof endpoints enabled", "path", "/debug/pprof")
 	}
 
@@ -115,6 +124,7 @@ func New(cfg *config.Config, logger *slog.Logger, opamp OpAMP, ui UI, serverRegi
 	if ui.Handler != nil {
 		uiHandler = ui.Handler
 	}
+	uiHandler = wrap(uiHandler, cfg.UITLS.ClientCAFile)
 
 	return &Server{
 		log:      logger,
@@ -134,14 +144,33 @@ func New(cfg *config.Config, logger *slog.Logger, opamp OpAMP, ui UI, serverRegi
 	}
 }
 
-// Start binds all listeners and begins serving. The OpAMP listener terminates
-// TLS when certificates are configured. Start returns an error if the TLS
+// Start binds all listeners and begins serving. Each listener terminates TLS
+// when certificates are configured for it. Start returns an error if the TLS
 // material cannot be loaded or any address cannot be bound, closing whatever
 // was already bound.
 func (s *Server) Start() error {
-	opampTLS, err := opampTLSConfig(s.cfg.TLS)
-	if err != nil {
-		return err
+	// The OpAMP listener has no unauthenticated routes, so every connection
+	// must present a valid client cert at the TLS layer. The UI and
+	// telemetry listeners must stay reachable without a cert for /healthz,
+	// /readyz (and, on UI, any future unauthenticated routes), so their
+	// handshake accepts a missing cert and requireSPIFFERole enforces
+	// per-route in the HTTP handler instead.
+	clientAuth := map[string]tls.ClientAuthType{
+		"opamp":     tls.RequireAndVerifyClientCert,
+		"ui":        tls.VerifyClientCertIfGiven,
+		"telemetry": tls.VerifyClientCertIfGiven,
+	}
+	tlsConfigs := map[string]*tls.Config{}
+	for name, c := range map[string]config.TLS{
+		"opamp":     s.cfg.OpAMPTLS,
+		"ui":        s.cfg.UITLS,
+		"telemetry": s.cfg.TelemetryTLS,
+	} {
+		cfg, err := listenerTLSConfig(c, clientAuth[name])
+		if err != nil {
+			return err
+		}
+		tlsConfigs[name] = cfg
 	}
 	for name, l := range s.listeners {
 		lis, err := net.Listen("tcp", l.addr)
@@ -149,12 +178,12 @@ func (s *Server) Start() error {
 			s.closeListeners()
 			return fmt.Errorf("bind %s listener on %s: %w", name, l.addr, err)
 		}
-		if name == "opamp" && opampTLS != nil {
-			lis = tls.NewListener(lis, opampTLS)
+		if tlsConfigs[name] != nil {
+			lis = tls.NewListener(lis, tlsConfigs[name])
 		}
 		l.lis = lis
 		s.log.Info("listener started", "name", name, "addr", lis.Addr().String(),
-			"tls", name == "opamp" && opampTLS != nil)
+			"tls", tlsConfigs[name] != nil)
 	}
 	for name, l := range s.listeners {
 		go func(name string, l *listener) {
@@ -211,10 +240,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// opampTLSConfig builds the OpAMP listener TLS configuration, or nil when TLS
-// is not configured. A client CA turns on required client certificate
-// verification (mTLS).
-func opampTLSConfig(c config.TLS) (*tls.Config, error) {
+// listenerTLSConfig builds a listener's TLS configuration, or nil when TLS is
+// not configured for it. A client CA turns on client certificate
+// verification (mTLS) using the given enforcement mode.
+func listenerTLSConfig(c config.TLS, clientAuth tls.ClientAuthType) (*tls.Config, error) {
 	if c.CertFile == "" {
 		return nil, nil
 	}
@@ -236,7 +265,7 @@ func opampTLSConfig(c config.TLS) (*tls.Config, error) {
 			return nil, fmt.Errorf("client CA bundle %s contains no certificates", c.ClientCAFile)
 		}
 		cfg.ClientCAs = pool
-		cfg.ClientAuth = tls.RequireAndVerifyClientCert
+		cfg.ClientAuth = clientAuth
 	}
 	return cfg, nil
 }

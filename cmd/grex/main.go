@@ -70,8 +70,13 @@ func run(args []string) error {
 	metrics.NewInfoGauge(serverMetrics, "grex_config_info", "Non-secret configuration values in effect.", prometheus.Labels{
 		"log_level":               cfg.Log.Level,
 		"log_format":              cfg.Log.Format,
-		"tls_enabled":             strconv.FormatBool(cfg.TLS.CertFile != ""),
-		"mtls_enabled":            strconv.FormatBool(cfg.TLS.ClientCAFile != ""),
+		"opamp_tls_enabled":       strconv.FormatBool(cfg.OpAMPTLS.CertFile != ""),
+		"opamp_mtls_enabled":      strconv.FormatBool(cfg.OpAMPTLS.ClientCAFile != ""),
+		"ui_tls_enabled":          strconv.FormatBool(cfg.UITLS.CertFile != ""),
+		"ui_mtls_enabled":         strconv.FormatBool(cfg.UITLS.ClientCAFile != ""),
+		"telemetry_tls_enabled":   strconv.FormatBool(cfg.TelemetryTLS.CertFile != ""),
+		"telemetry_mtls_enabled":  strconv.FormatBool(cfg.TelemetryTLS.ClientCAFile != ""),
+		"auth_default_role":       cfg.Auth.DefaultRole,
 		"heartbeat_interval":      cfg.Fleet.HeartbeatInterval.String(),
 		"stale_missed_heartbeats": strconv.Itoa(cfg.Fleet.StaleMissedHeartbeats),
 		"per_agent_series_limit":  strconv.Itoa(cfg.Metrics.PerAgentSeriesLimit),
@@ -101,6 +106,7 @@ func run(args []string) error {
 	srv := server.New(cfg, logger,
 		server.OpAMP{Handler: handler, ConnContext: connCtx},
 		server.UI{Handler: uiMux},
+		events,
 		serverMetrics, fleetMetrics)
 	if err := srv.Start(); err != nil {
 		return err

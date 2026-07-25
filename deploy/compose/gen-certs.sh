@@ -41,5 +41,17 @@ issue agent-1 "extendedKeyUsage=clientAuth"
 issue agent-2 "extendedKeyUsage=clientAuth"
 issue gateway "extendedKeyUsage=clientAuth"
 
+# UI/telemetry listener clients, identified by SPIFFE URI SAN rather than
+# CommonName. Trust domain grex-api.internal is kept separate from any future
+# OpAMP-gateway identity trust domain.
+issue user-alice "subjectAltName=URI:spiffe://grex-api.internal/user/alice
+extendedKeyUsage=clientAuth"
+issue user-admin "subjectAltName=URI:spiffe://grex-api.internal/user/admin
+extendedKeyUsage=clientAuth"
+issue user-mallory "subjectAltName=URI:spiffe://grex-api.internal/user/mallory
+extendedKeyUsage=clientAuth"
+issue service-prometheus "subjectAltName=URI:spiffe://grex-api.internal/service/prometheus
+extendedKeyUsage=clientAuth"
+
 chmod 644 ./*.pem
 echo "certificates present in $CERT_DIR"

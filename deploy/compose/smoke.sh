@@ -20,9 +20,33 @@ for _ in $(seq 1 30); do
 done
 [ -z "${unhealthy:-}" ] || fail "services not healthy: $unhealthy"
 
-curl -fsS http://127.0.0.1:9090/healthz | grep -q ok || fail "grex /healthz"
-curl -fsS http://127.0.0.1:9090/readyz | grep -q ok || fail "grex /readyz"
-curl -fsS http://127.0.0.1:9090/metrics | grep -q '^go_' || fail "grex /metrics has no go_ series"
+CERTS=deploy/compose/certs
+prom_client=(--cert "$CERTS/service-prometheus.pem" --key "$CERTS/service-prometheus-key.pem")
+
+# /healthz and /readyz stay open on the telemetry listener with no client
+# cert at all, even though the listener terminates TLS.
+curl -fsSk https://127.0.0.1:9090/healthz | grep -q ok || fail "grex /healthz"
+curl -fsSk https://127.0.0.1:9090/readyz | grep -q ok || fail "grex /readyz"
+
+# /metrics requires a client cert mapped to a role.
+curl -fsSk "${prom_client[@]}" https://127.0.0.1:9090/metrics |
+    grep -q '^go_' || fail "grex /metrics has no go_ series"
+code=$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:9090/metrics)
+[ "$code" = "403" ] || fail "grex /metrics without a client cert: want 403, got $code"
+
+# UI listener: mTLS auth matrix from deploy/compose/grex.yaml's role_mapping.
+ui_matrix() {
+    name="$1" cert="$2" key="$3" want="$4"
+    got=$(curl -sk --cert "$CERTS/$cert.pem" --key "$CERTS/$key.pem" \
+        -o /dev/null -w '%{http_code}' https://127.0.0.1:8080/api/status)
+    [ "$got" = "$want" ] || fail "$name: want $want, got $got"
+}
+code=$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:8080/api/status)
+[ "$code" = "403" ] || fail "grex UI with no cert: want 403, got $code"
+ui_matrix "wrong-role cert (unmapped SPIFFE ID)" user-mallory user-mallory-key 403
+ui_matrix "viewer cert" user-alice user-alice-key 200
+ui_matrix "admin cert" user-admin user-admin-key 200
+
 curl -fsS http://127.0.0.1:5556/dex/.well-known/openid-configuration |
     grep -q '"issuer"' || fail "dex openid-configuration"
 
@@ -30,7 +54,7 @@ curl -fsS http://127.0.0.1:5556/dex/.well-known/openid-configuration |
 # OpAMP gateway, grex answers their connect delegations and registers each
 # agent.
 metric() {
-    curl -s http://127.0.0.1:9090/metrics/fleet |
+    curl -sk "${prom_client[@]}" https://127.0.0.1:9090/metrics/fleet |
         awk -v name="$1" 'index($0, name) == 1 {print $NF; exit}'
 }
 

@@ -49,6 +49,8 @@ type Events struct {
 	messageErrors              prometheus.Counter
 	gatewayConnects            *prometheus.CounterVec
 	gatewayConnections         prometheus.Gauge
+	authDenied                 *prometheus.CounterVec
+	authAllowed                *prometheus.CounterVec
 }
 
 // NewEvents builds the counters. OpAMP server-health counters register on
@@ -96,8 +98,16 @@ func NewEvents(server, fleet prometheus.Registerer) *Events {
 			Name: "grex_gateway_connections",
 			Help: "Open connections that have sent a gateway connect message.",
 		}),
+		authDenied: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "grex_auth_denied_total",
+			Help: "mTLS requests to the UI or telemetry listener denied, by reason.",
+		}, []string{"reason"}),
+		authAllowed: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "grex_auth_allowed_total",
+			Help: "mTLS requests to the UI or telemetry listener allowed, by resolved role.",
+		}, []string{"role"}),
 	}
-	server.MustRegister(e.messages, e.messageErrors)
+	server.MustRegister(e.messages, e.messageErrors, e.authDenied, e.authAllowed)
 	fleet.MustRegister(
 		e.agentConnects, e.agentDisconnects, e.agentsEvicted,
 		e.reports, e.missingAttributes, e.reservedAttributeConflicts,
@@ -146,6 +156,13 @@ func (e *Events) GatewayConnectionOpened() { e.gatewayConnections.Inc() }
 
 // GatewayConnectionClosed tracks a gateway connection closing.
 func (e *Events) GatewayConnectionClosed() { e.gatewayConnections.Dec() }
+
+// AuthDenied counts one mTLS request denied on the UI or telemetry listener.
+func (e *Events) AuthDenied(reason string) { e.authDenied.WithLabelValues(reason).Inc() }
+
+// AuthAllowed counts one mTLS request allowed on the UI or telemetry
+// listener, by the role it resolved to.
+func (e *Events) AuthAllowed(role string) { e.authAllowed.WithLabelValues(role).Inc() }
 
 var (
 	descAgentsConnected = prometheus.NewDesc(

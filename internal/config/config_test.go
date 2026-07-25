@@ -139,47 +139,155 @@ func TestLoadBadAddress(t *testing.T) {
 	}
 }
 
-func TestLoadTLSCertWithoutKey(t *testing.T) {
+func TestLoadOpAMPTLSCertWithoutKey(t *testing.T) {
 	cert := writeFile(t, "cert.pem", "dummy")
-	path := writeFile(t, "config.yaml", "tls:\n  cert_file: "+cert+"\n")
+	path := writeFile(t, "config.yaml", "opamp_tls:\n  cert_file: "+cert+"\n")
 	if _, err := Load(path); err == nil {
 		t.Fatal("want error for cert without key")
 	}
 }
 
-func TestLoadTLSFileMissing(t *testing.T) {
+func TestLoadOpAMPTLSFileMissing(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, "config.yaml",
-		"tls:\n  cert_file: "+filepath.Join(dir, "no.pem")+"\n  key_file: "+filepath.Join(dir, "no.key")+"\n")
+		"opamp_tls:\n  cert_file: "+filepath.Join(dir, "no.pem")+"\n  key_file: "+filepath.Join(dir, "no.key")+"\n")
 	_, err := Load(path)
 	if err == nil {
 		t.Fatal("want error for missing TLS files")
 	}
-	if !strings.Contains(err.Error(), "tls.cert_file") {
+	if !strings.Contains(err.Error(), "opamp_tls.cert_file") {
 		t.Errorf("error %q does not name the field", err)
 	}
 }
 
 func TestLoadClientCARequiresServerTLS(t *testing.T) {
 	ca := writeFile(t, "ca.pem", "dummy")
-	path := writeFile(t, "config.yaml", "tls:\n  client_ca_file: "+ca+"\n")
+	path := writeFile(t, "config.yaml", "opamp_tls:\n  client_ca_file: "+ca+"\n")
 	if _, err := Load(path); err == nil {
 		t.Fatal("want error for client CA without server cert/key")
 	}
 }
 
-func TestLoadTLSValid(t *testing.T) {
+func TestLoadOpAMPTLSValid(t *testing.T) {
 	cert := writeFile(t, "cert.pem", "dummy")
 	key := writeFile(t, "key.pem", "dummy")
 	ca := writeFile(t, "ca.pem", "dummy")
 	path := writeFile(t, "config.yaml",
-		"tls:\n  cert_file: "+cert+"\n  key_file: "+key+"\n  client_ca_file: "+ca+"\n")
+		"opamp_tls:\n  cert_file: "+cert+"\n  key_file: "+key+"\n  client_ca_file: "+ca+"\n")
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.TLS.CertFile != cert || cfg.TLS.KeyFile != key || cfg.TLS.ClientCAFile != ca {
-		t.Errorf("TLS = %+v", cfg.TLS)
+	if cfg.OpAMPTLS.CertFile != cert || cfg.OpAMPTLS.KeyFile != key || cfg.OpAMPTLS.ClientCAFile != ca {
+		t.Errorf("OpAMPTLS = %+v", cfg.OpAMPTLS)
+	}
+}
+
+func TestLoadUITLSValid(t *testing.T) {
+	cert := writeFile(t, "cert.pem", "dummy")
+	key := writeFile(t, "key.pem", "dummy")
+	ca := writeFile(t, "ca.pem", "dummy")
+	path := writeFile(t, "config.yaml",
+		"ui_tls:\n  cert_file: "+cert+"\n  key_file: "+key+"\n  client_ca_file: "+ca+"\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.UITLS.CertFile != cert || cfg.UITLS.KeyFile != key || cfg.UITLS.ClientCAFile != ca {
+		t.Errorf("UITLS = %+v", cfg.UITLS)
+	}
+}
+
+func TestLoadUITLSCertWithoutKey(t *testing.T) {
+	cert := writeFile(t, "cert.pem", "dummy")
+	path := writeFile(t, "config.yaml", "ui_tls:\n  cert_file: "+cert+"\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("want error for ui_tls cert without key")
+	}
+}
+
+func TestLoadTelemetryTLSValid(t *testing.T) {
+	cert := writeFile(t, "cert.pem", "dummy")
+	key := writeFile(t, "key.pem", "dummy")
+	ca := writeFile(t, "ca.pem", "dummy")
+	path := writeFile(t, "config.yaml",
+		"telemetry_tls:\n  cert_file: "+cert+"\n  key_file: "+key+"\n  client_ca_file: "+ca+"\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.TelemetryTLS.CertFile != cert || cfg.TelemetryTLS.KeyFile != key || cfg.TelemetryTLS.ClientCAFile != ca {
+		t.Errorf("TelemetryTLS = %+v", cfg.TelemetryTLS)
+	}
+}
+
+func TestLoadTelemetryTLSClientCARequiresServerTLS(t *testing.T) {
+	ca := writeFile(t, "ca.pem", "dummy")
+	path := writeFile(t, "config.yaml", "telemetry_tls:\n  client_ca_file: "+ca+"\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("want error for telemetry_tls client CA without server cert/key")
+	}
+}
+
+func TestLoadAuthDefaults(t *testing.T) {
+	path := writeFile(t, "config.yaml", "{}\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Auth.DefaultRole != "none" {
+		t.Errorf("DefaultRole = %q, want none", cfg.Auth.DefaultRole)
+	}
+	if len(cfg.Auth.RoleMapping) != 0 {
+		t.Errorf("RoleMapping = %v, want empty", cfg.Auth.RoleMapping)
+	}
+}
+
+func TestLoadAuthRoleMapping(t *testing.T) {
+	path := writeFile(t, "config.yaml", `
+auth:
+  default_role: none
+  role_mapping:
+    - match: exact
+      spiffe_id: "spiffe://grex.internal/user/alice"
+      role: admin
+    - match: prefix
+      spiffe_id: "spiffe://grex.internal/service/"
+      role: viewer
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Auth.RoleMapping) != 2 {
+		t.Fatalf("RoleMapping len = %d, want 2", len(cfg.Auth.RoleMapping))
+	}
+	if cfg.Auth.RoleMapping[0].Match != "exact" || cfg.Auth.RoleMapping[0].SpiffeID != "spiffe://grex.internal/user/alice" || cfg.Auth.RoleMapping[0].Role != "admin" {
+		t.Errorf("RoleMapping[0] = %+v", cfg.Auth.RoleMapping[0])
+	}
+	if cfg.Auth.RoleMapping[1].Match != "prefix" || cfg.Auth.RoleMapping[1].Role != "viewer" {
+		t.Errorf("RoleMapping[1] = %+v", cfg.Auth.RoleMapping[1])
+	}
+}
+
+func TestLoadAuthBadRole(t *testing.T) {
+	path := writeFile(t, "config.yaml", "auth:\n  role_mapping:\n    - match: exact\n      spiffe_id: \"spiffe://x/y\"\n      role: superuser\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("want error for unknown role")
+	}
+}
+
+func TestLoadAuthBadMatch(t *testing.T) {
+	path := writeFile(t, "config.yaml", "auth:\n  role_mapping:\n    - match: fuzzy\n      spiffe_id: \"spiffe://x/y\"\n      role: viewer\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("want error for unknown match type")
+	}
+}
+
+func TestLoadAuthBadDefaultRole(t *testing.T) {
+	path := writeFile(t, "config.yaml", "auth:\n  default_role: superuser\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("want error for unknown default_role")
 	}
 }
 

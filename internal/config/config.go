@@ -12,17 +12,45 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/dennisme/grex/internal/spiffe"
 )
 
 // Config is the full grex configuration.
 type Config struct {
 	Listeners Listeners `yaml:"listeners"`
-	TLS       TLS       `yaml:"tls"`
-	Fleet     Fleet     `yaml:"fleet"`
-	Metrics   Metrics   `yaml:"metrics"`
-	UI        UI        `yaml:"ui"`
-	Debug     Debug     `yaml:"debug"`
-	Log       Log       `yaml:"log"`
+	// OpAMPTLS terminates TLS on the OpAMP listener; collectors and OpAMP
+	// gateways are the peers.
+	OpAMPTLS TLS `yaml:"opamp_tls"`
+	// UITLS terminates TLS on the UI listener; human and script/automation
+	// API callers are the peers.
+	UITLS TLS `yaml:"ui_tls"`
+	// TelemetryTLS terminates TLS on the telemetry listener; scrapers
+	// (Prometheus) are the peer. /healthz and /readyz are exempt from any
+	// client-cert requirement configured here, since orchestrator health
+	// probes cannot present one.
+	TelemetryTLS TLS     `yaml:"telemetry_tls"`
+	Fleet        Fleet   `yaml:"fleet"`
+	Metrics      Metrics `yaml:"metrics"`
+	UI           UI      `yaml:"ui"`
+	Debug        Debug   `yaml:"debug"`
+	// Auth maps SPIFFE identities (from UI/telemetry client certs) to
+	// roles. Only takes effect on a listener where its TLS block also sets
+	// client_ca_file.
+	Auth Auth `yaml:"auth"`
+	Log  Log  `yaml:"log"`
+}
+
+// Auth holds the SPIFFE-identity-to-role mapping used by the UI and
+// telemetry listeners' mTLS.
+type Auth struct {
+	// RoleMapping is consulted in order: exact matches win over prefix
+	// matches regardless of position; among same-specificity rules the
+	// first one wins.
+	RoleMapping []spiffe.RoleRule `yaml:"role_mapping"`
+	// DefaultRole applies to an authenticated caller matching no rule.
+	// "none" (the default) denies access.
+	DefaultRole string `yaml:"default_role"`
 }
 
 // UI holds web UI settings.
@@ -56,8 +84,8 @@ type Listeners struct {
 	Telemetry string `yaml:"telemetry"`
 }
 
-// TLS holds certificate paths for the OpAMP listener. CertFile and KeyFile
-// enable server TLS; ClientCAFile additionally requires and verifies client
+// TLS holds certificate paths for one listener. CertFile and KeyFile enable
+// server TLS; ClientCAFile additionally requires and verifies client
 // certificates (mTLS).
 type TLS struct {
 	CertFile     string `yaml:"cert_file"`
@@ -141,9 +169,16 @@ func (c *Config) envOverrides() []struct {
 		{"GREX_LISTENERS_OPAMP", setString(&c.Listeners.OpAMP)},
 		{"GREX_LISTENERS_UI", setString(&c.Listeners.UI)},
 		{"GREX_LISTENERS_TELEMETRY", setString(&c.Listeners.Telemetry)},
-		{"GREX_TLS_CERT_FILE", setString(&c.TLS.CertFile)},
-		{"GREX_TLS_KEY_FILE", setString(&c.TLS.KeyFile)},
-		{"GREX_TLS_CLIENT_CA_FILE", setString(&c.TLS.ClientCAFile)},
+		{"GREX_OPAMP_TLS_CERT_FILE", setString(&c.OpAMPTLS.CertFile)},
+		{"GREX_OPAMP_TLS_KEY_FILE", setString(&c.OpAMPTLS.KeyFile)},
+		{"GREX_OPAMP_TLS_CLIENT_CA_FILE", setString(&c.OpAMPTLS.ClientCAFile)},
+		{"GREX_UI_TLS_CERT_FILE", setString(&c.UITLS.CertFile)},
+		{"GREX_UI_TLS_KEY_FILE", setString(&c.UITLS.KeyFile)},
+		{"GREX_UI_TLS_CLIENT_CA_FILE", setString(&c.UITLS.ClientCAFile)},
+		{"GREX_TELEMETRY_TLS_CERT_FILE", setString(&c.TelemetryTLS.CertFile)},
+		{"GREX_TELEMETRY_TLS_KEY_FILE", setString(&c.TelemetryTLS.KeyFile)},
+		{"GREX_TELEMETRY_TLS_CLIENT_CA_FILE", setString(&c.TelemetryTLS.ClientCAFile)},
+		{"GREX_AUTH_DEFAULT_ROLE", setString(&c.Auth.DefaultRole)},
 		{"GREX_FLEET_HEARTBEAT_INTERVAL", setDuration(&c.Fleet.HeartbeatInterval)},
 		{"GREX_FLEET_STALE_MISSED_HEARTBEATS", setInt(&c.Fleet.StaleMissedHeartbeats)},
 		{"GREX_FLEET_REQUIRED_ATTRIBUTES", setStringList(&c.Fleet.RequiredAttributes)},
@@ -165,6 +200,7 @@ func defaults() *Config {
 		Fleet:   Fleet{HeartbeatInterval: 30 * time.Second, StaleMissedHeartbeats: 3},
 		Metrics: Metrics{PerAgentSeriesLimit: 1000},
 		UI:      UI{PollInterval: 5 * time.Second},
+		Auth:    Auth{DefaultRole: "none"},
 		Log:     Log{Level: "info", Format: "text"},
 	}
 }
@@ -205,7 +241,16 @@ func (c *Config) validate() error {
 			return fmt.Errorf("%s: invalid address %q: %w", l.field, l.addr, err)
 		}
 	}
-	if err := c.TLS.validate(); err != nil {
+	if err := c.OpAMPTLS.validate("opamp_tls"); err != nil {
+		return err
+	}
+	if err := c.UITLS.validate("ui_tls"); err != nil {
+		return err
+	}
+	if err := c.TelemetryTLS.validate("telemetry_tls"); err != nil {
+		return err
+	}
+	if err := c.Auth.validate(); err != nil {
 		return err
 	}
 	switch c.Log.Level {
@@ -233,17 +278,39 @@ func (c *Config) validate() error {
 	return nil
 }
 
-func (t *TLS) validate() error {
+// validate checks the TLS block. prefix names the config section in error
+// messages (e.g. "opamp_tls", "ui_tls", "telemetry_tls").
+var validRoles = map[string]bool{"none": true, "viewer": true, "admin": true}
+
+func (a *Auth) validate() error {
+	if !validRoles[a.DefaultRole] {
+		return fmt.Errorf("auth.default_role: %q is not one of none, viewer, admin", a.DefaultRole)
+	}
+	for i, r := range a.RoleMapping {
+		if r.Match != "exact" && r.Match != "prefix" {
+			return fmt.Errorf("auth.role_mapping[%d].match: %q is not one of exact, prefix", i, r.Match)
+		}
+		if r.SpiffeID == "" {
+			return fmt.Errorf("auth.role_mapping[%d].spiffe_id: must not be empty", i)
+		}
+		if r.Role != "viewer" && r.Role != "admin" {
+			return fmt.Errorf("auth.role_mapping[%d].role: %q is not one of viewer, admin", i, r.Role)
+		}
+	}
+	return nil
+}
+
+func (t *TLS) validate(prefix string) error {
 	if (t.CertFile == "") != (t.KeyFile == "") {
-		return fmt.Errorf("tls: cert_file and key_file must be set together")
+		return fmt.Errorf("%s: cert_file and key_file must be set together", prefix)
 	}
 	if t.ClientCAFile != "" && t.CertFile == "" {
-		return fmt.Errorf("tls: client_ca_file requires cert_file and key_file")
+		return fmt.Errorf("%s: client_ca_file requires cert_file and key_file", prefix)
 	}
 	for _, f := range []struct{ field, path string }{
-		{"tls.cert_file", t.CertFile},
-		{"tls.key_file", t.KeyFile},
-		{"tls.client_ca_file", t.ClientCAFile},
+		{prefix + ".cert_file", t.CertFile},
+		{prefix + ".key_file", t.KeyFile},
+		{prefix + ".client_ca_file", t.ClientCAFile},
 	} {
 		if f.path == "" {
 			continue

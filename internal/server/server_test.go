@@ -36,7 +36,7 @@ func testLogger() *slog.Logger {
 
 func startServer(t *testing.T) *Server {
 	t.Helper()
-	s := New(testConfig(), testLogger(), OpAMP{}, UI{}, metrics.NewRegistry(), prometheus.NewRegistry())
+	s := New(testConfig(), testLogger(), OpAMP{}, UI{}, nil, metrics.NewRegistry(), prometheus.NewRegistry())
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestPprofDisabledByDefault(t *testing.T) {
 func TestPprofEnabled(t *testing.T) {
 	cfg := testConfig()
 	cfg.Debug.PprofEnabled = true
-	s := New(cfg, testLogger(), OpAMP{}, UI{}, metrics.NewRegistry(), prometheus.NewRegistry())
+	s := New(cfg, testLogger(), OpAMP{}, UI{}, nil, metrics.NewRegistry(), prometheus.NewRegistry())
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestMetricsEndpointsSeparated(t *testing.T) {
 	fleetReg.MustRegister(fleetGauge)
 	fleetGauge.Set(1)
 
-	s := New(testConfig(), testLogger(), OpAMP{}, UI{}, metrics.NewRegistry(), fleetReg)
+	s := New(testConfig(), testLogger(), OpAMP{}, UI{}, nil, metrics.NewRegistry(), fleetReg)
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestOpAMPHandlerMounted(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	s := New(testConfig(), testLogger(), OpAMP{Handler: handler}, UI{}, metrics.NewRegistry(), prometheus.NewRegistry())
+	s := New(testConfig(), testLogger(), OpAMP{Handler: handler}, UI{}, nil, metrics.NewRegistry(), prometheus.NewRegistry())
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestUIHandlerMounted(t *testing.T) {
 	mux.HandleFunc("GET /api/agents", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	s := New(testConfig(), testLogger(), OpAMP{}, UI{Handler: mux}, metrics.NewRegistry(), prometheus.NewRegistry())
+	s := New(testConfig(), testLogger(), OpAMP{}, UI{Handler: mux}, nil, metrics.NewRegistry(), prometheus.NewRegistry())
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestUIHandlerMounted(t *testing.T) {
 }
 
 func TestShutdownClosesListeners(t *testing.T) {
-	s := New(testConfig(), testLogger(), OpAMP{}, UI{}, metrics.NewRegistry(), prometheus.NewRegistry())
+	s := New(testConfig(), testLogger(), OpAMP{}, UI{}, nil, metrics.NewRegistry(), prometheus.NewRegistry())
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestStartFailsOnUnbindableAddress(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.Listeners.OpAMP = lis.Addr().String()
-	s := New(cfg, testLogger(), OpAMP{}, UI{}, metrics.NewRegistry(), prometheus.NewRegistry())
+	s := New(cfg, testLogger(), OpAMP{}, UI{}, nil, metrics.NewRegistry(), prometheus.NewRegistry())
 	if err := s.Start(); err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

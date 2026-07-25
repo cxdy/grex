@@ -42,7 +42,7 @@ func startStack(t *testing.T, certs testcert.Certs) (string, *fleet.Registry) {
 			UI:        "127.0.0.1:0",
 			Telemetry: "127.0.0.1:0",
 		},
-		TLS: config.TLS{
+		OpAMPTLS: config.TLS{
 			CertFile:     certs.ServerCertFile,
 			KeyFile:      certs.ServerKeyFile,
 			ClientCAFile: certs.CAFile,
@@ -50,7 +50,7 @@ func startStack(t *testing.T, certs testcert.Certs) (string, *fleet.Registry) {
 		Fleet: config.Fleet{HeartbeatInterval: 30 * time.Second, StaleMissedHeartbeats: 3},
 		Log:   config.Log{Level: "info", Format: "text"},
 	}
-	srv := server.New(cfg, logger, server.OpAMP{Handler: httpHandler, ConnContext: connCtx}, server.UI{}, metrics.NewRegistry(), prometheus.NewRegistry())
+	srv := server.New(cfg, logger, server.OpAMP{Handler: httpHandler, ConnContext: connCtx}, server.UI{}, nil, metrics.NewRegistry(), prometheus.NewRegistry())
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
