@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +39,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Fleet.StaleMissedHeartbeats != 3 {
 		t.Errorf("StaleMissedHeartbeats = %d, want 3", cfg.Fleet.StaleMissedHeartbeats)
 	}
+	if len(cfg.Fleet.RequiredAttributes) != 0 {
+		t.Errorf("RequiredAttributes = %v, want empty", cfg.Fleet.RequiredAttributes)
+	}
 	if cfg.Log.Level != "info" {
 		t.Errorf("Level = %q, want %q", cfg.Log.Level, "info")
 	}
@@ -55,6 +59,9 @@ listeners:
 fleet:
   heartbeat_interval: 10s
   stale_missed_heartbeats: 5
+  required_attributes:
+    - deployment.environment
+    - service.namespace
 log:
   level: debug
   format: json
@@ -71,6 +78,10 @@ log:
 	}
 	if cfg.Fleet.StaleMissedHeartbeats != 5 {
 		t.Errorf("StaleMissedHeartbeats = %d", cfg.Fleet.StaleMissedHeartbeats)
+	}
+	want := []string{"deployment.environment", "service.namespace"}
+	if !slices.Equal(cfg.Fleet.RequiredAttributes, want) {
+		t.Errorf("RequiredAttributes = %v, want %v", cfg.Fleet.RequiredAttributes, want)
 	}
 	if cfg.Log.Level != "debug" || cfg.Log.Format != "json" {
 		t.Errorf("Log = %+v", cfg.Log)
@@ -186,6 +197,7 @@ func TestLoadEnvOverrides(t *testing.T) {
 	t.Setenv("GREX_LOG_LEVEL", "warn")
 	t.Setenv("GREX_FLEET_HEARTBEAT_INTERVAL", "90s")
 	t.Setenv("GREX_FLEET_STALE_MISSED_HEARTBEATS", "7")
+	t.Setenv("GREX_FLEET_REQUIRED_ATTRIBUTES", "team, deployment.environment")
 	path := writeFile(t, "config.yaml", "listeners:\n  opamp: \"127.0.0.1:14320\"\n")
 	cfg, err := Load(path)
 	if err != nil {
@@ -202,6 +214,10 @@ func TestLoadEnvOverrides(t *testing.T) {
 	}
 	if cfg.Fleet.StaleMissedHeartbeats != 7 {
 		t.Errorf("StaleMissedHeartbeats = %d, want 7", cfg.Fleet.StaleMissedHeartbeats)
+	}
+	want := []string{"team", "deployment.environment"}
+	if !slices.Equal(cfg.Fleet.RequiredAttributes, want) {
+		t.Errorf("RequiredAttributes = %v, want %v (env, comma separated, trimmed)", cfg.Fleet.RequiredAttributes, want)
 	}
 }
 

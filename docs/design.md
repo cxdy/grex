@@ -71,13 +71,15 @@ auth boundary:
   capability. When a gateway relays a new agent it sends a `connect` custom
   message carrying the agent's HTTP headers and remote address; grex answers
   with `connectResult` (accept/reject plus HTTP status). In 1.0 grex accepts
-  every agent relayed over an authenticated (mTLS) gateway connection and
-  stores the forwarded headers and remote address as that agent's connection
-  metadata. The extension is alpha; its version is pinned and protocol
-  changes are absorbed at upgrade time. Accepted risk: if the extension's
-  maturity or its absence from the pinned observIQ distribution becomes a
-  blocker, the fallback is forking the extension and fixing it (building it
-  into an OCB image).
+  every agent relayed over an authenticated (mTLS) gateway connection. The
+  connect message carries no agent instance_uid, so the forwarded headers and
+  remote address cannot be joined to a specific agent entry; grex logs them
+  on receipt, and agent entries carry the gateway connection's metadata plus
+  a via-gateway marker. The extension is alpha; its version is pinned and
+  protocol changes are absorbed at upgrade time. Accepted risk: if the
+  extension's maturity or its absence from the pinned observIQ distribution
+  becomes a blocker, the fallback is forking the extension and fixing it
+  (building it into an OCB image).
 - Multiplexing: a single gateway connection carries many agents, so fleet
   state and per-agent handling key on `instance_uid`, never on the socket.
   Connection counts and agent counts are tracked as separate things.
@@ -211,9 +213,12 @@ agent attributes, metric cardinality cap.
    generated dev certificates.
 2. **OpAMP gateway × 1** — a collector running the observIQ `opampgateway`
    extension: TLS listener for the agents (dev certs), N upstream WebSocket
-   connections to grex with its own client certificate. Image is observIQ's
-   collector distribution (pinned); if the pinned distribution does not ship
-   the extension, a small OCB-built collector image is the fallback.
+   connections to grex with its own client certificate. The image is a small
+   OCB build from source with a grex patch applied: extension v1.10.0
+   declares upstream TLS settings but never wires them into its websocket
+   dialer, so the stock observIQ distribution image cannot reach a
+   private-CA/mTLS OpAMP server. That is the accepted fork-and-fix risk,
+   realized; the patch is a candidate for upstreaming.
 3. **otelcol agent × 2** — OpenTelemetry Collector containers running the
    `opamp` extension pointed at the OpAMP gateway, each generating some
    internal telemetry so the fleet view has real data.
