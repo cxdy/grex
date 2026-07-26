@@ -249,6 +249,26 @@ infrastructure. Two things it doesn't give for free:
   to whichever replica holds that agent's socket, not just query the
   database; another reason to defer that sharding option.
 
+**Migration tooling (decided, not yet implemented):** two independent
+migrators against the one Postgres database, not one merged pipeline.
+[`golang-migrate/migrate`](https://github.com/golang-migrate/migrate) owns
+grex's own tables (permission tables, `jobs`/`job_targets`) via plain `.sql`
+files. River owns its own tables (`river_job`, `river_leader`, etc) via its
+own migrator (`river migrate-up` CLI, or `rivermigrate.New(...).Migrate()`
+in-process) — River ships new migrations as it versions, and its migrator
+tracks them against its own `river_migration` table, separate from
+golang-migrate's `schema_migrations`. Copying River's raw SQL into
+golang-migrate's own file set was considered and rejected: every River
+version bump would then need its new migration files copied over by hand,
+silently breaking the worker against a stale schema if one is missed;
+running River's migrator on its own carries that forward automatically.
+Both migrators run against the same database from the same deploy step;
+this is tooling separation, not the "two pieces of infrastructure" the
+Jobs section above is avoiding (that's about brokers, not migrators). Real
+work — actual `.sql` migration files, wiring both migrators into a deploy
+step, and turning `internal/persistence`'s stubs into working
+implementations — is a future PR; nothing here is built yet.
+
 ## Architecture
 
 ```text
@@ -702,11 +722,20 @@ agent attributes, metric cardinality cap.
    is unchanged.
 6. **Prometheus** — scrapes grex with two jobs mirroring production layout:
    `grex-server` on `/metrics` at the default interval, `grex-fleet` on
-   `/metrics/fleet` at heartbeat granularity with its own `sample_limit`.
+   `/metrics/fleet` at heartbeat granularity with its own `sample_limit`. Two
+   more jobs support the future state/jobs backend below: `grex-postgres`
+   (real, scrapes `postgres-exporter`) and `grex-river` (a placeholder
+   target, expected down until a future goal gives it something to scrape).
 7. **Dev certificate generation** — an init step (script or one-shot container)
    that mints a local CA, server certs for grex and the OpAMP gateway, and
    client certs for the collectors so mTLS is exercised on both hops in dev,
    not just prod.
+8. **Postgres + postgres_exporter** — dev-only infra for the future durable
+   state and job dispatch backend (see Post-1.0 roadmap: state database and
+   sharding, Jobs: schema and execution, and `internal/persistence`'s
+   interface stubs). No migrations or schema exist yet; nothing in grex
+   reads or writes to this database. `internal/config`'s `database` block
+   carries connection settings but is unused by any runtime path.
 
 The stack currently runs with agents connected straight to grex; inserting the
 OpAMP gateway service happens together with the OpAMP core milestone, since
@@ -873,6 +902,9 @@ per package, compose stack as the end-to-end harness).
   agents and grex, multiplexing agent sessions over few upstream connections.
   grex implements the gateway's custom connect capability and keeps direct
   connections working.
+- Post-1.0 migration tooling: `golang-migrate` for grex's own tables, River's
+  own migrator for River's tables, run independently against one Postgres
+  database. See Jobs: schema and execution. Not yet implemented.
 
 ## Open questions
 

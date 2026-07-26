@@ -46,6 +46,40 @@ services:
       timeout: 3s
       retries: 12
 
+  postgres:
+    # Dev-only infra for the future durable state and job dispatch backend
+    # (see internal/persistence, docs/spec/design.md's Post-1.0 roadmap).
+    # Nothing reads or writes to it yet: no migrations, no schema.
+    image: postgres:17.2-alpine
+    environment:
+      POSTGRES_USER: grex
+      POSTGRES_PASSWORD: grex-dev-password
+      POSTGRES_DB: grex
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U grex -d grex"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.17.1
+    environment:
+      DATA_SOURCE_NAME: "postgresql://grex:grex-dev-password@postgres:5432/grex?sslmode=disable"
+    ports:
+      - "127.0.0.1:9187:9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9187/metrics"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
   dex:
     image: dexidp/dex:v2.45.1
     command: ["dex", "serve", "/etc/dex/config.yaml"]
@@ -103,3 +137,6 @@ services:
       - ./deploy/compose/certs:/certs:ro
     depends_on:
       - opamp-gateway
+
+volumes:
+  postgres-data:
