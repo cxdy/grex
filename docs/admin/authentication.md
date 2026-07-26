@@ -4,51 +4,84 @@
 
 | Surface | Auth today |
 |---------|------------|
-| OpAMP | Optional **mTLS** (`tls.client_ca_file`) for collectors |
-| UI + JSON API | **None** — open to anyone who can open the port |
-| Telemetry | **None** — metrics and health probes are unauthenticated |
+| OpAMP | Optional **mTLS** (`opamp_tls.client_ca_file`) for collectors and gateways |
+| UI + JSON API | Optional **mTLS with SPIFFE IDs** (`ui_tls.client_ca_file`) |
+| Telemetry | Optional **mTLS with SPIFFE IDs** (`telemetry_tls.client_ca_file`); `/healthz` and `/readyz` always exempt |
 
-!!! warning "Planned, not shipped"
-    UI/API authentication (mTLS with SPIFFE IDs, then OIDC via Dex) is
-    tracked in **[issue #11](https://github.com/dennisme/grex/issues/11)**.
-    Until it lands, treat the UI listener as an internal-only service.
+!!! warning "OIDC planned, not shipped"
+    OIDC login via [Dex](https://dexidp.io/) (milestone 7 in the
+    [design SPEC](../spec/design.md)) is tracked in
+    **[issue #11](https://github.com/dennisme/grex/issues/11)**. Compose
+    already runs Dex with static users so that work can proceed offline;
+    grex does not consume Dex yet.
 
-Compose already runs **Dex** with static users so the future OIDC path can
-be developed offline. grex does not consume Dex yet.
+## mTLS with SPIFFE IDs
 
-## Planned model (from design)
+When `ui_tls.client_ca_file` or `telemetry_tls.client_ca_file` is set, grex
+takes the caller's identity from their client certificate's **SPIFFE ID**: a
+single URI Subject Alternative Name of the form
+`spiffe://<trust-domain>/<path>`. Certs carrying zero URI SANs, more than
+one, or a URI SAN that isn't a well-formed `spiffe://` URI are rejected.
 
-This summarizes the living [design SPEC](../spec/design.md). Details may
-change before implementation.
+### Path format
 
-### Collectors (OpAMP)
+| Namespace | Format | Used for |
+|-----------|--------|----------|
+| Humans | `spiffe://<trust-domain>/user/<name>` | Operators, on-call, scripts run by a person |
+| Services | `spiffe://<trust-domain>/service/<name>` | Automation: Prometheus, CI |
 
-Already partially available: TLS termination and optional client cert
-verification on the OpAMP listener.
+Not `/agent/...` for either: "agent" already means an OpAMP-managed
+collector everywhere else in grex, and reusing it here would be confusing.
+The trust domain used for UI/telemetry identities (e.g.
+`spiffe://grex-api.internal/...`) is kept separate from any trust domain
+used for OpAMP-gateway agent identity, so the two authorization surfaces
+can be rotated and scoped independently.
 
-### Users (UI / API) — milestone plan
+### Role mapping
 
-1. **mTLS first** — required client certificates on the UI listener; identity
-   from a single SPIFFE URI SAN (`spiffe://…`); role map by SPIFFE ID/prefix.
-2. **OIDC second** — Authorization Code flow against [Dex](https://dexidp.io/);
-   first connector GitHub org/teams as `groups` claims; same role table shape.
+`auth.role_mapping` maps a SPIFFE ID, or a prefix of one, to a role:
 
-### Roles (planned)
+```yaml
+auth:
+  role_mapping:
+    - match: exact
+      spiffe_id: spiffe://grex-api.internal/user/alice
+      role: viewer
+    - match: prefix
+      spiffe_id: spiffe://grex-api.internal/service/
+      role: viewer
+  default_role: none
+```
 
-| Role | 1.0 intent |
-|------|------------|
-| `viewer` | See everything the UI shows |
-| `admin` | Same as viewer until mutations exist; reserved for later gates |
+Exact matches win over prefix matches regardless of position in the list;
+among rules of the same specificity, the first one wins. `default_role`
+applies to an authenticated caller matching no rule; `none` denies access
+(`403`).
 
-Default and explicit maps will be static configuration (no role admin UI).
+Full request-handling order is in [TLS and mTLS](tls-mtls.md#ui-and-telemetry-listeners).
 
-## Operator guidance until auth ships
+### Roles
 
-- Bind UI and telemetry to localhost or a private network interface
-- Put a trusted reverse proxy or mesh policy in front if broader access is
-  required temporarily
-- Prefer OpAMP mTLS for any shared or multi-tenant network path to collectors
-- Do not rely on “security through obscurity” of the URL
+| Role | 1.0 behavior |
+|------|--------------|
+| `viewer` | Passes the auth gate; the read-only UI/API has no further role-based restriction in 1.0 |
+| `admin` | Same as viewer in 1.0; reserved for later gates once mutating endpoints exist |
+| `none` | Denied (`403`) |
 
-When issue #11 closes, this page should be updated to match the shipped
-config fields and login flow.
+## Collectors (OpAMP)
+
+TLS termination and optional client cert verification on the OpAMP
+listener, independent of the SPIFFE/role mechanism above: grex records the
+peer certificate subject, but does not (yet) resolve a SPIFFE ID or role for
+OpAMP connections. See [TLS and mTLS](tls-mtls.md).
+
+## Operator guidance
+
+- Until OIDC ships, mTLS is the only way to require identity on the UI and
+  telemetry listeners; an unauthenticated caller can still reach them if
+  `ui_tls.client_ca_file` / `telemetry_tls.client_ca_file` are left unset
+- Bind UI and telemetry to a private network interface if you are not
+  ready to configure mTLS
+- Prefer OpAMP mTLS for any shared or multi-tenant network path to
+  collectors
+- Do not rely on "security through obscurity" of the URL

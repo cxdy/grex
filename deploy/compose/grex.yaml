@@ -4,10 +4,35 @@ listeners:
   ui: ":8080"
   telemetry: ":9090"
 
-tls:
+opamp_tls:
   cert_file: /certs/server.pem
   key_file: /certs/server-key.pem
   client_ca_file: /certs/ca.pem
+
+ui_tls:
+  cert_file: /certs/server.pem
+  key_file: /certs/server-key.pem
+  client_ca_file: /certs/ca.pem
+
+telemetry_tls:
+  cert_file: /certs/server.pem
+  key_file: /certs/server-key.pem
+  client_ca_file: /certs/ca.pem
+
+# /healthz and /readyz stay open with no client cert; every other route on
+# the UI and telemetry listeners requires one mapped to a role below.
+auth:
+  default_role: none
+  role_mapping:
+    - match: exact
+      spiffe_id: spiffe://grex-api.internal/user/alice
+      role: viewer
+    - match: exact
+      spiffe_id: spiffe://grex-api.internal/user/admin
+      role: admin
+    - match: exact
+      spiffe_id: spiffe://grex-api.internal/service/prometheus
+      role: viewer
 
 fleet:
   required_attributes:

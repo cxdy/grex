@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 	"log/slog"
 	"net"
@@ -36,7 +37,7 @@ func testLogger() *slog.Logger {
 
 func startServer(t *testing.T) *Server {
 	t.Helper()
-	s := New(testConfig(), testLogger(), OpAMP{}, UI{}, metrics.NewRegistry(), prometheus.NewRegistry())
+	s := New(testConfig(), testLogger(), OpAMP{}, UI{}, nil, metrics.NewRegistry(), prometheus.NewRegistry())
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -117,7 +118,7 @@ func TestPprofDisabledByDefault(t *testing.T) {
 func TestPprofEnabled(t *testing.T) {
 	cfg := testConfig()
 	cfg.Debug.PprofEnabled = true
-	s := New(cfg, testLogger(), OpAMP{}, UI{}, metrics.NewRegistry(), prometheus.NewRegistry())
+	s := New(cfg, testLogger(), OpAMP{}, UI{}, nil, metrics.NewRegistry(), prometheus.NewRegistry())
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -157,7 +158,7 @@ func TestMetricsEndpointsSeparated(t *testing.T) {
 	fleetReg.MustRegister(fleetGauge)
 	fleetGauge.Set(1)
 
-	s := New(testConfig(), testLogger(), OpAMP{}, UI{}, metrics.NewRegistry(), fleetReg)
+	s := New(testConfig(), testLogger(), OpAMP{}, UI{}, nil, metrics.NewRegistry(), fleetReg)
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -189,7 +190,7 @@ func TestOpAMPHandlerMounted(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	s := New(testConfig(), testLogger(), OpAMP{Handler: handler}, UI{}, metrics.NewRegistry(), prometheus.NewRegistry())
+	s := New(testConfig(), testLogger(), OpAMP{Handler: handler}, UI{}, nil, metrics.NewRegistry(), prometheus.NewRegistry())
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -212,7 +213,7 @@ func TestUIHandlerMounted(t *testing.T) {
 	mux.HandleFunc("GET /api/agents", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	s := New(testConfig(), testLogger(), OpAMP{}, UI{Handler: mux}, metrics.NewRegistry(), prometheus.NewRegistry())
+	s := New(testConfig(), testLogger(), OpAMP{}, UI{Handler: mux}, nil, metrics.NewRegistry(), prometheus.NewRegistry())
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -228,7 +229,7 @@ func TestUIHandlerMounted(t *testing.T) {
 }
 
 func TestShutdownClosesListeners(t *testing.T) {
-	s := New(testConfig(), testLogger(), OpAMP{}, UI{}, metrics.NewRegistry(), prometheus.NewRegistry())
+	s := New(testConfig(), testLogger(), OpAMP{}, UI{}, nil, metrics.NewRegistry(), prometheus.NewRegistry())
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -264,7 +265,7 @@ func TestStartFailsOnUnbindableAddress(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.Listeners.OpAMP = lis.Addr().String()
-	s := New(cfg, testLogger(), OpAMP{}, UI{}, metrics.NewRegistry(), prometheus.NewRegistry())
+	s := New(cfg, testLogger(), OpAMP{}, UI{}, nil, metrics.NewRegistry(), prometheus.NewRegistry())
 	if err := s.Start(); err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -274,7 +275,7 @@ func TestStartFailsOnUnbindableAddress(t *testing.T) {
 }
 
 func TestBoundAddrBeforeStartAndFatalChannel(t *testing.T) {
-	s := New(testConfig(), testLogger(), OpAMP{}, UI{}, metrics.NewRegistry(), prometheus.NewRegistry())
+	s := New(testConfig(), testLogger(), OpAMP{}, UI{}, nil, metrics.NewRegistry(), prometheus.NewRegistry())
 	if s.OpAMPAddr() != "" || s.UIAddr() != "" || s.TelemetryAddr() != "" {
 		t.Fatal("bound addresses should be empty before Start")
 	}
@@ -291,7 +292,7 @@ func TestBoundAddrBeforeStartAndFatalChannel(t *testing.T) {
 }
 
 func TestShutdownBeforeStartIsNoop(t *testing.T) {
-	s := New(testConfig(), testLogger(), OpAMP{}, UI{}, metrics.NewRegistry(), prometheus.NewRegistry())
+	s := New(testConfig(), testLogger(), OpAMP{}, UI{}, nil, metrics.NewRegistry(), prometheus.NewRegistry())
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := s.Shutdown(ctx); err != nil {
@@ -301,18 +302,18 @@ func TestShutdownBeforeStartIsNoop(t *testing.T) {
 
 func TestOpAMPTLSConfigErrors(t *testing.T) {
 	// Missing keypair files.
-	_, err := opampTLSConfig(config.TLS{CertFile: "/no/such/cert.pem", KeyFile: "/no/such/key.pem"})
+	_, err := listenerTLSConfig(config.TLS{CertFile: "/no/such/cert.pem", KeyFile: "/no/such/key.pem"}, tls.RequireAndVerifyClientCert)
 	if err == nil {
 		t.Fatal("expected keypair load error")
 	}
 
 	// Valid keypair + missing client CA file.
 	certs := testcert.Gen(t)
-	_, err = opampTLSConfig(config.TLS{
+	_, err = listenerTLSConfig(config.TLS{
 		CertFile:     certs.ServerCertFile,
 		KeyFile:      certs.ServerKeyFile,
 		ClientCAFile: "/no/such/ca.pem",
-	})
+	}, tls.RequireAndVerifyClientCert)
 	if err == nil {
 		t.Fatal("expected client CA read error")
 	}
@@ -322,17 +323,17 @@ func TestOpAMPTLSConfigErrors(t *testing.T) {
 	if err := os.WriteFile(badCA, []byte("not a cert"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err = opampTLSConfig(config.TLS{
+	_, err = listenerTLSConfig(config.TLS{
 		CertFile:     certs.ServerCertFile,
 		KeyFile:      certs.ServerKeyFile,
 		ClientCAFile: badCA,
-	})
+	}, tls.RequireAndVerifyClientCert)
 	if err == nil {
 		t.Fatal("expected empty CA bundle error")
 	}
 
 	// Happy path: no TLS.
-	cfg, err := opampTLSConfig(config.TLS{})
+	cfg, err := listenerTLSConfig(config.TLS{}, tls.RequireAndVerifyClientCert)
 	if err != nil || cfg != nil {
 		t.Fatalf("empty TLS: cfg=%v err=%v", cfg, err)
 	}

@@ -10,7 +10,7 @@ Defaults assume stock listen addresses. Paths are fixed; ports come from
 | `/v1/opamp` | OpAMP WebSocket and plain HTTP transport |
 | other | `501 Not Implemented` |
 
-Optional TLS/mTLS per `tls.*`.
+Optional TLS/mTLS per `opamp_tls.*`.
 
 ## UI listener (`listeners.ui`, default `:8080`)
 
@@ -38,14 +38,16 @@ Optional TLS/mTLS per `tls.*`.
 
 Details: [Read API](../developer/read-api.md).
 
-**Auth:** none today ([issue #11](https://github.com/dennisme/grex/issues/11)).
+**Auth:** optional mTLS with SPIFFE IDs, per `ui_tls.client_ca_file` and
+`auth.role_mapping`. Applies to every UI/API path when configured. See
+[Authentication](../admin/authentication.md).
 
 ## Telemetry listener (`listeners.telemetry`, default `:9090`)
 
-| Path | Description |
-|------|-------------|
-| `GET /healthz` | Liveness (`200` + `ok`) |
-| `GET /readyz` | Readiness (`200` / `503`) |
-| `GET /metrics` | Prometheus server registry |
-| `GET /metrics/fleet` | Prometheus fleet registry |
-| `GET /debug/pprof/…` | pprof (only if `debug.pprof_enabled`) |
+| Path | Description | Auth |
+|------|-------------|------|
+| `GET /healthz` | Liveness (`200` + `ok`) | Always open, even with `telemetry_tls.client_ca_file` set |
+| `GET /readyz` | Readiness (`200` / `503`) | Always open, even with `telemetry_tls.client_ca_file` set |
+| `GET /metrics` | Prometheus server registry | Optional mTLS with SPIFFE IDs, per `telemetry_tls.client_ca_file` |
+| `GET /metrics/fleet` | Prometheus fleet registry | Same as `/metrics` |
+| `GET /debug/pprof/…` | pprof (only if `debug.pprof_enabled`) | Same as `/metrics` |

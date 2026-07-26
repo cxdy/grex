@@ -106,6 +106,9 @@ func TestEventCounters(t *testing.T) {
 	events.GatewayConnectionOpened()
 	events.GatewayConnectionOpened()
 	events.GatewayConnectionClosed()
+	events.AuthDenied("no_cert")
+	events.AuthDenied("no_cert")
+	events.AuthAllowed("viewer")
 
 	assert := func(name string, want float64, c prometheus.Collector) {
 		t.Helper()
@@ -125,6 +128,8 @@ func TestEventCounters(t *testing.T) {
 	assert("gateway connects accepted", 1, events.gatewayConnects.WithLabelValues("accepted"))
 	assert("gateway connects rejected", 1, events.gatewayConnects.WithLabelValues("rejected"))
 	assert("gateway_connections", 1, events.gatewayConnections)
+	assert("auth denied no_cert", 2, events.authDenied.WithLabelValues("no_cert"))
+	assert("auth allowed viewer", 1, events.authAllowed.WithLabelValues("viewer"))
 }
 
 func TestNewInfoGauge(t *testing.T) {

@@ -11,7 +11,7 @@ data:
       ui: {{ .Values.listeners.ui | quote }}
       telemetry: {{ .Values.listeners.telemetry | quote }}
     {{- if .Values.tls.enabled }}
-    tls:
+    opamp_tls:
       cert_file: {{ include "grex.tlsCertFile" . | quote }}
       key_file: {{ include "grex.tlsKeyFile" . | quote }}
       {{- $clientCA := include "grex.tlsClientCAFile" . }}

@@ -22,6 +22,29 @@ scrape_configs:
 
 This matches `deploy/compose/prometheus.yaml` used in local development.
 
+## When the telemetry listener requires mTLS
+
+If `telemetry_tls.client_ca_file` is set, add `scheme: https` and a
+`tls_config` with a client certificate mapped to a role in
+`auth.role_mapping` (see [Authentication](../admin/authentication.md)):
+
+```yaml
+scrape_configs:
+  - job_name: grex-server
+    scheme: https
+    metrics_path: /metrics
+    tls_config:
+      ca_file: /certs/ca.pem
+      cert_file: /certs/service-prometheus.pem
+      key_file: /certs/service-prometheus-key.pem
+    static_configs:
+      - targets: ["grex:9090"]
+```
+
+`/healthz` and `/readyz` stay reachable without a client certificate even
+when `telemetry_tls.client_ca_file` is set; only `/metrics`,
+`/metrics/fleet`, and `/debug/pprof/*` require one.
+
 ## Choosing intervals
 
 | Job | Guidance |
@@ -40,8 +63,9 @@ emitting per-uid series above the cap (see [Cardinality](cardinality.md)).
 
 ## Network access
 
-The telemetry listener has **no application authentication**. Restrict it
-with:
+Application authentication is optional (see above); when
+`telemetry_tls.client_ca_file` is unset, the telemetry listener has no
+application authentication. Restrict it with:
 
 - Bind address (e.g. internal interface only)
 - Network policies / security groups

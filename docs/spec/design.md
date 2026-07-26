@@ -651,17 +651,26 @@ the gateway's connect handshake needs grex to answer `connectResult`.
 5. **Web UI** — embedded `html/template` + htmx pages rendering the read API
    (fleet overview with server-side filters, agent detail, server status;
    configurable poll interval; logo-complementary dark theme).
-6. **Auth: mTLS** — TLS termination plus required client certificates on the
-   UI/API listener, reusing the mTLS plumbing built for the OpAMP listener
-   in milestone 2. Identity comes from the client cert's SPIFFE ID (URI SAN,
+6. **Auth: mTLS** — **Shipped.** TLS termination plus optional client
+   certificates on the UI/API listener (`ui_tls`) and the telemetry listener
+   (`telemetry_tls`), reusing the mTLS plumbing built for the OpAMP listener
+   in milestone 2 (now `opamp_tls`). Unlike the OpAMP listener, the UI and
+   telemetry TLS handshakes accept a connection with no client certificate
+   (`tls.VerifyClientCertIfGiven`, not `RequireAndVerifyClientCert`); grex
+   still rejects the request afterwards, but only per-route, so `/healthz`
+   and `/readyz` on the telemetry listener stay reachable for orchestrator
+   probes that cannot present a certificate, while `/metrics`,
+   `/metrics/fleet`, `/debug/pprof/*`, and every UI/API route require one.
+   Identity comes from the client cert's SPIFFE ID (URI SAN,
    `spiffe://<trust-domain>/<path>`), not the X.509 subject: grex requires
    exactly one SPIFFE URI SAN per cert and rejects certs that lack one or
    carry a malformed one. Authorization maps SPIFFE ID (or a path prefix of
-   it) to role via config, same shape as the `groups`-to-role table OIDC
-   uses in milestone 7, so the role table's mechanism does not change when
-   OIDC lands, only the identity source feeding it. Ships first: no external
-   dependency, and it is real access control for API consumers even before
-   OIDC login exists for the browser UI.
+   it) to role via `auth.role_mapping` / `auth.default_role`, same shape as
+   the `groups`-to-role table OIDC uses in milestone 7, so the role table's
+   mechanism does not change when OIDC lands, only the identity source
+   feeding it. `grex_auth_allowed_total{role}` / `grex_auth_denied_total{reason}`
+   count outcomes. Agent-to-OpAMP-gateway mTLS/SPIFFE alignment is separate,
+   later work, not part of this milestone.
    - **SPIFFE ID path format**: two namespaces under one trust domain, so the
      role table's prefix matching stays unambiguous between a human using a
      personal dev cert (the realistic case before milestone 7 ships) and a
