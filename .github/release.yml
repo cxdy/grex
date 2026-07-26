@@ -1,0 +1,30 @@
+# Categories for GitHub-generated release notes (changelog.use: github-native).
+# PRs land in the first matching category by label; "*" is the catch-all.
+# https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes
+changelog:
+  exclude:
+    authors:
+      - dependabot
+      - dependabot[bot]
+  categories:
+    - title: "✨ Features"
+      labels:
+        - enhancement
+        - feature
+        - feat
+    - title: "🐛 Bug Fixes"
+      labels:
+        - bug
+        - fix
+    - title: "📚 Documentation"
+      labels:
+        - documentation
+        - docs
+    - title: "👷 CI / Chores"
+      labels:
+        - ci
+        - chore
+        - dependencies
+    - title: Other Changes
+      labels:
+        - "*"
