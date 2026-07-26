@@ -95,6 +95,7 @@ The living product plan is under [SPEC](spec/index.md)
 - **[Getting started](getting-started/index.md)** — tutorials to a first success
 - **[User](user/index.md)** — fleet UI for operators
 - **[Admin](admin/index.md)** — deploy (binary, Compose, Helm), config, TLS, lifecycle
+- **[Releases](releases/index.md)** — binaries, images, Helm, and [changelog](releases/changelog.md)
 - **[Developer](developer/index.md)** — architecture, packages, API, UI, tests
 - **[Observability](observability/index.md)** — metrics catalog, scrape layout, logs, traces
 - **[Reference](reference/cli.md)** — CLI, HTTP endpoints, Helm values

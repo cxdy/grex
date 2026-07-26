@@ -92,6 +92,8 @@ docs: demo-static
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p docs/assets && cp logo.png docs/assets/logo.png
+    # Pull GitHub Release notes into docs/releases/changelog.md
+    python3 scripts/generate-releases-changelog.py
     mkdocs build --strict
     # Package the Helm chart into site/charts so local mkdocs previews match
     # GitHub Pages (docs + demo + chart repo share one site).

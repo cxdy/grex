@@ -90,6 +90,9 @@ nav:
       - Authentication: admin/authentication.md
       - Health and lifecycle: admin/health-and-lifecycle.md
       - Scaling with gateways: admin/scaling-with-gateways.md
+  - Releases:
+      - releases/index.md
+      - Changelog: releases/changelog.md
   - Developer:
       - developer/index.md
       - Architecture: developer/architecture.md
