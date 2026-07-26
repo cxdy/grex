@@ -1,0 +1,4 @@
+-- Placeholder migration. grex's own tables (permission tables, jobs/job_targets)
+-- aren't designed yet; see docs/spec/design.md's Open questions. This file
+-- exists only so golang-migrate has at least one migration to run against:
+-- its file source driver errors on a directory with zero migration files.

@@ -24,6 +24,10 @@ services:
     depends_on:
       gen-certs:
         condition: service_completed_successfully
+      river-migrate:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://127.0.0.1:9090/healthz"]
       interval: 5s
@@ -45,6 +49,71 @@ services:
       interval: 5s
       timeout: 3s
       retries: 12
+
+  postgres:
+    # Dev-only infra for the future durable state and job dispatch backend
+    # (see internal/persistence, docs/spec/design.md's Post-1.0 roadmap).
+    # Nothing reads or writes to it yet: no migrations, no schema.
+    image: postgres:17.2-alpine
+    environment:
+      POSTGRES_USER: grex
+      POSTGRES_PASSWORD: grex-dev-password
+      POSTGRES_DB: grex
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U grex -d grex"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.17.1
+    environment:
+      DATA_SOURCE_NAME: "postgresql://grex:grex-dev-password@postgres:5432/grex?sslmode=disable"
+    ports:
+      - "127.0.0.1:9187:9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9187/metrics"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  river-migrate:
+    # One-shot: runs River's own migrator (see cmd/river-migrate) to create
+    # River's tables (river_job, river_leader, etc) in the dev database.
+    # Independent of the migrate service below, which owns grex's own
+    # tables; see docs/spec/design.md's migration-tooling decision.
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: river-migrate
+    environment:
+      DATABASE_URL: "postgres://grex:grex-dev-password@postgres:5432/grex?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  migrate:
+    # One-shot: runs golang-migrate against grex's own tables. Only a
+    # placeholder migration exists today (internal/persistence/migrations);
+    # permission-table and jobs-table shape are still open questions in
+    # docs/spec/design.md.
+    image: migrate/migrate:v4.19.1
+    volumes:
+      - ./internal/persistence/migrations:/migrations:ro
+    command:
+      - -path=/migrations
+      - -database=postgres://grex:grex-dev-password@postgres:5432/grex?sslmode=disable
+      - up
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   dex:
     image: dexidp/dex:v2.45.1
@@ -85,13 +154,15 @@ services:
       - opamp-gateway
 
   otelcol-agent-2:
-    image: otel/opentelemetry-collector-contrib:0.157.0
-    command: ["--config", "/etc/otelcol/config.yaml"]
-    environment:
-      AGENT_NAME: agent-2
+    # OpAMP Supervisor-managed, unlike agent-1's bare opamp extension: the
+    # two intentionally exercise both client-side models grex supports. See
+    # docs/spec/design.md's Local development section.
+    build: deploy/compose/opamp-supervisor-build
     volumes:
-      - ./deploy/compose/otelcol-agent.yaml:/etc/otelcol/config.yaml:ro
+      - ./deploy/compose/supervisor.yaml:/etc/otelcol/supervisor.yaml:ro
+      - ./deploy/compose/otelcol-agent-2.yaml:/etc/otelcol/agent-2.yaml:ro
       - ./deploy/compose/certs:/certs:ro
+      - opamp-supervisor-data:/var/lib/otelcol/supervisor-data
     depends_on:
       - opamp-gateway
 
@@ -103,3 +174,7 @@ services:
       - ./deploy/compose/certs:/certs:ro
     depends_on:
       - opamp-gateway
+
+volumes:
+  postgres-data:
+  opamp-supervisor-data:

@@ -57,6 +57,22 @@ compose-up:
 compose-down:
     docker compose down -v
 
+# Migrates grex's own tables (not River's — see internal/persistence/migrations
+# and cmd/river-migrate). Placeholder migration only until jobs/permission
+# schema is decided (docs/spec/design.md Open questions).
+migrate_version := "v4.19.1"
+database_url := env("DATABASE_URL", "postgres://grex:grex-dev-password@localhost:5432/grex?sslmode=disable")
+
+migrate-up:
+    env -u GOROOT GOTOOLCHAIN=auto go run -tags 'postgres' \
+        github.com/golang-migrate/migrate/v4/cmd/migrate@{{migrate_version}} \
+        -path internal/persistence/migrations -database "{{database_url}}" up
+
+migrate-down:
+    env -u GOROOT GOTOOLCHAIN=auto go run -tags 'postgres' \
+        github.com/golang-migrate/migrate/v4/cmd/migrate@{{migrate_version}} \
+        -path internal/persistence/migrations -database "{{database_url}}" down
+
 # Sync live UI assets into the static GitHub Pages demo.
 demo-static:
     mkdir -p docs/demo/static

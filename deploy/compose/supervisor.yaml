@@ -1,0 +1,28 @@
+# Config for the OpAMP Supervisor managing agent-2 (see otelcol-agent-2.yaml
+# for the collector config it starts). Capabilities left at Supervisor
+# defaults: reports_effective_config, reports_own_metrics, reports_health,
+# reports_heartbeat all true; accepts_remote_config false, matching grex not
+# offering configs in 1.0.
+server:
+  endpoint: wss://opamp-gateway:4320/v1/opamp
+  tls:
+    ca_file: /certs/ca.pem
+    cert_file: /certs/agent-2.pem
+    key_file: /certs/agent-2-key.pem
+
+agent:
+  executable: /otelcol-contrib
+  config_files:
+    - /etc/otelcol/agent-2.yaml
+    - $OPAMP_EXTENSION_CONFIG
+  description:
+    non_identifying_attributes:
+      deployment.environment: dev
+      service.namespace: grex-dev
+
+storage:
+  # Named Docker volume, not container-local: this is where the Supervisor
+  # persists the instance_uid it generates on first run. Without a
+  # persistent volume, every container recreation mints a new UUID and
+  # orphans the old fleet entry.
+  directory: /var/lib/otelcol/supervisor-data
