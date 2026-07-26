@@ -54,18 +54,15 @@ snapshot:
 # use: github pulls author @handles via the compare API; falls back poorly if a
 # previous tag is missing on GitHub — switch to "git" for offline/first-tag dry runs.
 #
-# PR links: squash-merges (and titles) that end with "(#123)" are rewritten to
-# markdown links. Prefer "Squash and merge" with the default GitHub subject so
-# each changelog line includes a PR URL.
+# PR links: keep "(#123)" in the subject (GitHub squash-merge default). GitHub
+# auto-links #N in release bodies; GoReleaser's format template has no regex
+# helpers (only replace/englishJoin/etc.), so we do not rewrite to full URLs.
 changelog:
   use: github
   sort: asc
-  # Drop raw commit SHAs from the body; messages, PR links, and authors are enough.
+  # Drop raw commit SHAs from the body; messages + authors are enough.
   abbrev: -1
-  format: >-
-    {{ .Message
-       | regexReplaceAll "\\(#([0-9]+)\\)" "[#$1](https://github.com/dennisme/grex/pull/$1)"
-    }}{{ with .Logins }} ({{ . | englishJoin }}){{ end }}
+  format: "{{ .Message }}{{ with .Logins }} ({{ . | englishJoin }}){{ end }}"
   groups:
     - title: "✨ Features"
       regexp: '^.*?feat(\([[:word:]._-]+\))??!?:.+$'
