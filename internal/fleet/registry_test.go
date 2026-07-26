@@ -35,37 +35,37 @@ func newRecordingEvents() *recordingEvents {
 	}
 }
 
-func (e *recordingEvents) AgentConnected() {
+func (e *recordingEvents) AgentConnected(string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.connects++
 }
 
-func (e *recordingEvents) AgentDisconnected() {
+func (e *recordingEvents) AgentDisconnected(string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.disconnects++
 }
 
-func (e *recordingEvents) AgentEvicted() {
+func (e *recordingEvents) AgentEvicted(string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.evictions++
 }
 
-func (e *recordingEvents) ReportReceived(kind string) {
+func (e *recordingEvents) ReportReceived(_, kind string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.reports[kind]++
 }
 
-func (e *recordingEvents) MissingAttribute(key string) {
+func (e *recordingEvents) MissingAttribute(_, key string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.missingAttributes[key]++
 }
 
-func (e *recordingEvents) ReservedAttributeConflict(key string) {
+func (e *recordingEvents) ReservedAttributeConflict(_, key string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.reservedConflicts[key]++
@@ -711,12 +711,12 @@ func TestAnyValueStringNonString(t *testing.T) {
 func TestNoopEventsMethods(t *testing.T) {
 	// Exercise the nil-events implementation so coverage includes the stubs.
 	var n noopEvents
-	n.AgentConnected()
-	n.AgentDisconnected()
-	n.AgentEvicted()
-	n.ReportReceived("status")
-	n.MissingAttribute("service.name")
-	n.ReservedAttributeConflict("healthy")
+	n.AgentConnected("agent-1")
+	n.AgentDisconnected("agent-1")
+	n.AgentEvicted("agent-1")
+	n.ReportReceived("agent-1", "status")
+	n.MissingAttribute("agent-1", "service.name")
+	n.ReservedAttributeConflict("agent-1", "healthy")
 }
 
 func TestSetConnectedToggles(t *testing.T) {
@@ -739,5 +739,28 @@ func TestSetConnectedToggles(t *testing.T) {
 	agent, _ := r.Get(id)
 	if !agent.Connected {
 		t.Fatal("expected connected after toggle")
+	}
+}
+
+func TestMultiEventsFansOutToEveryListener(t *testing.T) {
+	a := newRecordingEvents()
+	b := newRecordingEvents()
+	m := MultiEvents(a, b)
+
+	m.AgentConnected("agent-1")
+	m.AgentDisconnected("agent-1")
+	m.AgentEvicted("agent-1")
+	m.ReportReceived("agent-1", "status")
+	m.MissingAttribute("agent-1", "team")
+	m.ReservedAttributeConflict("agent-1", "healthy")
+
+	for name, e := range map[string]*recordingEvents{"a": a, "b": b} {
+		if e.connects != 1 || e.disconnects != 1 || e.evictions != 1 {
+			t.Errorf("%s: connects=%d disconnects=%d evictions=%d, want 1 each", name, e.connects, e.disconnects, e.evictions)
+		}
+		if e.reports["status"] != 1 || e.missingAttributes["team"] != 1 || e.reservedConflicts["healthy"] != 1 {
+			t.Errorf("%s: reports=%v missingAttributes=%v reservedConflicts=%v",
+				name, e.reports, e.missingAttributes, e.reservedConflicts)
+		}
 	}
 }

@@ -231,6 +231,36 @@ sharding at the app tier is the one to defer hardest: it's real complexity
 only be built once benchmarking work shows the DB-only approach actually
 runs out of headroom, not before.
 
+**Reconnect-elsewhere: reads self-heal, dispatch-routing doesn't.** A
+multi-replica app tier (a stateless pool sharing one database, from
+"DB-native partitioning" above) means an agent's WS connection — whether
+direct or through a gateway — can drop and reconnect to a *different*
+grex process at any time; nothing guarantees connection reuse or
+affinity to the replica that last held it. Whichever replica held the
+agent's state must get it into the shared database before another
+replica needs it, and that can't be guaranteed by flushing faster or even
+synchronously on disconnect: a hard crash or network partition gives no
+disconnect event at all, so there's nothing to race against. The fix
+isn't closing that window, it's not needing to: this is the same
+situation `ReportFullState` already handles today (a process with no —
+or, here, insufficiently fresh — description for an `instance_uid` asks
+for one and the agent resends everything), just triggered by "connected
+to a different replica" instead of "grex restarted." On connect, a
+replica checks the shared database (not only local memory) for that
+`instance_uid`: fresh enough → fast path, no penalty; stale or missing
+(the previous replica hadn't flushed yet, or the agent is genuinely new)
+→ `ReportFullState`, self-heals. Correctness stops depending on flush
+timing at all; flush-on-disconnect is still worth doing as a best-effort
+optimization (fewer graceful reconnects need the fallback), just not
+load-bearing.
+
+This is a **read**-side reconciliation story only. It says nothing about
+**dispatch**: once mutation ships, sending a restart/config-push to a
+specific agent needs its *live* socket, and nothing above says which
+replica currently holds it — that's the harder, separate half of
+per-agent sharding already flagged as the reason to defer it (see Jobs:
+schema and execution's "dispatch needs the target's live connection").
+
 #### Agent state schema
 
 Once fleet state is durable (see state database above), this is the shape
@@ -263,6 +293,59 @@ along the identity/session line the in-memory struct blurs today:
   `sequence_num` is kept for display/debugging only; nothing may read it
   back to resume ordering checks after a reconnect, since the agent's own
   counter isn't guaranteed continuous across a restart either.
+
+**Write path: batched, not per-report.** `Report()`/`SetConnected()` run
+on the OpAMP message-handling hot path; a synchronous write to Postgres
+on every check-in would couple grex's OpAMP latency/availability to the
+database's, which is exactly what this design avoids elsewhere (the
+in-memory registry is authoritative, the database is a durability layer
+under it, not a dependency of the live path). Instead: those calls add
+the touched `instance_uid` to a small in-memory dirty set (a map insert
+under the lock already held, no I/O), and a separate ticker — its own,
+**not** `Sweep`'s — periodically snapshots and clears that set and
+issues one batched `INSERT ... ON CONFLICT DO UPDATE` covering everything
+changed since the last flush. `Sweep` and the persistence flush are
+different concerns (liveness/eviction vs. durability) and must not share
+a ticker even if their intervals end up similar. Whatever hasn't flushed
+at a crash is simply lost from the database — acceptable, since agents
+already re-report everything on reconnect (`ReportFullState`) regardless
+of what the database had; durability here needs to survive seconds of
+staleness, not be per-message-perfect. `agent_session` churns far more
+than `agents`/`agent_effective_config` and its precision matters less (a
+connect/disconnect a few seconds stale in the database is fine) — it can
+flush on a looser cadence, or be snapshotted wholesale each tick rather
+than tracked in the dirty set. Not routed through River: this is
+continuous background persistence, not a discrete one-shot task.
+
+**Multi-writer safety: a conditional `UPSERT`, no separate lock.** Once
+more than one replica can flush the same `instance_uid` (see
+reconnect-elsewhere above — no connection affinity, an agent can talk to
+a different grex every connection), concurrent flushes for the same row
+need to converge correctly regardless of which one reaches Postgres
+first. One atomic statement handles it, no explicit locking needed:
+
+```sql
+INSERT INTO agents (instance_uid, ..., updated_at)
+VALUES ($1, ..., $N)
+ON CONFLICT (instance_uid) DO UPDATE
+SET ..., updated_at = EXCLUDED.updated_at
+WHERE agents.updated_at < EXCLUDED.updated_at;
+```
+
+`ON CONFLICT DO UPDATE` already takes the row lock as part of this one
+statement; Postgres serializes concurrent attempts on the same row on its
+own. The `WHERE` guard is the entire mechanism — a stale flush simply
+becomes a no-op (0 rows affected) instead of clobbering a newer write, no
+history kept, nothing else to coordinate. The value written to
+`updated_at` must be event time (`Agent.LastSeen`, the actual OpAMP
+message timestamp already tracked), not flush wall-clock time — flush
+scheduling jitter differs per replica and per tick, and using it instead
+would reject genuinely newer data over an artifact of when a batch
+happened to run. Same shape applies to `agent_session` and
+`agent_effective_config`, each keyed on its own relevant timestamp. Worst
+case — an agent reconnecting to a different replica on every connection —
+converges correctly under this: whichever write carries the latest event
+time wins, independent of arrival order at Postgres.
 
 **Soft delete and retention** (reverses 1.0's "no tombstones" behavior;
 see Decided). A stale agent is soft-deleted (`evicted_at` set) instead of

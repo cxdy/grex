@@ -116,23 +116,24 @@ func NewEvents(server, fleet prometheus.Registerer) *Events {
 	return e
 }
 
-// AgentConnected implements fleet.Events.
-func (e *Events) AgentConnected() { e.agentConnects.Inc() }
+// AgentConnected implements fleet.Events. instanceUID is unused: per-agent
+// labels would blow up cardinality, this only feeds an aggregate counter.
+func (e *Events) AgentConnected(string) { e.agentConnects.Inc() }
 
 // AgentDisconnected implements fleet.Events.
-func (e *Events) AgentDisconnected() { e.agentDisconnects.Inc() }
+func (e *Events) AgentDisconnected(string) { e.agentDisconnects.Inc() }
 
 // AgentEvicted implements fleet.Events.
-func (e *Events) AgentEvicted() { e.agentsEvicted.Inc() }
+func (e *Events) AgentEvicted(string) { e.agentsEvicted.Inc() }
 
 // ReportReceived implements fleet.Events.
-func (e *Events) ReportReceived(kind string) { e.reports.WithLabelValues(kind).Inc() }
+func (e *Events) ReportReceived(_, kind string) { e.reports.WithLabelValues(kind).Inc() }
 
 // MissingAttribute implements fleet.Events.
-func (e *Events) MissingAttribute(key string) { e.missingAttributes.WithLabelValues(key).Inc() }
+func (e *Events) MissingAttribute(_, key string) { e.missingAttributes.WithLabelValues(key).Inc() }
 
 // ReservedAttributeConflict implements fleet.Events.
-func (e *Events) ReservedAttributeConflict(key string) {
+func (e *Events) ReservedAttributeConflict(_, key string) {
 	e.reservedAttributeConflicts.WithLabelValues(key).Inc()
 }
 
