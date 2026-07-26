@@ -5,6 +5,10 @@ grex uses [semantic versioning](https://semver.org/) driven by
 releases by pushing a version tag; [GoReleaser](https://goreleaser.com/) builds
 binaries and container images from that tag.
 
+Published notes and install coordinates are mirrored on the docs site under
+[Releases](../releases/index.md) (changelog regenerated on each docs build
+from GitHub Releases).
+
 ## Prerequisites
 
 - Push access to the canonical repository (`dennisme/grex`)
@@ -159,11 +163,29 @@ GoReleaser builds the GitHub Release body from commits since the previous tag
 
 3. **Filters** drop noise: `doc`/`docs`, `test`, `chore`, `ci`, `build`,
    `style`, `bump`, and merge commits
-4. **Footer** adds Docker image and docs links
+4. **PR links:** subjects containing `(#123)` (GitHub’s default squash-merge
+   suffix) become markdown links to
+   `https://github.com/dennisme/grex/pull/123`
+5. **Footer** adds a compare URL (full changelog), Docker image, Helm install,
+   and docs links
 
-Squash-merge PRs with a conventional subject (for example
-`feat(ui): add attribute chips`) so the notes stay readable. Merge-commit
-subjects are excluded.
+**Squash and merge** PRs with a conventional subject so each line is readable
+and linkable, for example:
+
+```text
+feat(ui): add attribute chips (#31)
+```
+
+becomes roughly:
+
+```markdown
+### ✨ Features
+- feat(ui): add attribute chips ([#31](https://github.com/dennisme/grex/pull/31)) (@someone)
+```
+
+Merge-commit subjects (`Merge pull request #…`) are excluded so the notes
+list the feature commits (with PR numbers when squash-merged), not the merge
+wrapper.
 
 **First release / missing previous tag on GitHub:** the `github` changelog
 backend needs both tags on the remote. If notes generation fails, temporarily
@@ -197,6 +219,8 @@ goreleaser release --snapshot --clean --skip=publish
 - Confirm the docs workflow on `main` finished so
   [the chart repo](https://dennisme.github.io/grex/charts/) indexes the new
   chart (path-filtered; needs the chart bump commit on `main`)
+- Confirm the docs workflow also ran on the **release published** event so
+  [Releases → Changelog](../releases/changelog.md) includes the new notes
 
 ## Troubleshooting
 

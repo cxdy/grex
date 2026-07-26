@@ -18,6 +18,7 @@ and understand process lifecycle.
 | Page | Description |
 |------|-------------|
 | [Install](install.md) | Binary, Docker, Compose, Helm overview |
+| [Releases](../releases/index.md) | Versioned artifacts + [changelog](../releases/changelog.md) |
 | [Deploy with Helm](helm.md) | Kubernetes install, TLS, Ingress, scrapes |
 | [Configuration](configuration.md) | YAML + `GREX_*` reference |
 | [TLS and mTLS](tls-mtls.md) | OpAMP server TLS and client certs |

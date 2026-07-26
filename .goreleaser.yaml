@@ -53,12 +53,19 @@ snapshot:
 # Grouped release notes on the GitHub Release body (from conventional commits).
 # use: github pulls author @handles via the compare API; falls back poorly if a
 # previous tag is missing on GitHub — switch to "git" for offline/first-tag dry runs.
+#
+# PR links: squash-merges (and titles) that end with "(#123)" are rewritten to
+# markdown links. Prefer "Squash and merge" with the default GitHub subject so
+# each changelog line includes a PR URL.
 changelog:
   use: github
   sort: asc
-  # Drop commit SHAs from the body; messages + authors are enough.
+  # Drop raw commit SHAs from the body; messages, PR links, and authors are enough.
   abbrev: -1
-  format: "{{ .Message }}{{ with .Logins }} ({{ . | englishJoin }}){{ end }}"
+  format: >-
+    {{ .Message
+       | regexReplaceAll "\\(#([0-9]+)\\)" "[#$1](https://github.com/dennisme/grex/pull/$1)"
+    }}{{ with .Logins }} ({{ . | englishJoin }}){{ end }}
   groups:
     - title: "✨ Features"
       regexp: '^.*?feat(\([[:word:]._-]+\))??!?:.+$'
@@ -99,6 +106,8 @@ release:
   # Appended after the generated changelog on the GitHub Release.
   footer: |
     ---
+
+    **Full Changelog**: https://github.com/dennisme/grex/compare/{{ .PreviousTag }}...{{ .Tag }}
 
     **Docker:** `ghcr.io/dennisme/grex:{{ .Version }}` (also `{{ .Tag }}`)
 

@@ -4,6 +4,10 @@ grex ships as a **single Go binary**, a **container image**, and a
 **Helm chart** for Kubernetes. There is no external database to provision
 in 1.0: fleet state is in memory.
 
+Versioned downloads, image tags, chart coordinates, and the full
+[changelog](../releases/changelog.md) live under
+[Releases](../releases/index.md).
+
 | Method | Best for | Doc |
 |--------|----------|-----|
 | Binary / `go run` | Local development | [Getting started](../getting-started/index.md) |

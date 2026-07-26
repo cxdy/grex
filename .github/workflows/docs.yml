@@ -24,6 +24,9 @@ on:
       - "justfile"
       - "scripts/**"
       - "internal/ui/static/**"
+  # Refresh docs/releases/changelog.md after GoReleaser publishes notes.
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -53,6 +56,10 @@ jobs:
         run: mkdir -p docs/assets && cp logo.png docs/assets/logo.png
       - name: Sync grex UI assets into static demo
         run: just demo-static
+      - name: Generate releases changelog
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/generate-releases-changelog.py
       - name: Build site
         run: mkdocs build --strict
       # Helm chart repository lives at /charts/ on the same GitHub Pages site
@@ -72,13 +79,22 @@ jobs:
           # Keep a copy of the chart source README for humans browsing the path.
           cp deploy/charts/grex/README.md site/charts/README.md
       - name: Upload artifact
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        # Deploy from main pushes, published releases (refresh changelog), and manual runs.
+        if: >-
+          github.event_name != 'pull_request' &&
+          (github.ref == 'refs/heads/main' ||
+           github.event_name == 'release' ||
+           github.event_name == 'workflow_dispatch')
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
 
   deploy:
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' ||
+       github.event_name == 'release' ||
+       github.event_name == 'workflow_dispatch')
     needs: build
     runs-on: ubuntu-latest
     environment:
