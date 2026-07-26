@@ -24,6 +24,10 @@ services:
     depends_on:
       gen-certs:
         condition: service_completed_successfully
+      river-migrate:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://127.0.0.1:9090/healthz"]
       interval: 5s
@@ -79,6 +83,37 @@ services:
       interval: 5s
       timeout: 3s
       retries: 12
+
+  river-migrate:
+    # One-shot: runs River's own migrator (see cmd/river-migrate) to create
+    # River's tables (river_job, river_leader, etc) in the dev database.
+    # Independent of the migrate service below, which owns grex's own
+    # tables; see docs/spec/design.md's migration-tooling decision.
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: river-migrate
+    environment:
+      DATABASE_URL: "postgres://grex:grex-dev-password@postgres:5432/grex?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  migrate:
+    # One-shot: runs golang-migrate against grex's own tables. Only a
+    # placeholder migration exists today (internal/persistence/migrations);
+    # permission-table and jobs-table shape are still open questions in
+    # docs/spec/design.md.
+    image: migrate/migrate:v4.19.1
+    volumes:
+      - ./internal/persistence/migrations:/migrations:ro
+    command:
+      - -path=/migrations
+      - -database=postgres://grex:grex-dev-password@postgres:5432/grex?sslmode=disable
+      - up
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   dex:
     image: dexidp/dex:v2.45.1

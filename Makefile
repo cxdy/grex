@@ -1,4 +1,4 @@
-.PHONY: init build test coverage lint markdownlint pre-commit compose-up compose-down demo-static docs helm-lint helm-package helm-e2e helm-e2e-kind helm-e2e-k3d
+.PHONY: init build test coverage lint markdownlint pre-commit compose-up compose-down demo-static docs helm-lint helm-package helm-e2e helm-e2e-kind helm-e2e-k3d migrate-up migrate-down
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
@@ -41,6 +41,21 @@ compose-up:
 
 compose-down:
 	docker compose down -v
+
+# Migrates grex's own tables (not River's, see internal/persistence/migrations
+# and cmd/river-migrate). No schema exists yet; the migrations directory
+# carries only a placeholder migration until permission/jobs table shape is
+# decided (see docs/spec/design.md's Open questions).
+MIGRATE_VERSION := v4.19.1
+DATABASE_URL ?= postgres://grex:grex-dev-password@localhost:5432/grex?sslmode=disable
+
+migrate-up:
+	env -u GOROOT GOTOOLCHAIN=auto go run -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@$(MIGRATE_VERSION) \
+		-path internal/persistence/migrations -database "$(DATABASE_URL)" up
+
+migrate-down:
+	env -u GOROOT GOTOOLCHAIN=auto go run -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@$(MIGRATE_VERSION) \
+		-path internal/persistence/migrations -database "$(DATABASE_URL)" down
 
 # Sync live UI assets into the static GitHub Pages demo.
 demo-static:

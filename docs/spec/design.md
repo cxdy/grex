@@ -733,9 +733,14 @@ agent attributes, metric cardinality cap.
 8. **Postgres + postgres_exporter** — dev-only infra for the future durable
    state and job dispatch backend (see Post-1.0 roadmap: state database and
    sharding, Jobs: schema and execution, and `internal/persistence`'s
-   interface stubs). No migrations or schema exist yet; nothing in grex
-   reads or writes to this database. `internal/config`'s `database` block
-   carries connection settings but is unused by any runtime path.
+   interface stubs). Nothing in grex reads or writes to this database yet;
+   `internal/config`'s `database` block carries connection settings but is
+   unused by any runtime path. Two migrators run against it independently
+   before `grex` starts, per the migration-tooling decision above:
+   `river-migrate` (`cmd/river-migrate`, one-shot) creates River's own
+   tables via its own migrator, and `migrate` (`migrate/migrate` image)
+   applies `internal/persistence/migrations`, today only a placeholder —
+   permission-table and jobs-table shape are still open questions.
 
 The stack currently runs with agents connected straight to grex; inserting the
 OpAMP gateway service happens together with the OpAMP core milestone, since
