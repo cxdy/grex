@@ -207,6 +207,76 @@ sharding at the app tier is the one to defer hardest: it's real complexity
 only be built once benchmarking work shows the DB-only approach actually
 runs out of headroom, not before.
 
+#### Agent state schema
+
+Once fleet state is durable (see state database above), this is the shape
+`internal/fleet.Agent` maps to on disk. Decided, not yet built — unlike
+permission-table shape and jobs schema above, which stay open. Splits
+along the identity/session line the in-memory struct blurs today:
+
+- `agents` — one row per `instance_uid`, durable now that the Supervisor
+  gives it a stable value. `first_seen`, `last_seen`; health fields
+  (`healthy`, `health_error`, `health_status`, `health_start_time`,
+  `health_status_time`, `health_reported`); raw `capabilities` bitmask,
+  decoded read-side same as today, no per-bit columns; `identifying`/
+  `non_identifying` attributes as JSONB; `missing_attributes text[]` plus
+  one `compliance_updated_at` (a per-attribute-key history table was
+  considered and rejected — nothing needs "how long has key X been
+  missing" yet, and an array plus one timestamp avoids a join on every
+  agent-list render); `evicted_at`, null while live, set at soft-delete.
+  `packages` stays JSONB here too, same reasoning.
+- `agent_effective_config` — `(instance_uid, filename, body)`, one row
+  per config file, so the API/UI keep rendering each file separately
+  without pulling every agent's config on every list query.
+- `agent_session` — `(instance_uid, connected, remote_addr, tls_subject,
+  via_gateway, transport, description_reported, sequence_num,
+  updated_at)`. Everything here resets to disconnected on load, no
+  exceptions: whatever loads a `StateStore` into the registry at grex
+  startup must force `connected=false` and `description_reported=false`
+  on every row before serving traffic. A restored `connected=true` is
+  simply wrong — the agent hasn't reconnected to this process yet, same
+  reasoning `ReportFullState` already applies for gateway-relayed agents.
+  `sequence_num` is kept for display/debugging only; nothing may read it
+  back to resume ordering checks after a reconnect, since the agent's own
+  counter isn't guaranteed continuous across a restart either.
+
+**Soft delete and retention** (reverses 1.0's "no tombstones" behavior;
+see Decided). A stale agent is soft-deleted (`evicted_at` set) instead of
+removed outright, kept for `fleet.soft_delete_duration` (new config
+field, default `7d`) so a caller can still see "last seen, agent gone"
+history. `GET /api/agents` never includes soft-deleted agents. `GET
+/api/agents/{instance_uid}` excludes them by default too, but accepts
+`?show_soft_deleted=true` to fetch one directly — the direct-lookup
+endpoint is where "what happened to this agent" questions land, so it
+gets the escape hatch the list endpoint doesn't.
+
+Hard-delete (purging rows past `soft_delete_duration`) runs as its own
+periodic job, not on `Sweep`'s heartbeat-interval ticker: heartbeat
+intervals are tens of seconds, far finer-grained than a multi-day
+retention window needs, so checking every tick buys no precision.
+River (already in the stack, see Jobs below) has a native periodic-job
+scheduler — a good fit. Hourly cadence is plenty (worst case a row lives
+`soft_delete_duration` plus about an hour).
+
+Metrics: `grex_agents_evicted_total` keeps its current name and trigger —
+it already fires at the "agent left the fleet" moment, which is now the
+soft-delete moment, so no rename. One new counter,
+`grex_agents_purged_total`, covers the hard-delete/GC job. Kept separate
+so a dashboard can show fleet churn (soft-delete rate) independently of
+storage cleanup (purge rate) — the two can drift arbitrarily far apart
+depending on `soft_delete_duration`.
+
+Read API addition, not yet built: a `last_seen_within` filter (duration,
+e.g. `?last_seen_within=5m`) on `GET /api/agents`, same well-known-filter
+mechanism as `healthy`/`connected`/`via_gateway`. `connected` is
+necessarily coarse — it only flips on `Sweep`'s heartbeat-interval
+cadence, so it can read "connected" for up to one full
+`heartbeat_interval` after an agent's last real message. A precise
+timestamp-window filter is a cheap addition (`last_seen` is already a
+column) and useful independently of the reset-on-load rule above — it
+doesn't replace that rule, it's for callers who want their own recency
+threshold rather than trusting the boolean.
+
 #### Jobs: schema and execution
 
 Every 1.0 non-goal that mutates something (remote config push, restart,
@@ -900,9 +970,14 @@ per package, compose stack as the end-to-end harness).
 - Auth: OIDC against Dex. Dex's GitHub connector ties access to an org;
   org/team membership arrives as `groups` claims and maps to roles.
 - Metrics: Prometheus `/metrics` scrape only; no OTLP export in 1.0.
-- Stale eviction: an agent that misses N consecutive check-ins is evicted and
-  disappears from the UI (no tombstones). Evictions are counted in
-  `grex_agents_evicted_total`.
+- Stale eviction (1.0, in-memory): an agent that misses N consecutive
+  check-ins is evicted and disappears from the UI (no tombstones).
+  Evictions are counted in `grex_agents_evicted_total`.
+- Agent state retention (post-1.0, not yet implemented): once the durable
+  agent state schema lands, stale eviction becomes soft-delete plus
+  `fleet.soft_delete_duration` (default `7d`) retention before a separate
+  periodic job purges the row, reversing the no-tombstones rule above.
+  See Post-1.0 roadmap: Agent state schema.
 - Scaling topology: observIQ `opampgateway` extension collectors sit between
   agents and grex, multiplexing agent sessions over few upstream connections.
   grex implements the gateway's custom connect capability and keeps direct
