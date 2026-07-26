@@ -16,10 +16,13 @@ import (
 	"github.com/riverqueue/river/rivermigrate"
 )
 
+// exitFunc is os.Exit in production; tests may override to avoid process exit.
+var exitFunc = os.Exit
+
 func main() {
 	if err := run(context.Background(), os.Getenv("DATABASE_URL"), os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "river-migrate:", err)
-		os.Exit(1)
+		exitFunc(1)
 	}
 }
 
