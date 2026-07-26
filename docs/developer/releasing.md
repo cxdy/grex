@@ -163,14 +163,14 @@ GoReleaser builds the GitHub Release body from commits since the previous tag
 
 3. **Filters** drop noise: `doc`/`docs`, `test`, `chore`, `ci`, `build`,
    `style`, `bump`, and merge commits
-4. **PR links:** subjects containing `(#123)` (GitHub’s default squash-merge
-   suffix) become markdown links to
-   `https://github.com/dennisme/grex/pull/123`
+4. **PR references:** keep `(#123)` in squash-merge subjects; GitHub’s release
+   UI auto-links `#123` to the pull request (GoReleaser’s changelog `format`
+   template cannot run regex rewrites)
 5. **Footer** adds a compare URL (full changelog), Docker image, Helm install,
    and docs links
 
 **Squash and merge** PRs with a conventional subject so each line is readable
-and linkable, for example:
+and carries a PR number, for example:
 
 ```text
 feat(ui): add attribute chips (#31)
@@ -180,7 +180,7 @@ becomes roughly:
 
 ```markdown
 ### ✨ Features
-- feat(ui): add attribute chips ([#31](https://github.com/dennisme/grex/pull/31)) (@someone)
+- feat(ui): add attribute chips (#31) (@someone)
 ```
 
 Merge-commit subjects (`Merge pull request #…`) are excluded so the notes
