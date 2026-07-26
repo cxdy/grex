@@ -50,50 +50,15 @@ checksum:
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
 
-# Grouped release notes on the GitHub Release body (from conventional commits).
-# use: github pulls author @handles via the compare API; falls back poorly if a
-# previous tag is missing on GitHub — switch to "git" for offline/first-tag dry runs.
+# Release notes via GitHub's generate-notes API (merged PRs with full PR URLs).
+# Required for real PR links: this repo merges with "Create a merge commit", so
+# subjects are plain "feat: …" without "(#N)". Commit-log backends cannot
+# invent PR associations; github-native can.
 #
-# PR links: keep "(#123)" in the subject (GitHub squash-merge default). GitHub
-# auto-links #N in release bodies; GoReleaser's format template has no regex
-# helpers (only replace/englishJoin/etc.), so we do not rewrite to full URLs.
+# Groups / format / filters are not applied with github-native. Optional
+# categories via labels: .github/release.yml
 changelog:
-  use: github
-  sort: asc
-  # Drop raw commit SHAs from the body; messages + authors are enough.
-  abbrev: -1
-  format: "{{ .Message }}{{ with .Logins }} ({{ . | englishJoin }}){{ end }}"
-  groups:
-    - title: "✨ Features"
-      regexp: '^.*?feat(\([[:word:]._-]+\))??!?:.+$'
-      order: 0
-    - title: "🐛 Bug Fixes"
-      regexp: '^.*?fix(\([[:word:]._-]+\))??!?:.+$'
-      order: 1
-    - title: "⚡ Performance"
-      regexp: '^.*?perf(\([[:word:]._-]+\))??!?:.+$'
-      order: 2
-    - title: "♻️ Refactors"
-      regexp: '^.*?ref(\([[:word:]._-]+\))??!?:.+$'
-      order: 3
-    - title: "⏪ Reverts"
-      regexp: '^.*?revert(\([[:word:]._-]+\))??!?:.+$'
-      order: 4
-    - title: Other
-      order: 999
-  filters:
-    exclude:
-      # grex commitizen uses "doc:" (not "docs:"); cover both.
-      - '^docs?:'
-      - '^test:'
-      - '^chore'
-      - '^ci:'
-      - '^build:'
-      - '^style:'
-      - '(?i)^Merge pull request'
-      - '(?i)^Merge branch'
-      - '(?i)^Pull request'
-      - '^bump:'
+  use: github-native
 
 release:
   name_template: "v{{ .Version }}"

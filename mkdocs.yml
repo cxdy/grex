@@ -55,6 +55,11 @@ markdown_extensions:
       line_spans: __span
       pygments_lang_class: true
   - pymdownx.inlinehilite
+  # Bare URLs and @user → links (GitHub release notes use bare PR URLs).
+  - pymdownx.magiclink:
+      repo_url_shorthand: true
+      user: dennisme
+      repo: grex
   - pymdownx.snippets
   - pymdownx.superfences
   - pymdownx.tabbed:

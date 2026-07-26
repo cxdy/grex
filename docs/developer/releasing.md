@@ -144,60 +144,33 @@ Pages always packages the chart version currently on `main`. Historical
 
 ### Pretty release notes (changelog)
 
-GoReleaser builds the GitHub Release body from commits since the previous tag
-(see the `changelog` block in `.goreleaser.yaml`):
-
-1. **Source:** GitHub compare API (`changelog.use: github`) so entries can
-   include author `@handles`
-2. **Grouping** by conventional-commit type (aligned with
-   [Contributing](contributing.md) / commitizen):
-
-   | Commit type | Release notes section |
-   |-------------|------------------------|
-   | `feat` | ✨ Features |
-   | `fix` | 🐛 Bug Fixes |
-   | `perf` | ⚡ Performance |
-   | `ref` | ♻️ Refactors |
-   | `revert` | ⏪ Reverts |
-   | other (not filtered out) | Other |
-
-3. **Filters** drop noise: `doc`/`docs`, `test`, `chore`, `ci`, `build`,
-   `style`, `bump`, and merge commits
-4. **PR references:** keep `(#123)` in squash-merge subjects; GitHub’s release
-   UI auto-links `#123` to the pull request (GoReleaser’s changelog `format`
-   template cannot run regex rewrites)
-5. **Footer** adds a compare URL (full changelog), Docker image, Helm install,
-   and docs links
-
-**Squash and merge** PRs with a conventional subject so each line is readable
-and carries a PR number, for example:
-
-```text
-feat(ui): add attribute chips (#31)
-```
-
-becomes roughly:
+GoReleaser sets `changelog.use: github-native`, which calls GitHub’s
+[generate release notes](https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes)
+API. That is what produces **real PR links**:
 
 ```markdown
-### ✨ Features
-- feat(ui): add attribute chips (#31) (@someone)
+## What's Changed
+* feat: goreleaser by @cxdy in https://github.com/dennisme/grex/pull/31
 ```
 
-Merge-commit subjects (`Merge pull request #…`) are excluded so the notes
-list the feature commits (with PR numbers when squash-merged), not the merge
-wrapper.
+Why not commit-log grouping? This repo mostly uses **merge commits**, so
+subjects are plain `feat: …` without `(#31)`. A commit-list changelog has no
+PR URL to attach. GitHub-native walks **merged pull requests** between tags
+instead.
 
-**First release / missing previous tag on GitHub:** the `github` changelog
-backend needs both tags on the remote. If notes generation fails, temporarily
-set `changelog.use: git` in `.goreleaser.yaml`, or create an initial tag on an
-earlier commit.
+Optional sections by **PR label** are configured in `.github/release.yml`
+(✨ Features, 🐛 Bug Fixes, …, catch-all). Label PRs when you want them sorted;
+unlabeled PRs still appear under Other Changes with a link.
 
-**Preview locally** (optional, needs GoReleaser installed):
+The release **footer** (Docker / Helm install / docs) is still appended by
+GoReleaser after the generated notes.
+
+**Preview** (needs `gh` auth):
 
 ```sh
-goreleaser changelog
-# or a full dry-run without publishing:
-goreleaser release --snapshot --clean --skip=publish
+gh api repos/dennisme/grex/releases/generate-notes \
+  -f tag_name=v0.2.0 -f target_commitish=main \
+  --jq .body
 ```
 
 ## Checklist before tagging
