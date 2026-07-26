@@ -5,13 +5,14 @@ small and dependency direction is roughly:
 
 ```text
 cmd/grex
-  → server, opamp, api, ui, fleet, metrics, config, buildinfo
+  → server, opamp, api, ui, fleet, metrics, config, buildinfo, persistence
 api → fleet, buildinfo
 ui  → api (filters), fleet
 opamp → fleet
 metrics → fleet (collector only)
 server → config, prometheus
 fleet → (stdlib + uuid + opamp protobufs types)
+persistence → fleet (Agent, Events), pgx, river
 ```
 
 ---
@@ -61,6 +62,27 @@ Key behaviors: check-in tracking, disconnect vs stale eviction,
 reserved attribute conflict counting.
 
 Tests: extensive registry lifecycle coverage in `registry_test.go`.
+
+---
+
+## `internal/persistence`
+
+**Role:** durability layer under `fleet.Registry`, opt-in, write-only.
+
+| Type | Purpose |
+|------|---------|
+| `StateStore` | interface `PostgresStore` implements: `SaveAgent`, `GetAgent`, `ListAgents`, `DeleteAgent`, `SoftDeleteAgent` |
+| `DirtyTracker` | implements `fleet.Events`, marks changed `instance_uid`s |
+| `Flusher` | own ticker, drains the dirty set into `StateStore` |
+| `PurgeWorker` / `NewPurgeClient` | River periodic job, purges soft-deleted rows past `fleet.soft_delete_duration` |
+
+Nothing in `cmd/grex`'s runtime reads from `StateStore` yet. See
+[Persistence](persistence.md) for the schema and the multi-instance write
+safeguards.
+
+Tests: real-Postgres integration coverage (`postgres_test.go`,
+`purge_test.go`), throwaway container per test, skipped if docker isn't
+available.
 
 ---
 

@@ -86,7 +86,8 @@ server registry (memory, GC, CPU, FDs, etc.).
 |------|------|--------|-------------|
 | `grex_agents_connected` | Gauge | `transport` (`ws`/`http`), `via` (`direct`/`gateway`) | Agents currently connected |
 | `grex_agents_disconnected` | Gauge | — | Retained, not connected, not yet evicted |
-| `grex_agents_evicted_total` | Counter | — | Evictions after missed check-in threshold |
+| `grex_agents_evicted_total` | Counter | — | Evictions after missed check-in threshold (fires at soft-delete time when persistence is enabled — see [Persistence](../developer/persistence.md)) |
+| `grex_agents_purged_total` | Counter | — | Soft-deleted rows permanently removed by the retention purge job. Only increments when `database.host` is set |
 | `grex_agent_connects_total` | Counter | — | Connect transitions |
 | `grex_agent_disconnects_total` | Counter | — | Disconnect transitions |
 | `grex_gateway_connections` | Gauge | — | Open connections that sent a gateway connect message |

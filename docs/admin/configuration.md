@@ -73,9 +73,25 @@ See [Cardinality](../observability/cardinality.md).
 | `heartbeat_interval` | `30s` | `GREX_FLEET_HEARTBEAT_INTERVAL` | Expected check-in period; must be &gt; 0 |
 | `stale_missed_heartbeats` | `3` | `GREX_FLEET_STALE_MISSED_HEARTBEATS` | Missed intervals before eviction; must be &gt; 0 |
 | `required_attributes` | `[]` | `GREX_FLEET_REQUIRED_ATTRIBUTES` | Attribute keys every agent should report; comma-separated in env |
+| `soft_delete_duration` | `168h` (7d) | `GREX_FLEET_SOFT_DELETE_DURATION` | How long an evicted agent's durable row is kept before purge; must be &gt; 0. Only takes effect when `database.host` is set |
 
 Missing required attributes are logged and counted; agents are still
 accepted (observe-only). See [Fleet state](../developer/fleet-state.md).
+
+### `database`
+
+| Field | Default | Env | Description |
+|-------|---------|-----|-------------|
+| `host` | `""` | `GREX_DATABASE_HOST` | Postgres host; empty disables persistence entirely — no connection attempted |
+| `port` | `5432` | `GREX_DATABASE_PORT` | |
+| `user` | `""` | `GREX_DATABASE_USER` | |
+| `password` | `""` | `GREX_DATABASE_PASSWORD` | |
+| `dbname` | `""` | `GREX_DATABASE_DBNAME` | |
+| `sslmode` | `disable` | `GREX_DATABASE_SSLMODE` | `disable`, `require`, `verify-ca`, `verify-full` |
+
+Opt-in and write-only: `fleet.Registry` stays the source of truth for
+every read; this only makes its state durable. See
+[Persistence](../developer/persistence.md).
 
 ### `debug`
 
@@ -139,6 +155,16 @@ fleet:
   required_attributes:
     - deployment.environment
     - service.namespace
+  soft_delete_duration: 168h
+
+# Opt-in: unset host means no persistence at all, no connection attempted.
+database:
+  host: ""
+  port: 5432
+  user: ""
+  password: ""
+  dbname: ""
+  sslmode: disable
 
 debug:
   pprof_enabled: false

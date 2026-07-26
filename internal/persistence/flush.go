@@ -38,9 +38,9 @@ func (d *DirtyTracker) AgentConnected(instanceUID string) { d.mark(instanceUID) 
 func (d *DirtyTracker) AgentDisconnected(instanceUID string) { d.mark(instanceUID) }
 
 // AgentEvicted implements fleet.Events. The evicted agent is no longer in
-// the registry by the time a Flusher drains this; Flusher skips it rather
-// than deleting the durable row (soft-delete/retention isn't implemented
-// yet, so nothing decides whether that row should go).
+// the registry by the time a Flusher drains this; Flusher soft-deletes its
+// durable row rather than saving it (there's nothing left in the registry
+// to save).
 func (d *DirtyTracker) AgentEvicted(instanceUID string) { d.mark(instanceUID) }
 
 // ReportReceived implements fleet.Events.
@@ -104,13 +104,20 @@ func (f *Flusher) Run(ctx context.Context) {
 // simply lost from the database: agents already re-report everything on
 // reconnect (ReportFullState), so durability here only needs to survive
 // seconds of staleness, not be per-message-perfect.
+//
+// An id no longer in the registry was evicted between being marked dirty
+// and this flush; there's nothing left to save, so it's soft-deleted
+// instead. The eviction timestamp is approximated as "now" (the actual
+// eviction moment isn't carried by fleet.Events), which is fine here: the
+// retention window is measured in days, not the seconds of imprecision
+// this introduces.
 func (f *Flusher) flushOnce(ctx context.Context) {
 	for _, id := range f.dirty.Drain() {
 		agent, ok := f.registry.Get(id)
 		if !ok {
-			// Evicted between being marked dirty and this flush; nothing to
-			// save. Leaving its prior row in place is intentional, see
-			// AgentEvicted's doc comment.
+			if err := f.store.SoftDeleteAgent(ctx, id, time.Now()); err != nil {
+				f.log.Error("persistence soft-delete failed", "instance_uid", id, "error", err)
+			}
 			continue
 		}
 		if err := f.store.SaveAgent(ctx, agent); err != nil {

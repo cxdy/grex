@@ -48,15 +48,20 @@ opamp.Handler  ──writes──►  fleet.Registry
 - Registry is concurrency-safe; metrics event hooks must not re-enter the
   registry while it holds locks (documented on `fleet.Events`)
 
-## In-memory state only
+## In-memory state, with an opt-in durability layer underneath
 
-1.0 does not persist agents. Correctness after restart depends on:
+`fleet.Registry` is still the sole source of truth for every live read
+path (API, UI, metrics). Correctness after restart depends on:
 
 - Agents reconnecting (direct), or
 - Gateways continuing to relay check-ins while grex requests full state
 
-There is no multi-instance shared state. Horizontal scale of grex itself is
-out of scope until persistence/mutation needs force a redesign.
+A write-only, opt-in Postgres layer now exists under the registry
+(`internal/persistence`) — durable, but nothing reads from it yet, and it
+does no good on its own without a second grex process to reconcile
+against. `replicaCount` is still pinned to 1 in the Helm chart; horizontal
+scale of grex itself isn't built. See [Persistence](persistence.md) for
+the write path and the safeguards already in place for when it is.
 
 ## Library boundaries
 
@@ -86,5 +91,6 @@ Today only the OpAMP TLS path is real. See
 
 - [Package map](package-map.md)
 - [Fleet state](fleet-state.md)
+- [Persistence](persistence.md)
 - [Observability overview](../observability/index.md)
 - [SPEC design](../spec/design.md)

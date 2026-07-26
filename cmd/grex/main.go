@@ -13,8 +13,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/riverqueue/river"
 
 	"net/http"
 
@@ -144,9 +146,25 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	go registry.Run(ctx)
+	var purgeClient *river.Client[pgx.Tx]
 	if dbPool != nil {
 		flusher := persistence.NewFlusher(registry, dirtyTracker, store, persistenceFlushInterval, logger)
 		go flusher.Run(ctx)
+
+		purgeClient, err = persistence.NewPurgeClient(dbPool, cfg.Fleet.SoftDeleteDuration, events, logger)
+		if err != nil {
+			return fmt.Errorf("purge client: %w", err)
+		}
+		if err := purgeClient.Start(ctx); err != nil {
+			return fmt.Errorf("start purge client: %w", err)
+		}
+		defer func() {
+			stopCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+			defer cancel()
+			if err := purgeClient.Stop(stopCtx); err != nil {
+				logger.Error("purge client stop failed", "error", err)
+			}
+		}()
 	}
 
 	select {

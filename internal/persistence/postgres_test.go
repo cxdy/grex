@@ -20,14 +20,15 @@ import (
 
 func testAgent(instanceUID string, lastSeen time.Time) fleet.Agent {
 	return fleet.Agent{
-		InstanceUID:     instanceUID,
-		FirstSeen:       lastSeen,
-		LastSeen:        lastSeen,
-		Healthy:         true,
-		HealthStatus:    "StatusOK",
-		HealthStartTime: lastSeen,
-		HealthReported:  true,
-		Capabilities:    18437,
+		InstanceUID:      instanceUID,
+		FirstSeen:        lastSeen,
+		LastSeen:         lastSeen,
+		Healthy:          true,
+		HealthStatus:     "StatusOK",
+		HealthStartTime:  lastSeen,
+		HealthStatusTime: lastSeen,
+		HealthReported:   true,
+		Capabilities:     18437,
 		Identifying: map[string]string{
 			"service.name": "otelcol-contrib",
 		},
@@ -52,6 +53,33 @@ func testAgent(instanceUID string, lastSeen time.Time) fleet.Agent {
 		Connected:           true,
 		DescriptionReported: true,
 		SequenceNum:         42,
+	}
+}
+
+// TestSaveAgentWithNoDescriptionYet covers a freshly connected agent whose
+// first report has no AgentDescription yet — a normal, common state, not an
+// edge case. MissingAttributes/ReservedAttributeConflicts are nil until
+// fleet.Registry computes them, and a nil []string must not be sent to the
+// NOT NULL text[] columns as SQL NULL.
+func TestSaveAgentWithNoDescriptionYet(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	agent := fleet.Agent{
+		InstanceUID: "agent-1",
+		FirstSeen:   now,
+		LastSeen:    now,
+		Connected:   true,
+		// MissingAttributes, ReservedAttributeConflicts, Identifying,
+		// NonIdentifying, Packages, EffectiveConfig all left nil.
+	}
+	if err := store.SaveAgent(ctx, agent); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+
+	if _, ok, err := store.GetAgent(ctx, "agent-1"); err != nil || !ok {
+		t.Fatalf("GetAgent: ok=%v err=%v, want found", ok, err)
 	}
 }
 
@@ -102,8 +130,8 @@ func TestSaveAndGetAgent(t *testing.T) {
 	if !got.HealthStartTime.Equal(agent.HealthStartTime) {
 		t.Errorf("HealthStartTime = %v, want %v", got.HealthStartTime, agent.HealthStartTime)
 	}
-	if !got.HealthStatusTime.IsZero() {
-		t.Errorf("HealthStatusTime = %v, want zero (never set)", got.HealthStatusTime)
+	if !got.HealthStatusTime.Equal(agent.HealthStatusTime) {
+		t.Errorf("HealthStatusTime = %v, want %v", got.HealthStatusTime, agent.HealthStatusTime)
 	}
 }
 
@@ -280,6 +308,75 @@ func TestDeleteAgentCascades(t *testing.T) {
 	}
 	if sessionCount != 0 || configCount != 0 {
 		t.Errorf("cascade left rows behind: session=%d config=%d", sessionCount, configCount)
+	}
+}
+
+// The following exercise each method's real database-error path with a
+// pre-cancelled context, rather than a mock: a cancelled context causes
+// pgx to genuinely fail the Begin/Query/Exec call, so these are real
+// errors from the real driver, not scripted behavior.
+
+func TestSaveAgentContextCanceled(t *testing.T) {
+	store := newTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := store.SaveAgent(ctx, testAgent("agent-1", time.Now().UTC()))
+	if err == nil {
+		t.Fatal("want error for a cancelled context")
+	}
+	if !strings.Contains(err.Error(), "begin") {
+		t.Errorf("error = %q, want it to mention begin", err.Error())
+	}
+}
+
+func TestGetAgentContextCanceled(t *testing.T) {
+	store := newTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, _, err := store.GetAgent(ctx, "agent-1"); err == nil {
+		t.Fatal("want error for a cancelled context")
+	}
+}
+
+func TestListAgentsContextCanceled(t *testing.T) {
+	store := newTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := store.ListAgents(ctx); err == nil {
+		t.Fatal("want error for a cancelled context")
+	}
+}
+
+func TestEffectiveConfigContextCanceled(t *testing.T) {
+	store := newTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := store.effectiveConfig(ctx, "agent-1"); err == nil {
+		t.Fatal("want error for a cancelled context")
+	}
+}
+
+func TestDeleteAgentContextCanceled(t *testing.T) {
+	store := newTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := store.DeleteAgent(ctx, "agent-1"); err == nil {
+		t.Fatal("want error for a cancelled context")
+	}
+}
+
+func TestSoftDeleteAgentContextCanceled(t *testing.T) {
+	store := newTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := store.SoftDeleteAgent(ctx, "agent-1", time.Now()); err == nil {
+		t.Fatal("want error for a cancelled context")
 	}
 }
 

@@ -105,6 +105,7 @@ nav:
       - Package map: developer/package-map.md
       - OpAMP and gateway: developer/opamp-and-gateway.md
       - Fleet state: developer/fleet-state.md
+      - Persistence: developer/persistence.md
       - Read API: developer/read-api.md
       - Web UI: developer/ui.md
       - Testing: developer/testing.md
