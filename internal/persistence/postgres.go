@@ -30,10 +30,21 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 }
 
 // SaveAgent writes agent across the agents, agent_session, and
-// agent_effective_config tables in one transaction. agent_effective_config
-// is replaced wholesale (delete, then insert the current set) rather than
-// guarded per row: unlike agents/agent_session it isn't part of the
-// multi-writer ordering guarantee, a simplification accepted for now.
+// agent_effective_config tables in one transaction, all guarded by the same
+// event time (agent.LastSeen): if the agents write is rejected as stale (see
+// below), the whole transaction is abandoned before touching agent_session
+// or agent_effective_config, rather than guarding each table separately.
+// This matters most for agent_effective_config, which has no per-row
+// timestamp of its own — it's a wholesale delete-then-insert, so it needs
+// the whole call gated up front rather than guarded row by row.
+//
+// A stale flush landing after a newer one is expected: an agent can
+// reconnect to a different grex replica on every connection, and nothing
+// guarantees the replica holding the older data flushes first. Without this
+// gate, that replica's effective_config delete+insert could still commit
+// after the newer replica's, overwriting current files with stale ones —
+// not just temporary staleness (which self-heals on the next flush) but an
+// actual inversion that would persist until the stale replica's next flush.
 func (s *PostgresStore) SaveAgent(ctx context.Context, agent fleet.Agent) error {
 	identifying, err := json.Marshal(nonNilStringMap(agent.Identifying))
 	if err != nil {
@@ -54,7 +65,14 @@ func (s *PostgresStore) SaveAgent(ctx context.Context, agent fleet.Agent) error 
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed
 
-	_, err = tx.Exec(ctx, `
+	// first_seen is intentionally absent from the UPDATE SET list below: it
+	// must never move forward once a row exists. A replica that has never
+	// seen this agent before creates its own local registry entry with
+	// FirstSeen set to its own connect time, which is wrong for any agent
+	// that connected somewhere else first — omitting it here means that
+	// wrong value is simply discarded on conflict, and the original row's
+	// first_seen (set once, on the actual first INSERT) survives untouched.
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO agents (
 			instance_uid, first_seen, last_seen, healthy, health_error,
 			health_status, health_start_time, health_status_time, health_reported,
@@ -84,6 +102,14 @@ func (s *PostgresStore) SaveAgent(ctx context.Context, agent fleet.Agent) error 
 		agent.ReservedAttributeConflicts, packages, agent.LastSeen)
 	if err != nil {
 		return fmt.Errorf("upsert agents: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		// Guard rejected this write as older than what's already stored:
+		// this whole call is stale, so there's nothing left to do. Rolling
+		// back (via the deferred Rollback) rather than committing an empty
+		// transaction is just tidiness, Postgres treats both the same way
+		// for a transaction with no effective changes.
+		return nil
 	}
 
 	_, err = tx.Exec(ctx, `

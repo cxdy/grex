@@ -107,6 +107,36 @@ func TestSaveAndGetAgent(t *testing.T) {
 	}
 }
 
+// TestSaveAgentPreservesOriginalFirstSeen covers a grex1->grex2 reconnect:
+// grex2 has never seen this agent before, so its own local registry entry
+// gets created with FirstSeen set to grex2's own connect time, not the
+// agent's true first-ever-seen time. That wrong value must never overwrite
+// the original, even on a legitimate (guard-passing, newer LastSeen) write.
+func TestSaveAgentPreservesOriginalFirstSeen(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	trueFirstSeen := time.Now().UTC().Truncate(time.Microsecond)
+	first := testAgent("agent-1", trueFirstSeen)
+	if err := store.SaveAgent(ctx, first); err != nil {
+		t.Fatalf("SaveAgent (first): %v", err)
+	}
+
+	fromDifferentReplica := testAgent("agent-1", trueFirstSeen.Add(time.Hour))
+	fromDifferentReplica.FirstSeen = trueFirstSeen.Add(time.Hour) // wrong, this replica's own connect time
+	if err := store.SaveAgent(ctx, fromDifferentReplica); err != nil {
+		t.Fatalf("SaveAgent (different replica): %v", err)
+	}
+
+	got, ok, err := store.GetAgent(ctx, "agent-1")
+	if err != nil || !ok {
+		t.Fatalf("GetAgent: %v, %v", ok, err)
+	}
+	if !got.FirstSeen.Equal(trueFirstSeen) {
+		t.Errorf("FirstSeen = %v, want original %v preserved", got.FirstSeen, trueFirstSeen)
+	}
+}
+
 func TestSaveAgentRejectsStaleWrite(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -132,6 +162,39 @@ func TestSaveAgentRejectsStaleWrite(t *testing.T) {
 	}
 	if got.HealthStatus != "StatusOK" {
 		t.Errorf("HealthStatus = %q, want the newer write to survive the stale one", got.HealthStatus)
+	}
+}
+
+// TestSaveAgentStaleWriteDoesNotClobberEffectiveConfig covers the gap found
+// while reasoning through a grex1->grex2 reconnect: agent_effective_config
+// has no per-row guard of its own (it's a wholesale delete+insert), so a
+// stale SaveAgent call must be rejected before it ever touches that table,
+// not just have its agents/agent_session writes rejected.
+func TestSaveAgentStaleWriteDoesNotClobberEffectiveConfig(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	older := time.Now().UTC().Truncate(time.Microsecond)
+	newer := older.Add(time.Hour)
+
+	newAgent := testAgent("agent-1", newer)
+	newAgent.EffectiveConfig = map[string]string{"": "current config\n"}
+	if err := store.SaveAgent(ctx, newAgent); err != nil {
+		t.Fatalf("SaveAgent (newer): %v", err)
+	}
+
+	staleAgent := testAgent("agent-1", older)
+	staleAgent.EffectiveConfig = map[string]string{"": "stale config that should never appear\n"}
+	if err := store.SaveAgent(ctx, staleAgent); err != nil {
+		t.Fatalf("SaveAgent (stale): %v", err)
+	}
+
+	got, ok, err := store.GetAgent(ctx, "agent-1")
+	if err != nil || !ok {
+		t.Fatalf("GetAgent: %v, %v", ok, err)
+	}
+	if got.EffectiveConfig[""] != "current config\n" {
+		t.Errorf("EffectiveConfig = %v, want the stale write to have been rejected before touching this table", got.EffectiveConfig)
 	}
 }
 

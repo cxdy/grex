@@ -385,7 +385,13 @@ func (r *Registry) checkReservedAttributeConflicts(agent *Agent) {
 }
 
 // SetConnected marks an agent's connection state. Disconnected agents stay
-// registered until Sweep evicts them.
+// registered until Sweep evicts them. Deliberately does not touch LastSeen:
+// a durable StateStore's guarded writes are keyed on LastSeen as event time,
+// and a disconnect detected well after the agent's last real message (e.g.
+// by Sweep, possibly after it already reconnected to a different grex
+// replica and flushed newer data) must still carry the old timestamp so
+// that stale write is correctly rejected rather than clobbering the newer
+// one. If this ever changes, that guarantee breaks.
 func (r *Registry) SetConnected(id string, connected bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -434,6 +440,9 @@ func (r *Registry) List() []Agent {
 //     messages. Health bits are left as last reported so the UI can show
 //     "Disconnected" rather than inventing Unhealthy.
 //  2. Missed StaleMissedHeartbeats intervals → evict from the registry.
+//
+// Same LastSeen caveat as SetConnected: this never touches it, only
+// Connected. See SetConnected's doc comment for why.
 func (r *Registry) Sweep(now time.Time) []string {
 	disconnectAfter := r.cfg.HeartbeatInterval
 	evictAfter := r.cfg.HeartbeatInterval * time.Duration(r.cfg.StaleMissedHeartbeats)
