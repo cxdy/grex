@@ -371,6 +371,68 @@ func TestLoadNegativePerAgentSeriesLimit(t *testing.T) {
 	}
 }
 
+func TestLoadDatabaseDefaults(t *testing.T) {
+	path := writeFile(t, "config.yaml", "{}\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Database.Port != 5432 {
+		t.Errorf("Database.Port = %d, want 5432", cfg.Database.Port)
+	}
+	if cfg.Database.SSLMode != "disable" {
+		t.Errorf("Database.SSLMode = %q, want %q", cfg.Database.SSLMode, "disable")
+	}
+	if cfg.Database.Host != "" || cfg.Database.User != "" || cfg.Database.Password != "" || cfg.Database.DBName != "" {
+		t.Errorf("Database = %+v, want empty host/user/password/dbname by default", cfg.Database)
+	}
+}
+
+func TestLoadDatabaseFullFile(t *testing.T) {
+	path := writeFile(t, "config.yaml", `
+database:
+  host: db.internal
+  port: 6543
+  user: grex
+  password: hunter2
+  dbname: grex
+  sslmode: require
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := Database{Host: "db.internal", Port: 6543, User: "grex", Password: "hunter2", DBName: "grex", SSLMode: "require"}
+	if cfg.Database != want {
+		t.Errorf("Database = %+v, want %+v", cfg.Database, want)
+	}
+}
+
+func TestLoadBadDatabasePort(t *testing.T) {
+	path := writeFile(t, "config.yaml", "database:\n  port: 70000\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("want error for out-of-range database port")
+	}
+}
+
+func TestLoadDatabaseEnvOverrides(t *testing.T) {
+	t.Setenv("GREX_DATABASE_HOST", "db.internal")
+	t.Setenv("GREX_DATABASE_PORT", "6543")
+	t.Setenv("GREX_DATABASE_USER", "grex")
+	t.Setenv("GREX_DATABASE_PASSWORD", "hunter2")
+	t.Setenv("GREX_DATABASE_DBNAME", "grex")
+	t.Setenv("GREX_DATABASE_SSLMODE", "require")
+	path := writeFile(t, "config.yaml", "{}\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := Database{Host: "db.internal", Port: 6543, User: "grex", Password: "hunter2", DBName: "grex", SSLMode: "require"}
+	if cfg.Database != want {
+		t.Errorf("Database = %+v, want %+v", cfg.Database, want)
+	}
+}
+
 func TestLoadEnvBadDuration(t *testing.T) {
 	t.Setenv("GREX_FLEET_HEARTBEAT_INTERVAL", "soon")
 	path := writeFile(t, "config.yaml", "{}\n")

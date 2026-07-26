@@ -38,3 +38,17 @@ scrape_configs:
           - "otelcol-agent-1:8888"
           - "otelcol-agent-2:8888"
           - "otelcol-gateway:8888"
+
+  - job_name: grex-postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  # Placeholder: River's job/queue tables and metrics don't exist yet (no
+  # migrations, no schema — see internal/persistence and design.md's "Jobs:
+  # schema and execution"). This job is declared now against a port nothing
+  # serves yet, so a future goal adding River's schema and metrics only needs
+  # to point this target at the real thing, not add a new job. Expect this
+  # target to show as down in Prometheus until then.
+  - job_name: grex-river
+    static_configs:
+      - targets: ["postgres-exporter:9188"]

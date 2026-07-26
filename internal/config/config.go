@@ -34,6 +34,11 @@ type Config struct {
 	Metrics      Metrics `yaml:"metrics"`
 	UI           UI      `yaml:"ui"`
 	Debug        Debug   `yaml:"debug"`
+	// Database holds connection settings for the future durable state and
+	// job dispatch backend (see docs/spec/design.md's Post-1.0 roadmap).
+	// Nothing reads or writes through it yet: internal/fleet.Registry
+	// remains the sole source of fleet state in 1.0.
+	Database Database `yaml:"database"`
 	// Auth maps SPIFFE identities (from UI/telemetry client certs) to
 	// roles. Only takes effect on a listener where its TLS block also sets
 	// client_ca_file.
@@ -109,6 +114,17 @@ type Fleet struct {
 type Log struct {
 	Level  string `yaml:"level"`
 	Format string `yaml:"format"`
+}
+
+// Database holds Postgres connection settings for the future state and job
+// dispatch backend. Unused by any runtime path in 1.0.
+type Database struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	User     string `yaml:"user"`
+	Password string `yaml:"password"`
+	DBName   string `yaml:"dbname"`
+	SSLMode  string `yaml:"sslmode"`
 }
 
 // envOverrides maps environment variables to config fields. Values are
@@ -187,6 +203,12 @@ func (c *Config) envOverrides() []struct {
 		{"GREX_DEBUG_PPROF_ENABLED", setBool(&c.Debug.PprofEnabled)},
 		{"GREX_LOG_LEVEL", setString(&c.Log.Level)},
 		{"GREX_LOG_FORMAT", setString(&c.Log.Format)},
+		{"GREX_DATABASE_HOST", setString(&c.Database.Host)},
+		{"GREX_DATABASE_PORT", setInt(&c.Database.Port)},
+		{"GREX_DATABASE_USER", setString(&c.Database.User)},
+		{"GREX_DATABASE_PASSWORD", setString(&c.Database.Password)},
+		{"GREX_DATABASE_DBNAME", setString(&c.Database.DBName)},
+		{"GREX_DATABASE_SSLMODE", setString(&c.Database.SSLMode)},
 	}
 }
 
@@ -197,11 +219,12 @@ func defaults() *Config {
 			UI:        ":8080",
 			Telemetry: ":9090",
 		},
-		Fleet:   Fleet{HeartbeatInterval: 30 * time.Second, StaleMissedHeartbeats: 3},
-		Metrics: Metrics{PerAgentSeriesLimit: 1000},
-		UI:      UI{PollInterval: 5 * time.Second},
-		Auth:    Auth{DefaultRole: "none"},
-		Log:     Log{Level: "info", Format: "text"},
+		Fleet:    Fleet{HeartbeatInterval: 30 * time.Second, StaleMissedHeartbeats: 3},
+		Metrics:  Metrics{PerAgentSeriesLimit: 1000},
+		UI:       UI{PollInterval: 5 * time.Second},
+		Auth:     Auth{DefaultRole: "none"},
+		Log:      Log{Level: "info", Format: "text"},
+		Database: Database{Port: 5432, SSLMode: "disable"},
 	}
 }
 
@@ -274,6 +297,9 @@ func (c *Config) validate() error {
 	}
 	if c.UI.PollInterval <= 0 {
 		return fmt.Errorf("ui.poll_interval: must be positive, got %v", c.UI.PollInterval)
+	}
+	if c.Database.Port < 1 || c.Database.Port > 65535 {
+		return fmt.Errorf("database.port: must be between 1 and 65535, got %d", c.Database.Port)
 	}
 	return nil
 }

@@ -147,11 +147,10 @@ and what multi-tenancy needs (a role scoped to one tenant's fleet, not
 every fleet on the instance).
 
 - **Flat identity-to-role table.** Nearly the same shape as the config file
-  today: an `identities` table (SPIFFE ID or OIDC group, one row each) and a
-  `role_bindings` table (identity → role). Simplest possible migration off
-  the static config, cheapest to query (`what role does this caller have`
-  is one indexed lookup). Doesn't express "admin on fleet A, viewer on
-  fleet B" without bolting on a scope column later.
+  today. Simplest possible migration off the static config, cheapest to
+  query (`what role does this caller have` is one indexed lookup). Doesn't
+  express "admin on fleet A, viewer on fleet B" without bolting on a scope
+  column later.
 - **Scoped RBAC.** Roles carry a set of permissions (`agents:read`,
   `agents:write`, ...), and bindings attach an identity to a role *within a
   scope* (tenant, or a fleet/agent-group once that concept exists) — the
@@ -163,11 +162,36 @@ every fleet on the instance).
   dependency and query model for a product that ships two roles, one of
   which is a no-op. Not worth it at this stage.
 
-Leaning flat for the first pass, but with nullable `tenant_id`/scope columns
-present from the first migration even before anything populates them:
-retrofitting a scope column onto a live permissions table users already
-depend on is the expensive path, adding an unused nullable column up front
-is not.
+**Decided: flat, one table, not yet built.** Role set stays exactly
+`viewer`/`admin` — no new roles, both still read-only. A single
+`role_mapping` table, one row per config entry as it exists today:
+
+- `id` — PK.
+- `identity_kind` (`spiffe` | `oidc_group`) — generalized name rather than
+  `spiffe_id`, so the OIDC identity source (milestone 7) slots in later
+  with no rename, same reasoning as `tenant_id` below.
+- `identity_value` — the SPIFFE ID string or OIDC `groups` claim value.
+- `match` (`exact` | `prefix`) — mirrors today's `spiffe.RoleRule.Match`.
+- `role` (`viewer` | `admin`).
+- `tenant_id` — nullable, unused until multi-tenancy exists.
+- `created_at`, `updated_at`.
+
+An earlier two-table split (`identities` + `role_bindings`) was considered
+and dropped: it only earns its keep once an identity needs metadata
+independent of its role (audit info, last-authenticated, etc.), and
+nothing needs that yet. One row per (identity, tenant, role) still lets an
+identity appear in multiple rows once tenants exist, without a separate
+identities table to get there.
+
+`auth.default_role` stays in `config.yaml`, not a DB row — it's a single
+global scalar; moving it to the database would mean a settings table for
+one field, not worth it.
+
+Surfacing the caller's own role in the UI (a new requirement, not just an
+admin-facing config concern) needs no schema at all: whatever resolves a
+caller's role per request today against static config does the identical
+lookup against `role_mapping` once it's built, and the UI only needs that
+already-resolved value rendered somewhere (header/badge) — pure wiring.
 
 #### Agent sharding scheme
 
@@ -206,6 +230,104 @@ sharding at the app tier is the one to defer hardest: it's real complexity
 (routing relayed agents without an `instance_uid` on connect) that should
 only be built once benchmarking work shows the DB-only approach actually
 runs out of headroom, not before.
+
+#### Agent state schema
+
+Once fleet state is durable (see state database above), this is the shape
+`internal/fleet.Agent` maps to on disk. Decided, not yet built — unlike
+permission-table shape and jobs schema above, which stay open. Splits
+along the identity/session line the in-memory struct blurs today:
+
+- `agents` — one row per `instance_uid`, durable now that the Supervisor
+  gives it a stable value. `first_seen`, `last_seen`; health fields
+  (`healthy`, `health_error`, `health_status`, `health_start_time`,
+  `health_status_time`, `health_reported`); raw `capabilities` bitmask,
+  decoded read-side same as today, no per-bit columns; `identifying`/
+  `non_identifying` attributes as JSONB; `missing_attributes text[]` plus
+  one `compliance_updated_at` (a per-attribute-key history table was
+  considered and rejected — nothing needs "how long has key X been
+  missing" yet, and an array plus one timestamp avoids a join on every
+  agent-list render); `evicted_at`, null while live, set at soft-delete.
+  `packages` stays JSONB here too, same reasoning.
+- `agent_effective_config` — `(instance_uid, filename, body)`, one row
+  per config file, so the API/UI keep rendering each file separately
+  without pulling every agent's config on every list query.
+- `agent_session` — `(instance_uid, connected, remote_addr, tls_subject,
+  via_gateway, transport, description_reported, sequence_num,
+  updated_at)`. Everything here resets to disconnected on load, no
+  exceptions: whatever loads a `StateStore` into the registry at grex
+  startup must force `connected=false` and `description_reported=false`
+  on every row before serving traffic. A restored `connected=true` is
+  simply wrong — the agent hasn't reconnected to this process yet, same
+  reasoning `ReportFullState` already applies for gateway-relayed agents.
+  `sequence_num` is kept for display/debugging only; nothing may read it
+  back to resume ordering checks after a reconnect, since the agent's own
+  counter isn't guaranteed continuous across a restart either.
+
+**Soft delete and retention** (reverses 1.0's "no tombstones" behavior;
+see Decided). A stale agent is soft-deleted (`evicted_at` set) instead of
+removed outright, kept for `fleet.soft_delete_duration` (new config
+field, default `7d`) so a caller can still see "last seen, agent gone"
+history. `GET /api/agents` never includes soft-deleted agents. `GET
+/api/agents/{instance_uid}` excludes them by default too, but accepts
+`?show_soft_deleted=true` to fetch one directly — the direct-lookup
+endpoint is where "what happened to this agent" questions land, so it
+gets the escape hatch the list endpoint doesn't.
+
+Hard-delete (purging rows past `soft_delete_duration`) runs as its own
+periodic job, not on `Sweep`'s heartbeat-interval ticker: heartbeat
+intervals are tens of seconds, far finer-grained than a multi-day
+retention window needs, so checking every tick buys no precision.
+River (already in the stack, see Jobs below) has a native periodic-job
+scheduler — a good fit. Hourly cadence is plenty (worst case a row lives
+`soft_delete_duration` plus about an hour).
+
+Metrics: `grex_agents_evicted_total` keeps its current name and trigger —
+it already fires at the "agent left the fleet" moment, which is now the
+soft-delete moment, so no rename. One new counter,
+`grex_agents_purged_total`, covers the hard-delete/GC job. Kept separate
+so a dashboard can show fleet churn (soft-delete rate) independently of
+storage cleanup (purge rate) — the two can drift arbitrarily far apart
+depending on `soft_delete_duration`.
+
+Read API additions, not yet built:
+
+- A `last_seen_within` filter (duration, e.g. `?last_seen_within=5m`) on
+  `GET /api/agents`, same well-known-filter mechanism as
+  `healthy`/`connected`/`via_gateway`. `connected` is necessarily coarse —
+  it only flips on `Sweep`'s heartbeat-interval cadence, so it can read
+  "connected" for up to one full `heartbeat_interval` after an agent's
+  last real message. A precise timestamp-window filter is a cheap
+  addition (`last_seen` is already a column) and useful independently of
+  the reset-on-load rule above — it doesn't replace that rule, it's for
+  callers who want their own recency threshold rather than trusting the
+  boolean.
+- `?show_soft_deleted=true` on `GET /api/agents`, same flag name as the
+  single-agent endpoint's escape hatch but exclusive, not additive: when
+  set, the list returns *only* soft-deleted agents (a graveyard view —
+  "what vanished this week") instead of the default live-only set, never
+  both mixed together. Other filters (attribute match, `last_seen_within`)
+  still apply, now against the soft-deleted set — e.g.
+  `?show_soft_deleted=true&service.name=otelcol-contrib` finds a specific
+  agent that's gone. Agent JSON exposes `evicted_at` (null for live
+  agents) so a caller can tell live and soft-deleted entries apart even
+  without the flag, and see when a soft-deleted one was evicted.
+- A computed `supervisor_managed` field/filter, same pattern as `role`:
+  best-effort, not authoritative. **Known gap:** OpAMP gives a server no
+  reliable, declared signal that an agent is Supervisor-managed versus
+  running the bare `opamp` extension directly. The heuristic available
+  today correlates `identifying_attributes["service.instance.id"]` with
+  `instance_uid` (the Supervisor's self-telemetry template sets them
+  equal; the bare extension never does, so a match is a strong but
+  undeclared signal) and/or default capability bits
+  (`reports_own_metrics`/`reports_heartbeat`), which are plain
+  user-editable config on both sides and the weaker of the two. Both are
+  workarounds, acceptable to ship on for now, but brittle: neither is a
+  documented contract, so either can silently stop working across an
+  upstream Supervisor change with no deprecation path. A proper fix
+  needs an upstream change to the reference Supervisor (a dedicated,
+  declared `AgentDescription` attribute); tracked separately, not yet
+  filed.
 
 #### Jobs: schema and execution
 
@@ -248,6 +370,104 @@ infrastructure. Two things it doesn't give for free:
   app-tier sharding is ever built instead, job dispatch would need to route
   to whichever replica holds that agent's socket, not just query the
   database; another reason to defer that sharding option.
+
+**Lifecycle, safety, and first action (decided, not yet implemented):**
+
+- **Restart is the first action to implement**, once this shape exists:
+  `AcceptsRestartCommand` is already fully handled client-side by the
+  Supervisor (see Post-1.0 roadmap: why the Supervisor matters), so it's
+  the least new client-side work of the three deferred mutation features.
+- **Success is action-specific**, computed by the same OpAMP
+  inbound-message handler that's already the second writer to
+  `job_targets`. For restart specifically: success is the target's next
+  health report showing a newer `health_start_time` than the dispatch
+  time — no protocol extension needed, `Agent.HealthStartTime` is already
+  tracked. Still open: the timeout before an un-reconnected target is
+  marked `failed` (some multiple of `heartbeat_interval`; exact number
+  not chosen).
+- **Retry/backoff**: fibonacci, capped, for a `job_targets` dispatch
+  attempt that finds its agent not currently connected. Exact cap not
+  chosen yet.
+- **Authorization**: `viewer` can read jobs and their status; `admin` can
+  read and create. The first place the `viewer`/`admin` split (see
+  Permission table schema) actually differs in behavior.
+- **Surface: API only for now**, `POST /api/jobs`; no UI form yet. Request
+  body shape not yet specified.
+- **Create and execute are separate calls.** `POST /api/jobs` creates a
+  job in `planned` status — filter and action recorded, nothing
+  dispatched, matched-target count/list can be previewed before anything
+  runs. A separate call arms it. This is deliberate: it's what lets a
+  future UI show "this will restart N agents, are you sure?" against a
+  real preview rather than a guess, and it's the same shape the safety
+  behavior below needs regardless of whether a UI exists yet.
+- **Target computation: `recompute` (default) or `freeze`**, an option on
+  the arm call. `recompute` re-evaluates the filter against live fleet
+  state; `freeze` locks the matched-target set at the moment the job was
+  armed. Either way, recompute (when selected) happens at the *end* of
+  the cancellation delay below, immediately before real dispatch — not at
+  plan time and not at the moment arming was requested — since that's the
+  moment work actually happens and the moment fleet membership should be
+  read as of.
+- **Every armed job waits 5 minutes before dispatch actually begins**,
+  cancellable during that window. This is a blanket safety rule, not
+  per-action or configurable per job: arming is not the same moment as
+  running. Natural fit for River's scheduled-job support: arming inserts
+  one job scheduled 5 minutes out whose work is "recompute targets if
+  requested, then insert the real per-`job_targets` dispatch jobs";
+  cancelling before it fires marks the job `cancelled` and prevents that
+  scheduled job from ever doing its work.
+
+**Known scope boundary: jobs are point-in-time, not continuous.**
+`job_targets` is materialized exactly once — at freeze time, or at the
+end-of-arm-delay recompute moment. Neither mode can guarantee "every
+agent that will ever match this filter gets the action," because an
+agent can join the fleet after that single snapshot instant, including
+mid-dispatch while other targets are still retrying through backoff.
+This is not a bug to fix inside the job model; it's a different feature
+(a standing/continuous policy — "any agent matching X, whenever it
+appears, gets restarted" — its own lifecycle, its own "done" semantics of
+"never, until stopped"), deliberately out of scope here. A controller
+like that could be built later without conflicting with anything above.
+
+**Compliance check, not the gap's fix but its answer for 1.1.** A
+read-only, on-demand `GET /api/jobs/{id}/compliance`: re-evaluates the
+job's own `filter` against *live* fleet state (same filter engine
+`GET /api/agents` uses, not the frozen `job_targets` list — this is what
+catches agents that joined before, during, or after dispatch), and for
+each currently-matching agent applies the action's own success predicate
+against the job's `dispatch_at` (restart's is already decided:
+`health_start_time > dispatch_at`; other actions get their own —
+config-push's would be effective-config-hash match, package-upgrade's
+would be reported-version match). Reports `compliant/total` plus the
+list of non-compliant agents, so a human can act on it — most directly,
+by using that list to create a new job against the stragglers. Strictly
+read-only and on-demand: it reports the gap, it does not dispatch
+anything itself. That boundary is what keeps this from becoming the
+continuous-enforcement feature above by accident; it's also exactly what
+would sit underneath one, if that's ever built — a compliance check
+that already knows how to answer "is this agent in the desired state"
+is the natural foundation for a future enforcer, not something that
+competes with it.
+
+**Migration tooling (decided, not yet implemented):** two independent
+migrators against the one Postgres database, not one merged pipeline.
+[`golang-migrate/migrate`](https://github.com/golang-migrate/migrate) owns
+grex's own tables (permission tables, `jobs`/`job_targets`) via plain `.sql`
+files. River owns its own tables (`river_job`, `river_leader`, etc) via its
+own migrator (`river migrate-up` CLI, or `rivermigrate.New(...).Migrate()`
+in-process) — River ships new migrations as it versions, and its migrator
+tracks them against its own `river_migration` table, separate from
+golang-migrate's `schema_migrations`. Copying River's raw SQL into
+golang-migrate's own file set was considered and rejected: every River
+version bump would then need its new migration files copied over by hand,
+silently breaking the worker against a stale schema if one is missed;
+running River's migrator on its own carries that forward automatically.
+Both migrators run against the same database from the same deploy step;
+this is tooling separation, not the "two pieces of infrastructure" the
+Jobs section above is avoiding (that's about brokers, not migrators). Real
+work — actual `.sql` migration files, wiring both migrators into a deploy
+step, and turning `internal/persistence`'s stubs into working
+implementations — is a future PR; nothing here is built yet.
 
 ## Architecture
 
@@ -702,11 +922,25 @@ agent attributes, metric cardinality cap.
    is unchanged.
 6. **Prometheus** — scrapes grex with two jobs mirroring production layout:
    `grex-server` on `/metrics` at the default interval, `grex-fleet` on
-   `/metrics/fleet` at heartbeat granularity with its own `sample_limit`.
+   `/metrics/fleet` at heartbeat granularity with its own `sample_limit`. Two
+   more jobs support the future state/jobs backend below: `grex-postgres`
+   (real, scrapes `postgres-exporter`) and `grex-river` (a placeholder
+   target, expected down until a future goal gives it something to scrape).
 7. **Dev certificate generation** — an init step (script or one-shot container)
    that mints a local CA, server certs for grex and the OpAMP gateway, and
    client certs for the collectors so mTLS is exercised on both hops in dev,
    not just prod.
+8. **Postgres + postgres_exporter** — dev-only infra for the future durable
+   state and job dispatch backend (see Post-1.0 roadmap: state database and
+   sharding, Jobs: schema and execution, and `internal/persistence`'s
+   interface stubs). Nothing in grex reads or writes to this database yet;
+   `internal/config`'s `database` block carries connection settings but is
+   unused by any runtime path. Two migrators run against it independently
+   before `grex` starts, per the migration-tooling decision above:
+   `river-migrate` (`cmd/river-migrate`, one-shot) creates River's own
+   tables via its own migrator, and `migrate` (`migrate/migrate` image)
+   applies `internal/persistence/migrations`, today only a placeholder —
+   permission-table and jobs-table shape are still open questions.
 
 The stack currently runs with agents connected straight to grex; inserting the
 OpAMP gateway service happens together with the OpAMP core milestone, since
@@ -815,11 +1049,13 @@ the gateway's connect handshake needs grex to answer `connectResult`.
    config with static users; browser session login on top of the mTLS
    groundwork from milestone 6.
 8. **Release** — GoReleaser, svu, image publishing, first tagged 1.0.
-9. **Local dev** — compose stack with collectors and dev certs (built;
-   OpAMP gateway insertion lands with milestone 2). One agent runs under an
-   OpAMP Supervisor instead of the bare `opamp` extension, exercising both
-   client-side models and giving one agent a stable, volume-persisted
-   `instance_uid`.
+9. **Local dev** — **Shipped.** Compose stack with collectors and dev certs
+   (OpAMP gateway insertion landed with milestone 2). agent-2 runs under an
+   OpAMP Supervisor (`deploy/compose/opamp-supervisor-build`,
+   `supervisor.yaml`, `otelcol-agent-2.yaml`) instead of the bare `opamp`
+   extension agent-1 still uses, exercising both client-side models and
+   giving agent-2 a stable, volume-persisted `instance_uid`
+   (`opamp-supervisor-data`) confirmed to survive container recreation.
 10. **Helm chart** — production deployment shape for Kubernetes; Compose
     stays the dev/functional-testing reference. **Shipped** under
     `deploy/charts/grex` and published at
@@ -866,25 +1102,53 @@ per package, compose stack as the end-to-end harness).
 - Auth: OIDC against Dex. Dex's GitHub connector ties access to an org;
   org/team membership arrives as `groups` claims and maps to roles.
 - Metrics: Prometheus `/metrics` scrape only; no OTLP export in 1.0.
-- Stale eviction: an agent that misses N consecutive check-ins is evicted and
-  disappears from the UI (no tombstones). Evictions are counted in
-  `grex_agents_evicted_total`.
+- Stale eviction (1.0, in-memory): an agent that misses N consecutive
+  check-ins is evicted and disappears from the UI (no tombstones).
+  Evictions are counted in `grex_agents_evicted_total`.
+- Agent state retention (post-1.0, not yet implemented): once the durable
+  agent state schema lands, stale eviction becomes soft-delete plus
+  `fleet.soft_delete_duration` (default `7d`) retention before a separate
+  periodic job purges the row, reversing the no-tombstones rule above.
+  See Post-1.0 roadmap: Agent state schema.
+- Permission table schema (post-1.0, not yet implemented): a single flat
+  `role_mapping` table, role set unchanged (`viewer`/`admin`, both
+  read-only). See Post-1.0 roadmap: Permission table schema.
 - Scaling topology: observIQ `opampgateway` extension collectors sit between
   agents and grex, multiplexing agent sessions over few upstream connections.
   grex implements the gateway's custom connect capability and keeps direct
   connections working.
+- Post-1.0 migration tooling: `golang-migrate` for grex's own tables, River's
+  own migrator for River's tables, run independently against one Postgres
+  database. See Jobs: schema and execution. Not yet implemented.
 
 ## Open questions
 
-- **Permission table schema** (post-1.0): flat identity-to-role vs. scoped
-  RBAC vs. ReBAC. See Post-1.0 roadmap: state database and sharding.
-  Leaning flat-with-nullable-scope-columns; not decided.
 - **Agent sharding scheme** (post-1.0): per-agent hash sharding vs.
   DB-native partitioning vs. gateway/tenant sharding. See the same section.
   Leaning DB-native partitioning first; not decided, and blocked in part on
   benchmarking data that doesn't exist yet.
-- **Jobs execution engine** (post-1.0): River leaning sound for per-agent
-  dispatch, on top of grex-owned `jobs`/`job_targets` tables for the
-  parent/rollup shape River doesn't provide in OSS. See Jobs: schema and
-  execution. Not decided; assumes the Supervisor's stable `instance_uid`
-  lands first.
+- **Jobs execution engine** (post-1.0, not yet implemented): River for
+  per-agent dispatch, grex-owned `jobs`/`job_targets` tables for the
+  parent/rollup shape River doesn't provide in OSS, restart as the first
+  action, plan/execute split with a 5-minute cancellable arm delay. See
+  Jobs: schema and execution. Assumes the Supervisor's stable
+  `instance_uid` lands first. Still open: restart's reconnect timeout,
+  the backoff cap, and whether jobs require fleet-wide Supervisor
+  adoption or must degrade for bare-extension agents still churning
+  `instance_uid` on restart.
+- **Declarative/policy layer** (post-1.0, future idea, not designed):
+  jobs above are edge-triggered ("do X now to these agents"). A
+  level-triggered complement — "whenever an agent matching some filter
+  checks in without X, apply X" — is a different primitive: continuous,
+  no single dispatch moment, no natural "done." Cheap to build on top of
+  what jobs/compliance already need, since the trigger point is the same
+  per-check-in code path (`internal/opamp`'s handler → `fleet.Registry`)
+  and the condition it evaluates is the same compliance predicate a
+  job's success check and `GET /api/jobs/{id}/compliance` already use —
+  just evaluated per check-in instead of on-demand, auto-creating a job
+  for a non-compliant agent instead of a human doing it. Not free: fires
+  automatically and repeatedly with no human in the loop, so it needs its
+  own safety story (rate limiting, a circuit breaker after N failures, an
+  audit trail) rather than inheriting jobs' 5-minute-arm-and-cancel
+  mechanism, which only makes sense for a human-initiated action. Not
+  scoped or scheduled; parked here as a named idea.
