@@ -102,6 +102,7 @@ nav:
       - Testing: developer/testing.md
       - Extending grex: developer/extending.md
       - Contributing: developer/contributing.md
+      - Releasing: developer/releasing.md
   - Observability:
       - observability/index.md
       - Metrics: observability/metrics.md

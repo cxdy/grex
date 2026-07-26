@@ -62,6 +62,12 @@ CI on every PR:
 | `markdownlint` | markdownlint-cli2 on `**/*.md` (path-filtered) |
 | `docs` | MkDocs strict build + Helm chart package into `site/charts/`; deploy Pages from `main` (path-filtered) |
 | `helm` | `helm lint` / `helm template`, plus kind e2e install via `deploy/charts/smoke.sh` (path-filtered) |
+| `goreleaser` | On version tags: GoReleaser builds binaries and images (maintainers only) |
+
+## Releases
+
+Maintainers cut semver releases with `svu` and `make release-tag`. See
+[Releasing](releasing.md).
 
 ## License
 

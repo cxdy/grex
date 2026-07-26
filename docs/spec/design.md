@@ -723,7 +723,8 @@ the gateway's connect handshake needs grex to answer `connectResult`.
   metrics API UI, and `helm test`. The same script is the local path for kind
   or k3d (`make helm-e2e-kind` / `make helm-e2e-k3d`).
 - **Versioning:** semver computed with [`svu`](https://github.com/caarlos0/svu)
-  from conventional commit history; a release workflow tags `$(svu next)`.
+  from conventional commit history; maintainers run `make release-tag`
+  (`git tag` + `git push` of `$(svu next)`), which triggers GoReleaser.
 - **Releases:** [GoReleaser](https://goreleaser.com/) builds:
   - Binaries: linux/darwin, amd64/arm64, checksums, archives attached to the
     GitHub Release.

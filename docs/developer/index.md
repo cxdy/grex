@@ -20,6 +20,7 @@ This section is the primary technical documentation for people changing grex.
 | Write tests | [Testing](testing.md) |
 | Add a metric / field / page | [Extending grex](extending.md) |
 | Contribute a PR | [Contributing](contributing.md) |
+| Cut a versioned release | [Releasing](releasing.md) |
 
 ## Repository layout
 

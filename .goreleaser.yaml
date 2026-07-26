@@ -1,0 +1,126 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: grex
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: grex
+    main: ./cmd/grex
+    binary: grex
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/dennisme/grex/internal/buildinfo.Version={{ .Version }}
+      - -X github.com/dennisme/grex/internal/buildinfo.Commit={{ .ShortCommit }}
+      - -X github.com/dennisme/grex/internal/buildinfo.Date={{ .CommitDate }}
+
+archives:
+  - formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+# Grouped release notes on the GitHub Release body (from conventional commits).
+# use: github pulls author @handles via the compare API; falls back poorly if a
+# previous tag is missing on GitHub — switch to "git" for offline/first-tag dry runs.
+changelog:
+  use: github
+  sort: asc
+  # Drop commit SHAs from the body; messages + authors are enough.
+  abbrev: -1
+  format: "{{ .Message }}{{ with .Logins }} ({{ . | englishJoin }}){{ end }}"
+  groups:
+    - title: "✨ Features"
+      regexp: '^.*?feat(\([[:word:]._-]+\))??!?:.+$'
+      order: 0
+    - title: "🐛 Bug Fixes"
+      regexp: '^.*?fix(\([[:word:]._-]+\))??!?:.+$'
+      order: 1
+    - title: "⚡ Performance"
+      regexp: '^.*?perf(\([[:word:]._-]+\))??!?:.+$'
+      order: 2
+    - title: "♻️ Refactors"
+      regexp: '^.*?ref(\([[:word:]._-]+\))??!?:.+$'
+      order: 3
+    - title: "⏪ Reverts"
+      regexp: '^.*?revert(\([[:word:]._-]+\))??!?:.+$'
+      order: 4
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      # grex commitizen uses "doc:" (not "docs:"); cover both.
+      - '^docs?:'
+      - '^test:'
+      - '^chore'
+      - '^ci:'
+      - '^build:'
+      - '^style:'
+      - '(?i)^Merge pull request'
+      - '(?i)^Merge branch'
+      - '(?i)^Pull request'
+      - '^bump:'
+
+release:
+  name_template: "v{{ .Version }}"
+  # Appended after the generated changelog on the GitHub Release.
+  footer: |
+    ---
+
+    **Docker:** `ghcr.io/dennisme/grex:{{ .Tag }}`
+
+    **Docs:** https://dennisme.github.io/grex/
+
+# Multi-arch image (buildx). Dockerfile copies the pre-built binary; it does not
+# recompile Go. Keep Dockerfile (repo root) for local/source builds.
+dockers_v2:
+  - images:
+      - ghcr.io/dennisme/grex
+    tags:
+      - "{{ .Tag }}"
+      - "v{{ .Major }}"
+      - "v{{ .Major }}.{{ .Minor }}"
+      - latest
+    dockerfile: Dockerfile.goreleaser
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      "org.opencontainers.image.title": "{{ .ProjectName }}"
+      "org.opencontainers.image.description": "OpAMP control plane for OpenTelemetry Collector fleets"
+      "org.opencontainers.image.url": "https://dennisme.github.io/grex/"
+      "org.opencontainers.image.source": "https://github.com/dennisme/grex"
+      "org.opencontainers.image.licenses": "Apache-2.0"
+      "org.opencontainers.image.created": "{{ .Date }}"
+      "org.opencontainers.image.revision": "{{ .FullCommit }}"
+      "org.opencontainers.image.version": "{{ .Version }}"

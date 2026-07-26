@@ -1,4 +1,4 @@
-.PHONY: init build test coverage lint markdownlint pre-commit compose-up compose-down demo-static docs helm-lint helm-package helm-e2e helm-e2e-kind helm-e2e-k3d
+.PHONY: init build test coverage lint markdownlint pre-commit compose-up compose-down demo-static docs helm-lint helm-package helm-e2e helm-e2e-kind helm-e2e-k3d release-tag
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
@@ -91,3 +91,24 @@ helm-e2e-kind:
 
 helm-e2e-k3d:
 	./deploy/charts/smoke.sh --provider k3d
+
+# Create and push the next semver tag from conventional commits (svu).
+# Tag push triggers GoReleaser (.github/workflows/goreleaser.yaml).
+# Preview only: svu next
+release-tag:
+	@command -v svu >/dev/null 2>&1 || { \
+		echo "svu is required: https://github.com/caarlos0/svu"; \
+		echo "  brew install svu"; \
+		echo "  # or: go install github.com/caarlos0/svu/v3@latest"; \
+		exit 1; \
+	}
+	@git fetch --tags --quiet
+	@TAG=$$(svu next); \
+	if git rev-parse "$$TAG" >/dev/null 2>&1; then \
+		echo "Tag $$TAG already exists (nothing new to release, or fetch remote tags)"; \
+		exit 1; \
+	fi; \
+	echo "Creating tag $$TAG"; \
+	git tag "$$TAG"; \
+	echo "Pushing $$TAG to origin"; \
+	git push origin "$$TAG"
