@@ -42,6 +42,9 @@ func TestLoadDefaults(t *testing.T) {
 	if len(cfg.Fleet.RequiredAttributes) != 0 {
 		t.Errorf("RequiredAttributes = %v, want empty", cfg.Fleet.RequiredAttributes)
 	}
+	if cfg.Fleet.SoftDeleteDuration != 7*24*time.Hour {
+		t.Errorf("SoftDeleteDuration = %v, want %v", cfg.Fleet.SoftDeleteDuration, 7*24*time.Hour)
+	}
 	if cfg.Metrics.PerAgentSeriesLimit != 1000 {
 		t.Errorf("PerAgentSeriesLimit = %d, want 1000", cfg.Metrics.PerAgentSeriesLimit)
 	}
@@ -71,6 +74,7 @@ fleet:
   required_attributes:
     - deployment.environment
     - service.namespace
+  soft_delete_duration: 48h
 metrics:
   per_agent_series_limit: 50
 debug:
@@ -95,6 +99,9 @@ log:
 	want := []string{"deployment.environment", "service.namespace"}
 	if !slices.Equal(cfg.Fleet.RequiredAttributes, want) {
 		t.Errorf("RequiredAttributes = %v, want %v", cfg.Fleet.RequiredAttributes, want)
+	}
+	if cfg.Fleet.SoftDeleteDuration != 48*time.Hour {
+		t.Errorf("SoftDeleteDuration = %v, want %v", cfg.Fleet.SoftDeleteDuration, 48*time.Hour)
 	}
 	if cfg.Metrics.PerAgentSeriesLimit != 50 {
 		t.Errorf("PerAgentSeriesLimit = %d, want 50", cfg.Metrics.PerAgentSeriesLimit)
@@ -319,12 +326,20 @@ func TestLoadBadStaleMissedHeartbeats(t *testing.T) {
 	}
 }
 
+func TestLoadBadSoftDeleteDuration(t *testing.T) {
+	path := writeFile(t, "config.yaml", "fleet:\n  soft_delete_duration: -1h\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("want error for non-positive soft delete duration")
+	}
+}
+
 func TestLoadEnvOverrides(t *testing.T) {
 	t.Setenv("GREX_LISTENERS_OPAMP", "127.0.0.1:24320")
 	t.Setenv("GREX_LOG_LEVEL", "warn")
 	t.Setenv("GREX_FLEET_HEARTBEAT_INTERVAL", "90s")
 	t.Setenv("GREX_FLEET_STALE_MISSED_HEARTBEATS", "7")
 	t.Setenv("GREX_FLEET_REQUIRED_ATTRIBUTES", "team, deployment.environment")
+	t.Setenv("GREX_FLEET_SOFT_DELETE_DURATION", "48h")
 	t.Setenv("GREX_METRICS_PER_AGENT_SERIES_LIMIT", "25")
 	t.Setenv("GREX_DEBUG_PPROF_ENABLED", "true")
 	path := writeFile(t, "config.yaml", "listeners:\n  opamp: \"127.0.0.1:14320\"\n")
@@ -347,6 +362,9 @@ func TestLoadEnvOverrides(t *testing.T) {
 	want := []string{"team", "deployment.environment"}
 	if !slices.Equal(cfg.Fleet.RequiredAttributes, want) {
 		t.Errorf("RequiredAttributes = %v, want %v (env, comma separated, trimmed)", cfg.Fleet.RequiredAttributes, want)
+	}
+	if cfg.Fleet.SoftDeleteDuration != 48*time.Hour {
+		t.Errorf("SoftDeleteDuration = %v, want 48h", cfg.Fleet.SoftDeleteDuration)
 	}
 	if cfg.Metrics.PerAgentSeriesLimit != 25 {
 		t.Errorf("PerAgentSeriesLimit = %d, want 25", cfg.Metrics.PerAgentSeriesLimit)

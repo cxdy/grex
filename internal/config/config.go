@@ -108,6 +108,11 @@ type Fleet struct {
 	// RequiredAttributes lists AgentDescription attribute keys every agent
 	// must report. Empty means no enforcement.
 	RequiredAttributes []string `yaml:"required_attributes"`
+	// SoftDeleteDuration is how long a soft-deleted agent's durable row is
+	// kept (evicted_at set, not removed) before a periodic purge job
+	// deletes it outright. Unused by any runtime path until persistence is
+	// configured (database.host set).
+	SoftDeleteDuration time.Duration `yaml:"soft_delete_duration"`
 }
 
 // Log holds logging settings.
@@ -198,6 +203,7 @@ func (c *Config) envOverrides() []struct {
 		{"GREX_FLEET_HEARTBEAT_INTERVAL", setDuration(&c.Fleet.HeartbeatInterval)},
 		{"GREX_FLEET_STALE_MISSED_HEARTBEATS", setInt(&c.Fleet.StaleMissedHeartbeats)},
 		{"GREX_FLEET_REQUIRED_ATTRIBUTES", setStringList(&c.Fleet.RequiredAttributes)},
+		{"GREX_FLEET_SOFT_DELETE_DURATION", setDuration(&c.Fleet.SoftDeleteDuration)},
 		{"GREX_METRICS_PER_AGENT_SERIES_LIMIT", setInt(&c.Metrics.PerAgentSeriesLimit)},
 		{"GREX_UI_POLL_INTERVAL", setDuration(&c.UI.PollInterval)},
 		{"GREX_DEBUG_PPROF_ENABLED", setBool(&c.Debug.PprofEnabled)},
@@ -219,7 +225,11 @@ func defaults() *Config {
 			UI:        ":8080",
 			Telemetry: ":9090",
 		},
-		Fleet:    Fleet{HeartbeatInterval: 30 * time.Second, StaleMissedHeartbeats: 3},
+		Fleet: Fleet{
+			HeartbeatInterval:     30 * time.Second,
+			StaleMissedHeartbeats: 3,
+			SoftDeleteDuration:    7 * 24 * time.Hour,
+		},
 		Metrics:  Metrics{PerAgentSeriesLimit: 1000},
 		UI:       UI{PollInterval: 5 * time.Second},
 		Auth:     Auth{DefaultRole: "none"},
@@ -291,6 +301,9 @@ func (c *Config) validate() error {
 	}
 	if c.Fleet.StaleMissedHeartbeats <= 0 {
 		return fmt.Errorf("fleet.stale_missed_heartbeats: must be positive, got %d", c.Fleet.StaleMissedHeartbeats)
+	}
+	if c.Fleet.SoftDeleteDuration <= 0 {
+		return fmt.Errorf("fleet.soft_delete_duration: must be positive, got %v", c.Fleet.SoftDeleteDuration)
 	}
 	if c.Metrics.PerAgentSeriesLimit < 0 {
 		return fmt.Errorf("metrics.per_agent_series_limit: must be non-negative, got %d", c.Metrics.PerAgentSeriesLimit)

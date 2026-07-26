@@ -98,8 +98,8 @@ func (s *PostgresStore) SaveAgent(ctx context.Context, agent fleet.Agent) error 
 		agent.InstanceUID, agent.FirstSeen, agent.LastSeen, agent.Healthy, agent.HealthError,
 		agent.HealthStatus, nullTime(agent.HealthStartTime), nullTime(agent.HealthStatusTime), agent.HealthReported,
 		int64(agent.Capabilities), //nolint:gosec // bit-for-bit storage, no arithmetic performed on this value
-		identifying, nonIdentifying, agent.MissingAttributes,
-		agent.ReservedAttributeConflicts, packages, agent.LastSeen)
+		identifying, nonIdentifying, nonNilStringSlice(agent.MissingAttributes),
+		nonNilStringSlice(agent.ReservedAttributeConflicts), packages, agent.LastSeen)
 	if err != nil {
 		return fmt.Errorf("upsert agents: %w", err)
 	}
@@ -322,6 +322,19 @@ func (s *PostgresStore) DeleteAgent(ctx context.Context, instanceUID string) err
 	return nil
 }
 
+// SoftDeleteAgent implements StateStore. The WHERE clause makes this
+// idempotent: once evicted_at is set, a later call (e.g. a retried flush)
+// leaves it untouched rather than moving it forward.
+func (s *PostgresStore) SoftDeleteAgent(ctx context.Context, instanceUID string, evictedAt time.Time) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE agents SET evicted_at = $2 WHERE instance_uid = $1 AND evicted_at IS NULL`,
+		instanceUID, evictedAt)
+	if err != nil {
+		return fmt.Errorf("soft delete agent: %w", err)
+	}
+	return nil
+}
+
 func nonNilStringMap(m map[string]string) map[string]string {
 	if m == nil {
 		return map[string]string{}
@@ -334,4 +347,16 @@ func nonNilPackageMap(m map[string]fleet.Package) map[string]fleet.Package {
 		return map[string]fleet.Package{}
 	}
 	return m
+}
+
+// nonNilStringSlice guards against binding a nil []string to a NOT NULL
+// text[] column: pgx encodes a nil slice as SQL NULL, not an empty array.
+// missing_attributes/reserved_attribute_conflicts are nil on any agent that
+// hasn't reported an AgentDescription yet (e.g. a bare first status message
+// with no description), which is a normal, common state, not an edge case.
+func nonNilStringSlice(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
