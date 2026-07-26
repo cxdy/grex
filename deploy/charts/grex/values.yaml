@@ -9,8 +9,9 @@ nameOverride: ""
 fullnameOverride: ""
 
 ## @section Image
-## Container image for grex. Until GoReleaser publishes to GHCR, build from
-## source (`docker build -t grex:local .`) and set repository/tag accordingly.
+## Container image for grex (published to GHCR by GoReleaser on version tags).
+## Empty tag → Chart.AppVersion (kept in sync with grex releases via
+## `just release-tag`). Override for local smoke tests (e.g. grex:e2e).
 image:
   repository: ghcr.io/dennisme/grex
   ## Defaults to .Chart.AppVersion when empty.

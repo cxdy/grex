@@ -111,7 +111,10 @@ helm-e2e-kind:
 helm-e2e-k3d:
     ./deploy/charts/smoke.sh --provider k3d
 
-# Create and push the next semver tag from conventional commits (svu). Preview: svu next
+# Create and push the next semver tag from conventional commits (svu).
+# Also bumps deploy/charts/grex Chart.yaml version + appVersion to match so the
+# Pages chart repo and default image tag stay aligned with the release.
+# Preview only: svu next
 release-tag:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -121,13 +124,34 @@ release-tag:
         echo "  # or: go install github.com/caarlos0/svu/v3@latest"
         exit 1
     fi
+    if [[ -n "$(git status --porcelain)" ]]; then
+        echo "Working tree is dirty; commit or stash before releasing"
+        exit 1
+    fi
     git fetch --tags --quiet
     TAG=$(svu next)
     if git rev-parse "$TAG" >/dev/null 2>&1; then
         echo "Tag $TAG already exists (nothing new to release, or fetch remote tags)"
         exit 1
     fi
+    # Helm chart version / appVersion are SemVer without a leading "v".
+    VER="${TAG#v}"
+    CHART_YAML=deploy/charts/grex/Chart.yaml
+    tmp=$(mktemp)
+    sed -E \
+        -e "s/^version: .*/version: ${VER}/" \
+        -e "s/^appVersion: .*/appVersion: \"${VER}\"/" \
+        "$CHART_YAML" >"$tmp"
+    mv "$tmp" "$CHART_YAML"
+    if [[ -n "$(git status --porcelain -- "$CHART_YAML")" ]]; then
+        echo "Bumping Helm chart version/appVersion to ${VER}"
+        git add "$CHART_YAML"
+        git commit -m "chore(release): bump helm chart to ${VER}"
+    else
+        echo "Helm chart already at ${VER}"
+    fi
     echo "Creating tag $TAG"
     git tag "$TAG"
-    echo "Pushing $TAG to origin"
+    echo "Pushing commit(s) and tag $TAG to origin"
+    git push origin HEAD
     git push origin "$TAG"

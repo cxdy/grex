@@ -19,13 +19,19 @@ helm repo update
 helm install grex grex/grex --namespace grex --create-namespace
 ```
 
+Or install a pinned version from GHCR as an OCI chart:
+
+```sh
+helm install grex oci://ghcr.io/dennisme/charts/grex --version 0.1.0 \
+  --namespace grex --create-namespace
+```
+
 The chart repository is hosted on the project GitHub Pages site under
 `/charts/` (alongside docs at `/` and the static demo at `/demo/`). Full
 install guide: [Deploy with Helm](helm.md). Values reference:
-[Helm chart](../reference/helm-chart.md).
-
-Until GHCR release images exist, build and set `image.repository` /
-`image.tag` yourself (see the Helm guide).
+[Helm chart](../reference/helm-chart.md). Default `image.tag` is the chart
+`appVersion`, which tracks grex releases on GHCR
+(`ghcr.io/dennisme/grex`).
 
 ## From source
 

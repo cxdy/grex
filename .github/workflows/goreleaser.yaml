@@ -23,6 +23,11 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -36,6 +41,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Package outside dist/ so goreleaser --clean does not delete the chart.
+      # Chart.yaml version/appVersion are bumped by `just release-tag` before the tag.
+      - name: Package Helm chart
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          mkdir -p .chart-release
+          helm package deploy/charts/grex \
+            --version "$VER" \
+            --app-version "$VER" \
+            --destination .chart-release
+          ls -la .chart-release
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
@@ -43,3 +61,15 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # OCI chart path is separate from the container image (ghcr.io/dennisme/grex).
+      - name: Push Helm chart to GHCR (OCI)
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          CHART_TGZ=".chart-release/grex-${VER}.tgz"
+          test -f "$CHART_TGZ"
+          # helm registry login uses the same token as docker login to GHCR
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
+            -u "${{ github.actor }}" --password-stdin
+          helm push "$CHART_TGZ" oci://ghcr.io/dennisme/charts
