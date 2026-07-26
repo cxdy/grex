@@ -721,9 +721,9 @@ the gateway's connect handshake needs grex to answer `connectResult`.
   (`.github/workflows/helm.yml` job `e2e-kind`): build the Dockerfile image,
   load into kind, `helm upgrade --install`, assert `/healthz` `/readyz`
   metrics API UI, and `helm test`. The same script is the local path for kind
-  or k3d (`make helm-e2e-kind` / `make helm-e2e-k3d`).
+  or k3d (`just helm-e2e-kind` / `just helm-e2e-k3d`).
 - **Versioning:** semver computed with [`svu`](https://github.com/caarlos0/svu)
-  from conventional commit history; maintainers run `make release-tag`
+  from conventional commit history; maintainers run `just release-tag`
   (`git tag` + `git push` of `$(svu next)`), which triggers GoReleaser.
 - **Releases:** [GoReleaser](https://goreleaser.com/) builds:
   - Binaries: linux/darwin, amd64/arm64, checksums, archives attached to the

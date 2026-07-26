@@ -7,6 +7,7 @@ Prometheus scraping grex the way production should.
 ## Prerequisites
 
 - Docker with **Compose v2**
+- [just](https://github.com/casey/just) (or run the `docker compose` commands from the `justfile` by hand)
 - Ports free on localhost: `8080`, `9090`, `4320`, `5556`, `9091`
 
 ## Start the stack
@@ -14,7 +15,7 @@ Prometheus scraping grex the way production should.
 From the repository root:
 
 ```sh
-make compose-up
+just compose-up
 ```
 
 This builds grex from local source, mints dev certificates (one-shot
@@ -61,7 +62,7 @@ regenerate on the next `compose-up`.
 ## Tear down
 
 ```sh
-make compose-down
+just compose-down
 ```
 
 Removes containers and volumes (`docker compose down -v`).

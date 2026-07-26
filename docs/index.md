@@ -62,7 +62,7 @@ The living product plan is under [SPEC](spec/index.md)
 === "Compose (full stack)"
 
     ```sh
-    make compose-up
+    just compose-up
     deploy/compose/smoke.sh
     # UI: http://127.0.0.1:8080
     ```

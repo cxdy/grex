@@ -36,5 +36,5 @@ Version strings are not CLI flags. They are injected at compile time:
 -X github.com/dennisme/grex/internal/buildinfo.Date=…
 ```
 
-See `Makefile` and `Dockerfile`. Unset builds report `dev` / `none` /
+See `justfile` and `Dockerfile`. Unset builds report `dev` / `none` /
 similar placeholders via package defaults.

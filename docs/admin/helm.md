@@ -253,9 +253,9 @@ Prerequisites: Docker, `kubectl`, Helm, and either
 [kind](https://kind.sigs.k8s.io/) or [k3d](https://k3d.io/) (k3s-in-Docker).
 
 ```sh
-make helm-e2e            # auto-pick kind or k3d
-make helm-e2e-kind       # force kind
-make helm-e2e-k3d        # force k3d (k3s)
+just helm-e2e            # auto-pick kind or k3d
+just helm-e2e-kind       # force kind
+just helm-e2e-k3d        # force k3d (k3s)
 
 # or:
 ./deploy/charts/smoke.sh --provider kind
@@ -283,7 +283,7 @@ Validate a values file without installing:
 ```sh
 helm template grex grex/grex -f grex-values.yaml | less
 helm lint deploy/charts/grex   # from a git checkout
-make helm-lint
+just helm-lint
 ```
 
 ## Next steps

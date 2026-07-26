@@ -29,19 +29,22 @@ jobs:
       - name: Install dependencies
         run: go mod download
 
+      - name: Install just
+        uses: extractions/setup-just@v3
+
       - name: Run govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck -show verbose ./...
 
       - name: Build
-        run: make build
+        run: just build
 
       - name: Run tests
-        run: make test
+        run: just test
 
       - name: Coverage
-        run: make coverage
+        run: just coverage
 
       # Artifact is consumed by coverage-comment.yml (workflow_run) so fork PRs
       # can still get a report comment with a write-capable base-repo token.

@@ -52,7 +52,7 @@ svu next      # what the next release tag would be
 3. Create and push the tag:
 
    ```sh
-   make release-tag
+   just release-tag
    ```
 
    That target:
@@ -66,7 +66,7 @@ svu next      # what the next release tag would be
    ready.
 
 Do **not** create release tags by hand unless you are fixing a one-off mistake;
-`make release-tag` keeps numbering aligned with commit history.
+`just release-tag` keeps numbering aligned with commit history.
 
 ### Manual equivalent
 
@@ -89,7 +89,7 @@ version tag, GoReleaser is expected to:
 
 Image tags include the full semver tag, `vMAJOR`, `vMAJOR.MINOR`, and
 `latest`. Binaries embed version metadata via `internal/buildinfo` ldflags
-(same package as `make build`).
+(same package as `just build`).
 
 The release image is built from `Dockerfile.goreleaser` (copies the
 GoReleaser binary into Alpine). The root `Dockerfile` remains for local
@@ -139,7 +139,7 @@ goreleaser release --snapshot --clean --skip=publish
 
 - [ ] Target commit is what you intend to ship (usually tip of `main`)
 - [ ] Conventional commits since the last tag reflect the intended bump
-- [ ] `make test` / `make lint` (and any relevant chart or compose checks) pass
+- [ ] `just test` / `just lint` (and any relevant chart or compose checks) pass
 - [ ] Docs and user-facing notes match the change set
 - [ ] `svu next` shows the version you expect
 - [ ] You are pushing the tag to the repository that runs the release workflow
@@ -158,7 +158,7 @@ goreleaser release --snapshot --clean --skip=publish
 Install it (see [Prerequisites](#prerequisites)).
 
 **Tag already exists**  
-`make release-tag` refuses to retag. Either there is nothing bump-worthy since
+`just release-tag` refuses to retag. Either there is nothing bump-worthy since
 the last release, or your local tags are stale—run `git fetch --tags` and
 check `svu current` / `svu next`.
 

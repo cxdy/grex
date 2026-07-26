@@ -23,7 +23,7 @@ helm install grex ./deploy/charts/grex --namespace grex --create-namespace
 ## Local smoke test (kind / k3d)
 
 ```sh
-make helm-e2e-kind    # or: make helm-e2e-k3d / make helm-e2e
+just helm-e2e-kind    # or: just helm-e2e-k3d / just helm-e2e
 # same script CI uses:
 ./deploy/charts/smoke.sh --provider kind
 ```

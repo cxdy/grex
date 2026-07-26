@@ -7,6 +7,7 @@ Prometheus), use the [Compose stack](compose-stack.md) next.
 ## Prerequisites
 
 - **Go 1.26+** (see `go.mod`)
+- [just](https://github.com/casey/just) (recipe runner; see `justfile`)
 - A terminal and a web browser
 
 Optional later: Docker with Compose v2 for the full stack.
@@ -16,10 +17,10 @@ Optional later: Docker with Compose v2 for the full stack.
 ```sh
 git clone https://github.com/dennisme/grex.git
 cd grex
-make build
+just build
 ```
 
-`make build` compiles all packages with version/commit/date stamped into
+`just build` compiles all packages with version/commit/date stamped into
 `internal/buildinfo` via `-ldflags`.
 
 ## 2. Create a config file
@@ -43,7 +44,7 @@ this tutorial. Important listen addresses:
 go run ./cmd/grex -config config.yaml
 ```
 
-Or run the binary produced by `make build` (path depends on your module
+Or run the binary produced by `just build` (path depends on your module
 layout; typically under the package build cache, or use
 `go build -o grex ./cmd/grex` then `./grex -config config.yaml`).
 

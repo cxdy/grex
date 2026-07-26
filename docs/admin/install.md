@@ -29,19 +29,20 @@ Until GHCR release images exist, build and set `image.repository` /
 
 ## From source
 
-Requires Go 1.26+.
+Requires Go 1.26+ and [just](https://github.com/casey/just) (or use the
+plain `go build` form below).
 
 ```sh
 git clone https://github.com/dennisme/grex.git
 cd grex
-make build
+just build
 # or:
 go build -o grex ./cmd/grex
 ./grex -config /path/to/config.yaml
 ```
 
 Version metadata for `grex_build_info` and the status page comes from
-`-ldflags` (see the `Makefile` `LDFLAGS` and the `Dockerfile`).
+`-ldflags` (see the `justfile` `ldflags` and the `Dockerfile`).
 
 ## Docker
 
@@ -65,8 +66,8 @@ into your cluster for Helm.
 ## Docker Compose (development)
 
 ```sh
-make compose-up
-make compose-down
+just compose-up
+just compose-down
 ```
 
 See [Compose stack](../getting-started/compose-stack.md). This is the

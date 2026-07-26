@@ -53,5 +53,5 @@ Product intent lives under [SPEC](../spec/index.md). The design
 ## Tooling
 
 - Go **1.26+**
-- `make build` / `make test` / `make lint` (`golangci-lint`)
+- `just build` / `just test` / `just lint` (`golangci-lint`)
 - Docker Compose for integration-style smoke tests
