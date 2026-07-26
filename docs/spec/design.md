@@ -266,16 +266,28 @@ so a dashboard can show fleet churn (soft-delete rate) independently of
 storage cleanup (purge rate) — the two can drift arbitrarily far apart
 depending on `soft_delete_duration`.
 
-Read API addition, not yet built: a `last_seen_within` filter (duration,
-e.g. `?last_seen_within=5m`) on `GET /api/agents`, same well-known-filter
-mechanism as `healthy`/`connected`/`via_gateway`. `connected` is
-necessarily coarse — it only flips on `Sweep`'s heartbeat-interval
-cadence, so it can read "connected" for up to one full
-`heartbeat_interval` after an agent's last real message. A precise
-timestamp-window filter is a cheap addition (`last_seen` is already a
-column) and useful independently of the reset-on-load rule above — it
-doesn't replace that rule, it's for callers who want their own recency
-threshold rather than trusting the boolean.
+Read API additions, not yet built:
+
+- A `last_seen_within` filter (duration, e.g. `?last_seen_within=5m`) on
+  `GET /api/agents`, same well-known-filter mechanism as
+  `healthy`/`connected`/`via_gateway`. `connected` is necessarily coarse —
+  it only flips on `Sweep`'s heartbeat-interval cadence, so it can read
+  "connected" for up to one full `heartbeat_interval` after an agent's
+  last real message. A precise timestamp-window filter is a cheap
+  addition (`last_seen` is already a column) and useful independently of
+  the reset-on-load rule above — it doesn't replace that rule, it's for
+  callers who want their own recency threshold rather than trusting the
+  boolean.
+- `?show_soft_deleted=true` on `GET /api/agents`, same flag name as the
+  single-agent endpoint's escape hatch but exclusive, not additive: when
+  set, the list returns *only* soft-deleted agents (a graveyard view —
+  "what vanished this week") instead of the default live-only set, never
+  both mixed together. Other filters (attribute match, `last_seen_within`)
+  still apply, now against the soft-deleted set — e.g.
+  `?show_soft_deleted=true&service.name=otelcol-contrib` finds a specific
+  agent that's gone. Agent JSON exposes `evicted_at` (null for live
+  agents) so a caller can tell live and soft-deleted entries apart even
+  without the flag, and see when a soft-deleted one was evicted.
 
 #### Jobs: schema and execution
 
