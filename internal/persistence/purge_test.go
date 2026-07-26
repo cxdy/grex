@@ -76,6 +76,22 @@ func TestPurgeWorkerDeletesOldEvictedAgentsOnly(t *testing.T) {
 	}
 }
 
+func TestPurgeWorkerContextCanceled(t *testing.T) {
+	store := newTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	worker := &PurgeWorker{pool: store.pool}
+	job := &river.Job[PurgeEvictedAgentsArgs]{Args: PurgeEvictedAgentsArgs{Before: time.Now()}}
+	err := worker.Work(ctx, job)
+	if err == nil {
+		t.Fatal("want error for a cancelled context")
+	}
+	if !strings.Contains(err.Error(), "purge evicted agents") {
+		t.Errorf("error = %q, want it to mention purge evicted agents", err.Error())
+	}
+}
+
 func TestNewPurgeClientRunsAndPurgesViaInsert(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
