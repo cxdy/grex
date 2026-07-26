@@ -126,6 +126,129 @@ messages it receives (e.g. `grex_agent_remote_config_status_total{status}`)
 — the Supervisor-side counters only cover what the Supervisor can see
 locally, they don't give grex anything for free.
 
+### Post-1.0 roadmap: state database and sharding
+
+Both **persistent storage** and **multi-tenancy** are 1.0 non-goals (see
+above): fleet state lives in memory, keyed by `instance_uid`, one fleet per
+instance. Once a mutation feature needs durable state, or a deployment needs
+more than one fleet per instance, grex needs a real database behind the
+registry. Two schema questions come up immediately and are worth deciding
+the shape of early, even though neither is built yet: how permissions are
+stored, and how agent state is partitioned once it outgrows one process's
+memory. Both are options here, not decisions — see Open questions.
+
+#### Permission table schema
+
+Today's role model (see AuthN/AuthZ) is entirely static: `auth.role_mapping`
+maps a SPIFFE ID (or prefix) or OIDC `groups` value to one of two roles,
+`viewer`/`admin`, both currently read-only. A database-backed permission
+table is what lets that move from "edit YAML, redeploy" to "edit a row,"
+and what multi-tenancy needs (a role scoped to one tenant's fleet, not
+every fleet on the instance).
+
+- **Flat identity-to-role table.** Nearly the same shape as the config file
+  today: an `identities` table (SPIFFE ID or OIDC group, one row each) and a
+  `role_bindings` table (identity → role). Simplest possible migration off
+  the static config, cheapest to query (`what role does this caller have`
+  is one indexed lookup). Doesn't express "admin on fleet A, viewer on
+  fleet B" without bolting on a scope column later.
+- **Scoped RBAC.** Roles carry a set of permissions (`agents:read`,
+  `agents:write`, ...), and bindings attach an identity to a role *within a
+  scope* (tenant, or a fleet/agent-group once that concept exists) — the
+  shape Kubernetes RBAC uses. Matches where multi-tenancy is headed, but
+  more tables and a permission-check function, for capability grex doesn't
+  use until there's more than one role that actually differs in behavior.
+- **ReBAC / relationship graph** (Zanzibar/OpenFGA-style). Most flexible,
+  handles delegation and hierarchy well, but a new infrastructure
+  dependency and query model for a product that ships two roles, one of
+  which is a no-op. Not worth it at this stage.
+
+Leaning flat for the first pass, but with nullable `tenant_id`/scope columns
+present from the first migration even before anything populates them:
+retrofitting a scope column onto a live permissions table users already
+depend on is the expensive path, adding an unused nullable column up front
+is not.
+
+#### Agent sharding scheme
+
+`replicaCount` is pinned to 1 in the Helm chart today because fleet state is
+one process's memory. Once state lives in a database, the next question is
+whether — and how — agent state gets partitioned, either across database
+partitions or across multiple grex processes.
+
+- **Hash-partition by `instance_uid`** (consistent hashing across shards).
+  Even load distribution, no coordination needed to decide an agent's shard
+  since it's a pure function of `instance_uid`. The blocker: the OpAMP
+  gateway's `connect` message carries no `instance_uid` (see OpAMP server
+  above), so a gateway-relayed agent can't be routed to the correct shard
+  at connect time without either an upstream protocol change or an extra
+  proxy hop between shards. Direct agents don't have this problem; relayed
+  ones are the common case.
+- **DB-native hash partitioning, single app tier.** grex itself stays a
+  single logical writer (or a stateless pool of processes sharing one
+  database), and Postgres declarative partitioning
+  (`PARTITION BY HASH (instance_uid)`) does the scaling at the storage
+  layer. The app code and the gateway connect flow don't change at all.
+  Ceiling is wherever the database (or the app tier's own connection/TLS
+  handling) saturates first, not a design limit.
+- **Shard by gateway or tenant** (coarse-grained: a whole upstream gateway
+  connection, or a whole tenant once multi-tenancy exists, is pinned to one
+  shard). Sidesteps the missing-`instance_uid`-on-connect problem entirely,
+  since the sharding decision happens at the connection/tenant level, which
+  grex already sees today. Risk: an outsized single gateway or tenant
+  becomes a hot shard that this scheme can't split further.
+
+Leaning DB-native partitioning first, since it needs no gateway protocol
+change and extends the current architecture directly, with tenant/gateway
+sharding as the natural next step once multi-tenancy exists (tenant
+boundary and shard boundary become the same boundary). Per-agent hash
+sharding at the app tier is the one to defer hardest: it's real complexity
+(routing relayed agents without an `instance_uid` on connect) that should
+only be built once benchmarking work shows the DB-only approach actually
+runs out of headroom, not before.
+
+#### Jobs: schema and execution
+
+Every 1.0 non-goal that mutates something (remote config push, restart,
+package upgrade) needs the same shape underneath: a user (via API first,
+UI second) picks a target set of agents by attribute filter — the same
+filter language `GET /api/agents` already uses — and an action to perform,
+and grex carries that out per matched agent and reports back per-agent
+outcome. This assumes the Supervisor work above has already landed as the
+standard client by the time mutation ships, so `instance_uid` is stable
+across an agent's restarts; job targets don't need to account for an
+in-flight job's targets churning through eviction/re-registration.
+
+[River](https://github.com/riverqueue/river) is a sound base for the
+execution side: Postgres-native (`SELECT ... FOR UPDATE SKIP LOCKED`, no
+second broker to run), Go-native, and grex is already headed toward
+Postgres for the state database above — one database, not two pieces of
+infrastructure. Two things it doesn't give for free:
+
+- **River jobs are flat; a mutation job is two levels.** A `jobs` row
+  (user's intent: filter, action, submitted-by, overall status) expands to
+  one `job_targets` row per matched `instance_uid` (per-agent status). Each
+  `job_targets` row becomes one River job — the *dispatch attempt* for
+  that agent — so River's retry/backoff covers "agent not currently
+  connected, try again." Parent-child job dependencies (River Pro's
+  Workflows) aren't needed: targets are independent, and the parent's
+  overall status is a rollup query over its `job_targets`, not a DAG.
+- **Dispatch and completion are different events.** A River job finishing
+  only means grex handed a `ServerToAgent` message (config offer, restart
+  command, package offer) to the agent's live OpAMP connection — it marks
+  `job_targets.status = sent` or `send_failed` (agent not connected). The
+  actual outcome arrives later and asynchronously, from the agent's own
+  next check-in (`RemoteConfigStatus: APPLYING`/`APPLIED`/`FAILED`, or the
+  equivalent for packages/restarts) — the OpAMP inbound-message handler is
+  the second writer to `job_targets`, setting `applied`/`failed`, not the
+  River worker.
+- **Dispatch needs the target's live connection**, which only works
+  cleanly with a single app tier holding all OpAMP connections — which is
+  exactly what "DB-native partitioning" above keeps true. If per-agent
+  app-tier sharding is ever built instead, job dispatch would need to route
+  to whichever replica holds that agent's socket, not just query the
+  database; another reason to defer that sharding option.
+
 ## Architecture
 
 ```text
@@ -744,4 +867,15 @@ per package, compose stack as the end-to-end harness).
 
 ## Open questions
 
-None.
+- **Permission table schema** (post-1.0): flat identity-to-role vs. scoped
+  RBAC vs. ReBAC. See Post-1.0 roadmap: state database and sharding.
+  Leaning flat-with-nullable-scope-columns; not decided.
+- **Agent sharding scheme** (post-1.0): per-agent hash sharding vs.
+  DB-native partitioning vs. gateway/tenant sharding. See the same section.
+  Leaning DB-native partitioning first; not decided, and blocked in part on
+  benchmarking data that doesn't exist yet.
+- **Jobs execution engine** (post-1.0): River leaning sound for per-agent
+  dispatch, on top of grex-owned `jobs`/`job_targets` tables for the
+  parent/rollup shape River doesn't provide in OSS. See Jobs: schema and
+  execution. Not decided; assumes the Supervisor's stable `instance_uid`
+  lands first.
