@@ -90,4 +90,6 @@ Computed helpers on every view: `role`, `display_name`, `host_name`,
 
 ## Persistence
 
-None. Document this in any feature that assumes durable agent history.
+`fleet.Registry` is still the sole source of truth for every live read
+path. A durability layer under it exists, write-only and opt-in — see
+[Persistence](persistence.md).

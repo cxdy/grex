@@ -44,6 +44,15 @@ defined in `.cz.toml`:
 Examples: `feat(ui): add agent attribute chips`, `fix: close idle OpAMP
 connections`. Optional helper: `cz commit`.
 
+## Go style
+
+Avoid generics. The one exception today is `internal/persistence.PurgeWorker.Work`,
+whose `*river.Job[T]` parameter is River's own `Worker[T]` interface shape,
+not a choice we made — see the comment there. If a future dependency
+similarly requires a generic signature to implement its interface, that's
+fine; don't introduce generics anywhere else in the codebase for our own
+code's sake.
+
 ## Pull requests
 
 - Keep changes focused; match existing style in the package you touch

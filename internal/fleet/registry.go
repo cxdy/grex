@@ -37,32 +37,80 @@ type ConnMeta struct {
 // there is no way to filter on the attribute's value.
 var ReservedAttributeKeys = []string{"healthy", "connected", "via_gateway"}
 
-// Events receives fleet lifecycle notifications, e.g. for metrics. All
-// methods are called with the registry lock held; implementations must not
-// call back into the registry.
+// Events receives fleet lifecycle notifications, e.g. for metrics and
+// persistence dirty-tracking. All methods are called with the registry lock
+// held; implementations must not call back into the registry. instanceUID
+// identifies which agent changed, so a listener that needs to act per-agent
+// (e.g. marking it dirty for a durability flush) doesn't need its own
+// tracking inside Registry.
 type Events interface {
-	AgentConnected()
-	AgentDisconnected()
-	AgentEvicted()
+	AgentConnected(instanceUID string)
+	AgentDisconnected(instanceUID string)
+	AgentEvicted(instanceUID string)
 	// ReportReceived is called per report kind present in a message:
 	// "status", "health", "effective_config", or "package_statuses".
-	ReportReceived(kind string)
+	ReportReceived(instanceUID, kind string)
 	// MissingAttribute is called for each newly missing required attribute
 	// when an agent's compliance state changes.
-	MissingAttribute(key string)
+	MissingAttribute(instanceUID, key string)
 	// ReservedAttributeConflict is called for each ReservedAttributeKeys key
 	// an agent's AgentDescription reports, when that conflict set changes.
-	ReservedAttributeConflict(key string)
+	ReservedAttributeConflict(instanceUID, key string)
 }
 
 type noopEvents struct{}
 
-func (noopEvents) AgentConnected()                  {}
-func (noopEvents) AgentDisconnected()               {}
-func (noopEvents) AgentEvicted()                    {}
-func (noopEvents) ReportReceived(string)            {}
-func (noopEvents) MissingAttribute(string)          {}
-func (noopEvents) ReservedAttributeConflict(string) {}
+func (noopEvents) AgentConnected(string)                    {}
+func (noopEvents) AgentDisconnected(string)                 {}
+func (noopEvents) AgentEvicted(string)                      {}
+func (noopEvents) ReportReceived(string, string)            {}
+func (noopEvents) MissingAttribute(string, string)          {}
+func (noopEvents) ReservedAttributeConflict(string, string) {}
+
+// multiEvents fans a single Registry's notifications out to every listener
+// in order, e.g. metrics and a persistence dirty-tracker both listening to
+// the same Registry.
+type multiEvents []Events
+
+// MultiEvents combines multiple Events implementations into one, so
+// Registry (which holds exactly one) can notify all of them.
+func MultiEvents(events ...Events) Events { return multiEvents(events) }
+
+func (m multiEvents) AgentConnected(id string) {
+	for _, e := range m {
+		e.AgentConnected(id)
+	}
+}
+
+func (m multiEvents) AgentDisconnected(id string) {
+	for _, e := range m {
+		e.AgentDisconnected(id)
+	}
+}
+
+func (m multiEvents) AgentEvicted(id string) {
+	for _, e := range m {
+		e.AgentEvicted(id)
+	}
+}
+
+func (m multiEvents) ReportReceived(id, kind string) {
+	for _, e := range m {
+		e.ReportReceived(id, kind)
+	}
+}
+
+func (m multiEvents) MissingAttribute(id, key string) {
+	for _, e := range m {
+		e.MissingAttribute(id, key)
+	}
+}
+
+func (m multiEvents) ReservedAttributeConflict(id, key string) {
+	for _, e := range m {
+		e.ReservedAttributeConflict(id, key)
+	}
+}
 
 // Agent is a point-in-time snapshot of one agent's state.
 type Agent struct {
@@ -235,7 +283,7 @@ func (r *Registry) Report(msg *protobufs.AgentToServer, meta ConnMeta) {
 			"via_gateway", meta.ViaGateway)
 	}
 	if !agent.Connected {
-		r.events.AgentConnected()
+		r.events.AgentConnected(id)
 	}
 	agent.LastSeen = now
 	agent.Connected = true
@@ -245,7 +293,7 @@ func (r *Registry) Report(msg *protobufs.AgentToServer, meta ConnMeta) {
 		agent.Capabilities = msg.Capabilities
 	}
 	if desc := msg.GetAgentDescription(); desc != nil {
-		r.events.ReportReceived("status")
+		r.events.ReportReceived(id, "status")
 		agent.DescriptionReported = true
 		agent.Identifying = attrsToMap(desc.GetIdentifyingAttributes())
 		agent.NonIdentifying = attrsToMap(desc.GetNonIdentifyingAttributes())
@@ -253,7 +301,7 @@ func (r *Registry) Report(msg *protobufs.AgentToServer, meta ConnMeta) {
 		r.checkReservedAttributeConflicts(agent)
 	}
 	if health := msg.GetHealth(); health != nil {
-		r.events.ReportReceived("health")
+		r.events.ReportReceived(id, "health")
 		agent.HealthReported = true
 		agent.Healthy = health.GetHealthy()
 		agent.HealthError = health.GetLastError()
@@ -266,7 +314,7 @@ func (r *Registry) Report(msg *protobufs.AgentToServer, meta ConnMeta) {
 		}
 	}
 	if pkgs := msg.GetPackageStatuses().GetPackages(); len(pkgs) > 0 {
-		r.events.ReportReceived("package_statuses")
+		r.events.ReportReceived(id, "package_statuses")
 		agent.Packages = make(map[string]Package, len(pkgs))
 		for name, p := range pkgs {
 			agent.Packages[name] = Package{
@@ -279,7 +327,7 @@ func (r *Registry) Report(msg *protobufs.AgentToServer, meta ConnMeta) {
 		}
 	}
 	if cfgMap := msg.GetEffectiveConfig().GetConfigMap().GetConfigMap(); len(cfgMap) > 0 {
-		r.events.ReportReceived("effective_config")
+		r.events.ReportReceived(id, "effective_config")
 		agent.EffectiveConfig = make(map[string]string, len(cfgMap))
 		for name, file := range cfgMap {
 			agent.EffectiveConfig[name] = string(file.GetBody())
@@ -304,7 +352,7 @@ func (r *Registry) checkRequiredAttributes(agent *Agent) {
 	agent.MissingAttributes = missing
 	if len(missing) > 0 && changed {
 		for _, key := range missing {
-			r.events.MissingAttribute(key)
+			r.events.MissingAttribute(agent.InstanceUID, key)
 		}
 		r.log.Warn("agent missing required attributes",
 			"instance_uid", agent.InstanceUID, "missing", missing)
@@ -329,7 +377,7 @@ func (r *Registry) checkReservedAttributeConflicts(agent *Agent) {
 	agent.ReservedAttributeConflicts = conflicts
 	if len(conflicts) > 0 && changed {
 		for _, key := range conflicts {
-			r.events.ReservedAttributeConflict(key)
+			r.events.ReservedAttributeConflict(agent.InstanceUID, key)
 		}
 		r.log.Warn("agent attribute shadowed by a well-known API filter field",
 			"instance_uid", agent.InstanceUID, "conflicts", conflicts)
@@ -337,7 +385,13 @@ func (r *Registry) checkReservedAttributeConflicts(agent *Agent) {
 }
 
 // SetConnected marks an agent's connection state. Disconnected agents stay
-// registered until Sweep evicts them.
+// registered until Sweep evicts them. Deliberately does not touch LastSeen:
+// a durable StateStore's guarded writes are keyed on LastSeen as event time,
+// and a disconnect detected well after the agent's last real message (e.g.
+// by Sweep, possibly after it already reconnected to a different grex
+// replica and flushed newer data) must still carry the old timestamp so
+// that stale write is correctly rejected rather than clobbering the newer
+// one. If this ever changes, that guarantee breaks.
 func (r *Registry) SetConnected(id string, connected bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -346,9 +400,9 @@ func (r *Registry) SetConnected(id string, connected bool) {
 		return
 	}
 	if agent.Connected && !connected {
-		r.events.AgentDisconnected()
+		r.events.AgentDisconnected(id)
 	} else if !agent.Connected && connected {
-		r.events.AgentConnected()
+		r.events.AgentConnected(id)
 	}
 	agent.Connected = connected
 }
@@ -386,6 +440,9 @@ func (r *Registry) List() []Agent {
 //     messages. Health bits are left as last reported so the UI can show
 //     "Disconnected" rather than inventing Unhealthy.
 //  2. Missed StaleMissedHeartbeats intervals → evict from the registry.
+//
+// Same LastSeen caveat as SetConnected: this never touches it, only
+// Connected. See SetConnected's doc comment for why.
 func (r *Registry) Sweep(now time.Time) []string {
 	disconnectAfter := r.cfg.HeartbeatInterval
 	evictAfter := r.cfg.HeartbeatInterval * time.Duration(r.cfg.StaleMissedHeartbeats)
@@ -396,14 +453,14 @@ func (r *Registry) Sweep(now time.Time) []string {
 		age := now.Sub(agent.LastSeen)
 		if agent.Connected && age > disconnectAfter {
 			agent.Connected = false
-			r.events.AgentDisconnected()
+			r.events.AgentDisconnected(id)
 			r.log.Info("agent disconnected (missed check-in)",
 				"instance_uid", id, "last_seen", agent.LastSeen, "age", age)
 		}
 		if age > evictAfter {
 			delete(r.agents, id)
 			evicted = append(evicted, id)
-			r.events.AgentEvicted()
+			r.events.AgentEvicted(id)
 			r.log.Info("agent evicted",
 				"instance_uid", id, "last_seen", agent.LastSeen)
 		}

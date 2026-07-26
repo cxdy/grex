@@ -69,6 +69,9 @@ fleet:
   # AgentDescription attribute keys every agent must report. Missing keys
   # are logged and counted in metrics; empty disables enforcement.
   required_attributes: []
+  # How long a soft-deleted agent's durable row is kept before a periodic
+  # job purges it outright. Only takes effect when database.host is set.
+  soft_delete_duration: 168h # 7d
 
 debug:
   # Mounts net/http/pprof under /debug/pprof on the telemetry listener.
@@ -84,10 +87,11 @@ log:
   format: text
 
 database:
-  # Connection settings for the future durable state and job dispatch
-  # backend (see docs/spec/design.md's Post-1.0 roadmap). Unused by any
-  # runtime path today: internal/fleet.Registry holds all fleet state
-  # in-memory, and internal/persistence's interfaces have no implementation.
+  # Connection settings for the durable state backend (see
+  # docs/spec/design.md's Post-1.0 roadmap). Opt-in: an empty host means
+  # grex runs exactly as it does with no database at all.
+  # internal/fleet.Registry stays the runtime source of truth either way;
+  # this only makes its state durable, nothing reads from it.
   host: ""
   port: 5432
   user: ""

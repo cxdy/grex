@@ -4,8 +4,11 @@ Base URL: **UI listener** (default `:8080`). Content-Type:
 `application/json`. **Read-only** — no write endpoints in 1.0.
 
 !!! note "Auth"
-    No authentication yet
-    ([issue #11](https://github.com/dennisme/grex/issues/11)).
+    mTLS with SPIFFE IDs is shipped (see
+    [Authentication](../admin/authentication.md)); OIDC is not yet
+    ([issue #11](https://github.com/dennisme/grex/issues/11)). When
+    `ui_tls.client_ca_file` is set (the compose dev stack sets it), every
+    route below requires a client certificate mapped to a role.
 
 Handlers are instrumented with `grex_api_requests_total` and
 `grex_api_request_duration_seconds` when mounted through
@@ -144,9 +147,31 @@ See `fleet.AgentView` for field names. Notable points:
 
 ## Client examples
 
+Against the compose dev stack, the UI listener requires a client
+certificate mapped to a role (`deploy/compose/grex.yaml`'s
+`auth.role_mapping`); `deploy/compose/certs/user-admin.pem` is one of the
+dev certs `gen-certs.sh` mints for exactly this. `-k` skips CA verification
+here because the dev CA isn't in your system trust store, not because
+grex's TLS is optional.
+
 ```sh
-curl -sS 'http://127.0.0.1:8080/api/agents?connected=true&limit=50'
-curl -sS 'http://127.0.0.1:8080/api/agents?match=service.name=~"otel.*"'
-curl -sS "http://127.0.0.1:8080/api/agents/${INSTANCE_UID}"
-curl -sS 'http://127.0.0.1:8080/api/attributes?prefix=service'
+CERTS=deploy/compose/certs
+
+curl -k --cert "$CERTS/user-admin.pem" --key "$CERTS/user-admin-key.pem" \
+  'https://localhost:8080/api/agents?connected=true&limit=50' | jq
+
+curl -k --cert "$CERTS/user-admin.pem" --key "$CERTS/user-admin-key.pem" \
+  'https://localhost:8080/api/agents?match=service.name=~"otel.*"' | jq
+
+curl -k --cert "$CERTS/user-admin.pem" --key "$CERTS/user-admin-key.pem" \
+  "https://localhost:8080/api/agents/${INSTANCE_UID}" | jq
+
+curl -k --cert "$CERTS/user-admin.pem" --key "$CERTS/user-admin-key.pem" \
+  'https://localhost:8080/api/status' | jq
+
+curl -k --cert "$CERTS/user-admin.pem" --key "$CERTS/user-admin-key.pem" \
+  'https://localhost:8080/api/attributes?prefix=service' | jq
 ```
+
+If `ui_tls.client_ca_file` isn't set (mTLS off), the same requests work
+over plain `http://` with no `--cert`/`--key`/`-k`.

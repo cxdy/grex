@@ -13,7 +13,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/riverqueue/river"
 
 	"net/http"
 
@@ -23,11 +26,17 @@ import (
 	"github.com/dennisme/grex/internal/fleet"
 	"github.com/dennisme/grex/internal/metrics"
 	"github.com/dennisme/grex/internal/opamp"
+	"github.com/dennisme/grex/internal/persistence"
 	"github.com/dennisme/grex/internal/server"
 	"github.com/dennisme/grex/internal/ui"
 )
 
 const shutdownGrace = 10 * time.Second
+
+// persistenceFlushInterval is how often dirty agents are saved to the
+// database, when one is configured. Separate from Sweep's ticker: liveness
+// and durability are different concerns.
+const persistenceFlushInterval = 5 * time.Second
 
 // drainDelay gives an orchestrator's readiness probe time to observe
 // /readyz turning unready before listeners actually close, so new
@@ -82,11 +91,33 @@ func run(args []string) error {
 		"per_agent_series_limit":  strconv.Itoa(cfg.Metrics.PerAgentSeriesLimit),
 	})
 	events := metrics.NewEvents(serverMetrics, fleetMetrics)
+	registryEvents := fleet.Events(events)
+
+	// Persistence is entirely opt-in: unset database.host means grex behaves
+	// exactly as it does without a database configured at all.
+	var dbPool *pgxpool.Pool
+	var dirtyTracker *persistence.DirtyTracker
+	var store persistence.StateStore
+	if cfg.Database.Host != "" {
+		dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+			cfg.Database.Host, cfg.Database.Port, cfg.Database.User, cfg.Database.Password,
+			cfg.Database.DBName, cfg.Database.SSLMode)
+		pool, err := pgxpool.New(context.Background(), dsn)
+		if err != nil {
+			return fmt.Errorf("database: %w", err)
+		}
+		dbPool = pool
+		defer dbPool.Close()
+		store = persistence.NewPostgresStore(pool)
+		dirtyTracker = persistence.NewDirtyTracker()
+		registryEvents = fleet.MultiEvents(events, dirtyTracker)
+	}
+
 	registry := fleet.New(fleet.Config{
 		HeartbeatInterval:     cfg.Fleet.HeartbeatInterval,
 		StaleMissedHeartbeats: cfg.Fleet.StaleMissedHeartbeats,
 		RequiredAttributes:    cfg.Fleet.RequiredAttributes,
-	}, logger, events)
+	}, logger, registryEvents)
 	fleetMetrics.MustRegister(metrics.NewFleetCollector(registry, cfg.Metrics.PerAgentSeriesLimit))
 	handler, connCtx, err := opamp.New(logger, registry, events).Attach()
 	if err != nil {
@@ -115,6 +146,26 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	go registry.Run(ctx)
+	var purgeClient *river.Client[pgx.Tx]
+	if dbPool != nil {
+		flusher := persistence.NewFlusher(registry, dirtyTracker, store, persistenceFlushInterval, logger)
+		go flusher.Run(ctx)
+
+		purgeClient, err = persistence.NewPurgeClient(dbPool, cfg.Fleet.SoftDeleteDuration, events, logger)
+		if err != nil {
+			return fmt.Errorf("purge client: %w", err)
+		}
+		if err := purgeClient.Start(ctx); err != nil {
+			return fmt.Errorf("start purge client: %w", err)
+		}
+		defer func() {
+			stopCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+			defer cancel()
+			if err := purgeClient.Stop(stopCtx); err != nil {
+				logger.Error("purge client stop failed", "error", err)
+			}
+		}()
+	}
 
 	select {
 	case <-ctx.Done():

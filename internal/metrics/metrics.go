@@ -42,6 +42,7 @@ type Events struct {
 	agentConnects              prometheus.Counter
 	agentDisconnects           prometheus.Counter
 	agentsEvicted              prometheus.Counter
+	agentsPurged               prometheus.Counter
 	reports                    *prometheus.CounterVec
 	missingAttributes          *prometheus.CounterVec
 	reservedAttributeConflicts *prometheus.CounterVec
@@ -69,6 +70,10 @@ func NewEvents(server, fleet prometheus.Registerer) *Events {
 		agentsEvicted: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "grex_agents_evicted_total",
 			Help: "Agents evicted after missing the check-in threshold.",
+		}),
+		agentsPurged: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "grex_agents_purged_total",
+			Help: "Soft-deleted agent rows permanently removed by the retention purge job.",
 		}),
 		reports: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "grex_agent_reports_total",
@@ -109,30 +114,35 @@ func NewEvents(server, fleet prometheus.Registerer) *Events {
 	}
 	server.MustRegister(e.messages, e.messageErrors, e.authDenied, e.authAllowed)
 	fleet.MustRegister(
-		e.agentConnects, e.agentDisconnects, e.agentsEvicted,
+		e.agentConnects, e.agentDisconnects, e.agentsEvicted, e.agentsPurged,
 		e.reports, e.missingAttributes, e.reservedAttributeConflicts,
 		e.gatewayConnects, e.gatewayConnections,
 	)
 	return e
 }
 
-// AgentConnected implements fleet.Events.
-func (e *Events) AgentConnected() { e.agentConnects.Inc() }
+// AgentConnected implements fleet.Events. instanceUID is unused: per-agent
+// labels would blow up cardinality, this only feeds an aggregate counter.
+func (e *Events) AgentConnected(string) { e.agentConnects.Inc() }
 
 // AgentDisconnected implements fleet.Events.
-func (e *Events) AgentDisconnected() { e.agentDisconnects.Inc() }
+func (e *Events) AgentDisconnected(string) { e.agentDisconnects.Inc() }
 
 // AgentEvicted implements fleet.Events.
-func (e *Events) AgentEvicted() { e.agentsEvicted.Inc() }
+func (e *Events) AgentEvicted(string) { e.agentsEvicted.Inc() }
+
+// AgentsPurged records n soft-deleted agent rows removed by the retention
+// purge job. Not part of fleet.Events; called directly by the purge worker.
+func (e *Events) AgentsPurged(n int) { e.agentsPurged.Add(float64(n)) }
 
 // ReportReceived implements fleet.Events.
-func (e *Events) ReportReceived(kind string) { e.reports.WithLabelValues(kind).Inc() }
+func (e *Events) ReportReceived(_, kind string) { e.reports.WithLabelValues(kind).Inc() }
 
 // MissingAttribute implements fleet.Events.
-func (e *Events) MissingAttribute(key string) { e.missingAttributes.WithLabelValues(key).Inc() }
+func (e *Events) MissingAttribute(_, key string) { e.missingAttributes.WithLabelValues(key).Inc() }
 
 // ReservedAttributeConflict implements fleet.Events.
-func (e *Events) ReservedAttributeConflict(key string) {
+func (e *Events) ReservedAttributeConflict(_, key string) {
 	e.reservedAttributeConflicts.WithLabelValues(key).Inc()
 }
 

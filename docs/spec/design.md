@@ -197,39 +197,75 @@ already-resolved value rendered somewhere (header/badge) — pure wiring.
 
 `replicaCount` is pinned to 1 in the Helm chart today because fleet state is
 one process's memory. Once state lives in a database, the next question is
-whether — and how — agent state gets partitioned, either across database
-partitions or across multiple grex processes.
+how a multi-replica grex app tier relates to its database.
 
-- **Hash-partition by `instance_uid`** (consistent hashing across shards).
-  Even load distribution, no coordination needed to decide an agent's shard
-  since it's a pure function of `instance_uid`. The blocker: the OpAMP
-  gateway's `connect` message carries no `instance_uid` (see OpAMP server
-  above), so a gateway-relayed agent can't be routed to the correct shard
-  at connect time without either an upstream protocol change or an extra
-  proxy hop between shards. Direct agents don't have this problem; relayed
-  ones are the common case.
-- **DB-native hash partitioning, single app tier.** grex itself stays a
-  single logical writer (or a stateless pool of processes sharing one
-  database), and Postgres declarative partitioning
-  (`PARTITION BY HASH (instance_uid)`) does the scaling at the storage
-  layer. The app code and the gateway connect flow don't change at all.
-  Ceiling is wherever the database (or the app tier's own connection/TLS
-  handling) saturates first, not a design limit.
-- **Shard by gateway or tenant** (coarse-grained: a whole upstream gateway
-  connection, or a whole tenant once multi-tenancy exists, is pinned to one
-  shard). Sidesteps the missing-`instance_uid`-on-connect problem entirely,
-  since the sharding decision happens at the connection/tenant level, which
-  grex already sees today. Risk: an outsized single gateway or tenant
-  becomes a hot shard that this scheme can't split further.
+**Decided: sharding Postgres is a non-goal for grex.** One logical
+Postgres endpoint per fleet, HA via a primary plus replica(s) — the
+CloudNativePG shape on Kubernetes fits well, since it's what grex already
+targets for deployment (Helm chart, k8s-first). A DNS-controlled endpoint
+always points at whichever node is currently primary; replicas exist for
+failover, not partition ownership. Grex's app code never routes a
+per-agent write or read to a specific shard, and never will — this rules
+out the per-agent hash-partitioning-across-shards idea considered
+earlier (which also had a real blocker: the OpAMP gateway's `connect`
+message carries no `instance_uid`, so a gateway-relayed agent couldn't be
+routed to the correct shard at connect time without an upstream protocol
+change). A consumer standing up their own Postgres deployment is free to
+shard it however they want as their own infrastructure choice; grex
+itself is built assuming one writable logical endpoint, optionally with
+a separate read-only one (below), full stop.
 
-Leaning DB-native partitioning first, since it needs no gateway protocol
-change and extends the current architecture directly, with tenant/gateway
-sharding as the natural next step once multi-tenancy exists (tenant
-boundary and shard boundary become the same boundary). Per-agent hash
-sharding at the app tier is the one to defer hardest: it's real complexity
-(routing relayed agents without an `instance_uid` on connect) that should
-only be built once benchmarking work shows the DB-only approach actually
-runs out of headroom, not before.
+This also means the fleet-wide list read below is one query against one
+endpoint, not a scatter-gather across shards — the complexity that
+sharding would have added there doesn't exist in this shape.
+
+**Read replica endpoint, not yet supported, worth documenting as future
+work once it is.** CloudNativePG-style clusters typically expose a
+separate read-only endpoint load-balanced across replicas, distinct from
+the primary. That's a natural place to route DB-read traffic (see
+`ListAgents` below) — letting UI/API-serving grex replicas scale
+independently of write load, without adding any complexity to the write
+path. Not built: `internal/config.Database` has exactly one
+host/port today, and the Helm chart doesn't reference `database` config
+at all yet. A future `database.read_host`-shaped addition (or similar)
+is the natural next step, not urgent.
+
+**Reads: a single grex replica's `ListAgents` merges local memory with
+one database query.** Local memory only covers agents this process holds
+a live connection to; the database covers what every other replica has
+flushed. Local memory wins on overlap (it's fresher — the database write
+path is intentionally batched, see Agent state schema below). No fan-out
+or shard merge needed, per the non-goal above — one query, one merge.
+
+**Reconnect-elsewhere: reads self-heal, dispatch-routing doesn't.** A
+multi-replica app tier (a stateless pool sharing the one Postgres endpoint
+above) means an agent's WS connection — whether
+direct or through a gateway — can drop and reconnect to a *different*
+grex process at any time; nothing guarantees connection reuse or
+affinity to the replica that last held it. Whichever replica held the
+agent's state must get it into the shared database before another
+replica needs it, and that can't be guaranteed by flushing faster or even
+synchronously on disconnect: a hard crash or network partition gives no
+disconnect event at all, so there's nothing to race against. The fix
+isn't closing that window, it's not needing to: this is the same
+situation `ReportFullState` already handles today (a process with no —
+or, here, insufficiently fresh — description for an `instance_uid` asks
+for one and the agent resends everything), just triggered by "connected
+to a different replica" instead of "grex restarted." On connect, a
+replica checks the shared database (not only local memory) for that
+`instance_uid`: fresh enough → fast path, no penalty; stale or missing
+(the previous replica hadn't flushed yet, or the agent is genuinely new)
+→ `ReportFullState`, self-heals. Correctness stops depending on flush
+timing at all; flush-on-disconnect is still worth doing as a best-effort
+optimization (fewer graceful reconnects need the fallback), just not
+load-bearing.
+
+This is a **read**-side reconciliation story only. It says nothing about
+**dispatch**: once mutation ships, sending a restart/config-push to a
+specific agent needs its *live* socket, and nothing above says which
+replica currently holds it — that's the harder, separate half of
+per-agent sharding already flagged as the reason to defer it (see Jobs:
+schema and execution's "dispatch needs the target's live connection").
 
 #### Agent state schema
 
@@ -263,6 +299,59 @@ along the identity/session line the in-memory struct blurs today:
   `sequence_num` is kept for display/debugging only; nothing may read it
   back to resume ordering checks after a reconnect, since the agent's own
   counter isn't guaranteed continuous across a restart either.
+
+**Write path: batched, not per-report.** `Report()`/`SetConnected()` run
+on the OpAMP message-handling hot path; a synchronous write to Postgres
+on every check-in would couple grex's OpAMP latency/availability to the
+database's, which is exactly what this design avoids elsewhere (the
+in-memory registry is authoritative, the database is a durability layer
+under it, not a dependency of the live path). Instead: those calls add
+the touched `instance_uid` to a small in-memory dirty set (a map insert
+under the lock already held, no I/O), and a separate ticker — its own,
+**not** `Sweep`'s — periodically snapshots and clears that set and
+issues one batched `INSERT ... ON CONFLICT DO UPDATE` covering everything
+changed since the last flush. `Sweep` and the persistence flush are
+different concerns (liveness/eviction vs. durability) and must not share
+a ticker even if their intervals end up similar. Whatever hasn't flushed
+at a crash is simply lost from the database — acceptable, since agents
+already re-report everything on reconnect (`ReportFullState`) regardless
+of what the database had; durability here needs to survive seconds of
+staleness, not be per-message-perfect. `agent_session` churns far more
+than `agents`/`agent_effective_config` and its precision matters less (a
+connect/disconnect a few seconds stale in the database is fine) — it can
+flush on a looser cadence, or be snapshotted wholesale each tick rather
+than tracked in the dirty set. Not routed through River: this is
+continuous background persistence, not a discrete one-shot task.
+
+**Multi-writer safety: a conditional `UPSERT`, no separate lock.** Once
+more than one replica can flush the same `instance_uid` (see
+reconnect-elsewhere above — no connection affinity, an agent can talk to
+a different grex every connection), concurrent flushes for the same row
+need to converge correctly regardless of which one reaches Postgres
+first. One atomic statement handles it, no explicit locking needed:
+
+```sql
+INSERT INTO agents (instance_uid, ..., updated_at)
+VALUES ($1, ..., $N)
+ON CONFLICT (instance_uid) DO UPDATE
+SET ..., updated_at = EXCLUDED.updated_at
+WHERE agents.updated_at < EXCLUDED.updated_at;
+```
+
+`ON CONFLICT DO UPDATE` already takes the row lock as part of this one
+statement; Postgres serializes concurrent attempts on the same row on its
+own. The `WHERE` guard is the entire mechanism — a stale flush simply
+becomes a no-op (0 rows affected) instead of clobbering a newer write, no
+history kept, nothing else to coordinate. The value written to
+`updated_at` must be event time (`Agent.LastSeen`, the actual OpAMP
+message timestamp already tracked), not flush wall-clock time — flush
+scheduling jitter differs per replica and per tick, and using it instead
+would reject genuinely newer data over an artifact of when a batch
+happened to run. Same shape applies to `agent_session` and
+`agent_effective_config`, each keyed on its own relevant timestamp. Worst
+case — an agent reconnecting to a different replica on every connection —
+converges correctly under this: whichever write carries the latest event
+time wins, independent of arrival order at Postgres.
 
 **Soft delete and retention** (reverses 1.0's "no tombstones" behavior;
 see Decided). A stale agent is soft-deleted (`evicted_at` set) instead of
@@ -364,12 +453,13 @@ infrastructure. Two things it doesn't give for free:
   equivalent for packages/restarts) — the OpAMP inbound-message handler is
   the second writer to `job_targets`, setting `applied`/`failed`, not the
   River worker.
-- **Dispatch needs the target's live connection**, which only works
-  cleanly with a single app tier holding all OpAMP connections — which is
-  exactly what "DB-native partitioning" above keeps true. If per-agent
-  app-tier sharding is ever built instead, job dispatch would need to route
-  to whichever replica holds that agent's socket, not just query the
-  database; another reason to defer that sharding option.
+- **Dispatch needs the target's live connection.** The one-logical-Postgres-
+  endpoint decision above (Agent sharding scheme) rules out DB-level
+  shard routing, but grex itself is still multi-replica — dispatching to
+  a specific agent needs whichever replica currently holds its socket,
+  not just a database query. Nothing decided here solves that; it's the
+  separate, harder half of "reconnect-elsewhere" (see Agent sharding
+  scheme), and jobs/dispatch stay blocked on it.
 
 **Lifecycle, safety, and first action (decided, not yet implemented):**
 
@@ -1113,6 +1203,10 @@ per package, compose stack as the end-to-end harness).
 - Permission table schema (post-1.0, not yet implemented): a single flat
   `role_mapping` table, role set unchanged (`viewer`/`admin`, both
   read-only). See Post-1.0 roadmap: Permission table schema.
+- Agent sharding (post-1.0, not yet implemented): sharding Postgres is a
+  non-goal for grex — one logical endpoint per fleet, HA via primary plus
+  replica(s) (CloudNativePG shape), never per-agent shard routing. See
+  Post-1.0 roadmap: Agent sharding scheme.
 - Scaling topology: observIQ `opampgateway` extension collectors sit between
   agents and grex, multiplexing agent sessions over few upstream connections.
   grex implements the gateway's custom connect capability and keeps direct
@@ -1123,10 +1217,6 @@ per package, compose stack as the end-to-end harness).
 
 ## Open questions
 
-- **Agent sharding scheme** (post-1.0): per-agent hash sharding vs.
-  DB-native partitioning vs. gateway/tenant sharding. See the same section.
-  Leaning DB-native partitioning first; not decided, and blocked in part on
-  benchmarking data that doesn't exist yet.
 - **Jobs execution engine** (post-1.0, not yet implemented): River for
   per-agent dispatch, grex-owned `jobs`/`job_targets` tables for the
   parent/rollup shape River doesn't provide in OSS, restart as the first
