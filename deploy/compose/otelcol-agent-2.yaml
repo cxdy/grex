@@ -1,0 +1,36 @@
+# Collector config for agent-2, started and managed by the OpAMP Supervisor
+# (see supervisor.yaml). The opamp extension itself is injected by the
+# Supervisor via $OPAMP_EXTENSION_CONFIG, pointed at the Supervisor's own
+# local OpAMP server rather than the gateway, so this file must not declare
+# one.
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  hostmetrics:
+    collection_interval: 30s
+    scrapers:
+      cpu:
+      memory:
+
+exporters:
+  otlp:
+    endpoint: otelcol-gateway:4317
+    tls:
+      insecure: true
+
+service:
+  extensions: [health_check]
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+  pipelines:
+    metrics:
+      receivers: [hostmetrics]
+      exporters: [otlp]

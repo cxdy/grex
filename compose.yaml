@@ -154,13 +154,15 @@ services:
       - opamp-gateway
 
   otelcol-agent-2:
-    image: otel/opentelemetry-collector-contrib:0.157.0
-    command: ["--config", "/etc/otelcol/config.yaml"]
-    environment:
-      AGENT_NAME: agent-2
+    # OpAMP Supervisor-managed, unlike agent-1's bare opamp extension: the
+    # two intentionally exercise both client-side models grex supports. See
+    # docs/spec/design.md's Local development section.
+    build: deploy/compose/opamp-supervisor-build
     volumes:
-      - ./deploy/compose/otelcol-agent.yaml:/etc/otelcol/config.yaml:ro
+      - ./deploy/compose/supervisor.yaml:/etc/otelcol/supervisor.yaml:ro
+      - ./deploy/compose/otelcol-agent-2.yaml:/etc/otelcol/agent-2.yaml:ro
       - ./deploy/compose/certs:/certs:ro
+      - opamp-supervisor-data:/var/lib/otelcol/supervisor-data
     depends_on:
       - opamp-gateway
 
@@ -175,3 +177,4 @@ services:
 
 volumes:
   postgres-data:
+  opamp-supervisor-data:
