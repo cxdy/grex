@@ -9,12 +9,13 @@
 
 ## One-time setup
 
-Requires Go 1.26+, [golangci-lint](https://golangci-lint.run/), and
+Requires Go 1.26+, [just](https://github.com/casey/just),
+[golangci-lint](https://golangci-lint.run/), and
 [pre-commit](https://pre-commit.com/). Optional: [mise](https://mise.jdx.dev/)
 to install versions from `.tool-versions`.
 
 ```sh
-make init          # mise install (if present) + pre-commit install
+just init          # mise install (if present) + pre-commit install
 # or manually:
 pre-commit install
 ```
@@ -26,11 +27,11 @@ runs in CI via the `commitizen-branch` hook.
 ## Development loop
 
 ```sh
-make test
-make lint
-make markdownlint
+just test
+just lint
+just markdownlint
 # optional:
-make compose-up && deploy/compose/smoke.sh && make compose-down
+just compose-up && deploy/compose/smoke.sh && just compose-down
 ```
 
 ## Commit messages
@@ -55,13 +56,19 @@ CI on every PR:
 | Workflow | What it runs |
 |----------|----------------|
 | `golang-lint` | `golangci-lint` |
-| `golang-tests` | `govulncheck`, `make build`, `make test` (race), coverage XML artifact |
+| `golang-tests` | `govulncheck`, `just build`, `just test` (race), coverage XML artifact |
 | `coverage-comment` | PR coverage report comment (via `workflow_run`; works for fork PRs) |
 | `ci` | `docker compose build` |
 | `conventional-commit-check` | commitizen branch message validation |
 | `markdownlint` | markdownlint-cli2 on `**/*.md` (path-filtered) |
 | `docs` | MkDocs strict build + Helm chart package into `site/charts/`; deploy Pages from `main` (path-filtered) |
 | `helm` | `helm lint` / `helm template`, plus kind e2e install via `deploy/charts/smoke.sh` (path-filtered) |
+| `goreleaser` | On version tags: GoReleaser builds binaries and images (maintainers only) |
+
+## Releases
+
+Maintainers cut semver releases with `svu` and `just release-tag`. See
+[Releasing](releasing.md).
 
 ## License
 

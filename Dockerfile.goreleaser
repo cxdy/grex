@@ -1,0 +1,9 @@
+# Release image: GoReleaser already built the binary; only package it.
+# Context layout: $TARGETPLATFORM/grex (e.g. linux/amd64/grex).
+# For local source builds use the root Dockerfile instead.
+FROM alpine:3.22
+ARG TARGETPLATFORM
+RUN addgroup -S grex && adduser -S -G grex grex
+COPY ${TARGETPLATFORM}/grex /usr/local/bin/grex
+USER grex
+ENTRYPOINT ["/usr/local/bin/grex"]

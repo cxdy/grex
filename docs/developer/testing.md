@@ -3,11 +3,11 @@
 ## Unit tests
 
 ```sh
-make test
+just test
 # equivalent: go test -race ./...
 ```
 
-Race detector is required in CI and the Makefile.
+Race detector is required in CI and the justfile.
 
 ### Package patterns
 
@@ -32,8 +32,8 @@ depend on files under `deploy/compose/certs/`.
 ## Lint
 
 ```sh
-make lint
-make markdownlint
+just lint
+just markdownlint
 ```
 
 Go lint config: `.golangci.yml` (CI: `golang-lint` workflow). Markdown:
@@ -44,7 +44,7 @@ markdownlint.
 ## Coverage
 
 ```sh
-make coverage   # coverage.out, coverage.html, coverage.xml
+just coverage   # coverage.out, coverage.html, coverage.xml
 ```
 
 CI posts a Cobertura report on PRs (`golang-tests` workflow) with a 70%
@@ -53,9 +53,9 @@ line-coverage floor.
 ## Compose smoke
 
 ```sh
-make compose-up
+just compose-up
 deploy/compose/smoke.sh
-make compose-down
+just compose-down
 ```
 
 Smoke is the multi-container honesty check: grex health, metrics, and

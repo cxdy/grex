@@ -10,6 +10,9 @@ on:
       - ".github/workflows/docs.yml"
       - "logo.png"
       - "deploy/charts/**"
+      - "justfile"
+      - "scripts/**"
+      - "internal/ui/static/**"
   pull_request:
     paths:
       - "docs/**"
@@ -18,6 +21,9 @@ on:
       - ".github/workflows/docs.yml"
       - "logo.png"
       - "deploy/charts/**"
+      - "justfile"
+      - "scripts/**"
+      - "internal/ui/static/**"
   workflow_dispatch:
 
 permissions:
@@ -41,10 +47,12 @@ jobs:
           cache-dependency-path: requirements-docs.txt
       - name: Install dependencies
         run: pip install -r requirements-docs.txt
+      - name: Install just
+        uses: extractions/setup-just@v3
       - name: Sync logo into docs assets
         run: mkdir -p docs/assets && cp logo.png docs/assets/logo.png
       - name: Sync grex UI assets into static demo
-        run: make demo-static
+        run: just demo-static
       - name: Build site
         run: mkdocs build --strict
       # Helm chart repository lives at /charts/ on the same GitHub Pages site

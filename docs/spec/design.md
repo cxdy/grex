@@ -955,22 +955,22 @@ the gateway's connect handshake needs grex to answer `connectResult`.
   (`.github/workflows/helm.yml` job `e2e-kind`): build the Dockerfile image,
   load into kind, `helm upgrade --install`, assert `/healthz` `/readyz`
   metrics API UI, and `helm test`. The same script is the local path for kind
-  or k3d (`make helm-e2e-kind` / `make helm-e2e-k3d`).
+  or k3d (`just helm-e2e-kind` / `just helm-e2e-k3d`).
 - **Versioning:** semver computed with [`svu`](https://github.com/caarlos0/svu)
-  from conventional commit history; a release workflow tags `$(svu next)`.
+  from conventional commit history; maintainers run `just release-tag`
+  (`git tag` + `git push` of `$(svu next)`), which triggers GoReleaser.
 - **Releases:** [GoReleaser](https://goreleaser.com/) builds:
   - Binaries: linux/darwin, amd64/arm64, checksums, archives attached to the
     GitHub Release.
   - Docker images: multi-arch, pushed to GHCR, tagged with the semver tag and
     `latest`.
-- **Helm chart:** source under `deploy/charts/grex`. Packaged and published
-  as a Helm repository on GitHub Pages at
-  `https://dennisme.github.io/grex/charts/` (path prefix on the same Pages
-  site as MkDocs docs and the static demo — single deploy workflow, no second
-  Pages source). The docs workflow packages the chart into `site/charts/`
-  after `mkdocs build` so `/`, `/demo/`, and `/charts/` share one artifact.
-  Chart `version` / `appVersion` are bumped with grex releases once GoReleaser
-  lands; until then operators build/load images and set `image.tag` explicitly.
+- **Helm chart:** source under `deploy/charts/grex`. `just release-tag` bumps
+  Chart `version` / `appVersion` to the release SemVer (no leading `v`) so
+  the default image tag matches GHCR. Published three ways on each release:
+  (1) GitHub Pages chart repo at `https://dennisme.github.io/grex/charts/`
+  via the docs workflow after the bump lands on `main`; (2) `.tgz` attached
+  to the GitHub Release; (3) OCI push to `oci://ghcr.io/dennisme/charts/grex`.
+  Pages path is shared with MkDocs docs and the static demo (single deploy).
 - License scanning and dependency updates (Dependabot) enabled from the start.
 
 ## Feature list, whittled

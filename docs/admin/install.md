@@ -19,29 +19,36 @@ helm repo update
 helm install grex grex/grex --namespace grex --create-namespace
 ```
 
+Or install a pinned version from GHCR as an OCI chart:
+
+```sh
+helm install grex oci://ghcr.io/dennisme/charts/grex --version 0.1.0 \
+  --namespace grex --create-namespace
+```
+
 The chart repository is hosted on the project GitHub Pages site under
 `/charts/` (alongside docs at `/` and the static demo at `/demo/`). Full
 install guide: [Deploy with Helm](helm.md). Values reference:
-[Helm chart](../reference/helm-chart.md).
-
-Until GHCR release images exist, build and set `image.repository` /
-`image.tag` yourself (see the Helm guide).
+[Helm chart](../reference/helm-chart.md). Default `image.tag` is the chart
+`appVersion`, which tracks grex releases on GHCR
+(`ghcr.io/dennisme/grex`).
 
 ## From source
 
-Requires Go 1.26+.
+Requires Go 1.26+ and [just](https://github.com/casey/just) (or use the
+plain `go build` form below).
 
 ```sh
 git clone https://github.com/dennisme/grex.git
 cd grex
-make build
+just build
 # or:
 go build -o grex ./cmd/grex
 ./grex -config /path/to/config.yaml
 ```
 
 Version metadata for `grex_build_info` and the status page comes from
-`-ldflags` (see the `Makefile` `LDFLAGS` and the `Dockerfile`).
+`-ldflags` (see the `justfile` `ldflags` and the `Dockerfile`).
 
 ## Docker
 
@@ -65,8 +72,8 @@ into your cluster for Helm.
 ## Docker Compose (development)
 
 ```sh
-make compose-up
-make compose-down
+just compose-up
+just compose-down
 ```
 
 See [Compose stack](../getting-started/compose-stack.md). This is the

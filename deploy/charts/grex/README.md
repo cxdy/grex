@@ -14,6 +14,20 @@ helm repo update
 helm install grex grex/grex --namespace grex --create-namespace
 ```
 
+## Install from OCI (GHCR)
+
+Each grex release also pushes the chart to GHCR (separate from the container
+image repository):
+
+```sh
+helm install grex oci://ghcr.io/dennisme/charts/grex --version 0.1.0 \
+  --namespace grex --create-namespace
+```
+
+Chart `version` / `appVersion` are bumped with grex releases
+(`just release-tag`). Empty `image.tag` defaults to `appVersion`, which
+matches the published `ghcr.io/dennisme/grex` image tag.
+
 ## Install from a local checkout
 
 ```sh
@@ -23,7 +37,7 @@ helm install grex ./deploy/charts/grex --namespace grex --create-namespace
 ## Local smoke test (kind / k3d)
 
 ```sh
-make helm-e2e-kind    # or: make helm-e2e-k3d / make helm-e2e
+just helm-e2e-kind    # or: just helm-e2e-k3d / just helm-e2e
 # same script CI uses:
 ./deploy/charts/smoke.sh --provider kind
 ```

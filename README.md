@@ -28,16 +28,17 @@ The living 1.0 design (changes frequently) is under
 
 ## Development
 
-Requires Go 1.26+ and [golangci-lint](https://golangci-lint.run/). For
-local git hooks, also install [pre-commit](https://pre-commit.com/)
-(versions in `.tool-versions` if you use [mise](https://mise.jdx.dev/)).
+Requires Go 1.26+, [just](https://github.com/casey/just), and
+[golangci-lint](https://golangci-lint.run/). For local git hooks, also
+install [pre-commit](https://pre-commit.com/) (versions in `.tool-versions`
+if you use [mise](https://mise.jdx.dev/)).
 
 ```sh
-make init          # optional: mise + pre-commit hooks
-make build         # go build ./...
-make test          # go test -race ./...
-make lint          # golangci-lint run
-make markdownlint  # markdownlint-cli2 on repo markdown
+just init          # optional: mise + pre-commit hooks
+just build         # go build ./...
+just test          # go test -race ./...
+just lint          # golangci-lint run
+just markdownlint  # markdownlint-cli2 on repo markdown
 ```
 
 Run the server with the example config:
@@ -63,9 +64,9 @@ is `ui.poll_interval` (default `5s`).
 Requires Docker with Compose v2.
 
 ```sh
-make compose-up      # build and start the full stack
+just compose-up      # build and start the full stack
 deploy/compose/smoke.sh  # assert everything is healthy
-make compose-down    # tear down, removing volumes
+just compose-down    # tear down, removing volumes
 ```
 
 The stack runs grex (built from local source, OpAMP listener terminating TLS
@@ -86,7 +87,7 @@ helm repo add grex https://dennisme.github.io/grex/charts/
 helm install grex grex/grex --namespace grex --create-namespace
 
 # from a checkout:
-make helm-lint
+just helm-lint
 helm install grex ./deploy/charts/grex -n grex --create-namespace
 ```
 
@@ -97,10 +98,10 @@ Docs: [Deploy with Helm](https://dennisme.github.io/grex/admin/helm/) ·
 
 ```sh
 pip install -r requirements-docs.txt
-make docs          # sync demo UI assets + mkdocs build --strict
+just docs          # sync demo UI assets + mkdocs build --strict
                    # also packages the Helm chart into site/charts/ when helm is installed
 # or interactive:
-make demo-static && mkdocs serve
+just demo-static && mkdocs serve
 ```
 
 Local preview includes the [static demo](https://dennisme.github.io/grex/demo/)
