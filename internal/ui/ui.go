@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/dennisme/grex/internal/api"
 	"github.com/dennisme/grex/internal/fleet"
+	"github.com/dennisme/grex/internal/persistence"
 )
 
 //go:embed templates/*.html static/*
@@ -39,10 +41,15 @@ type Handler struct {
 	tmpl     *template.Template
 	static   http.Handler
 	started  time.Time
+	store    persistence.StateStore
 }
 
-// New builds a UI Handler. startedAt is shown on the status page.
-func New(registry *fleet.Registry, cfg Config, startedAt time.Time) (*Handler, error) {
+// New builds a UI Handler. startedAt is shown on the status page. store is
+// optional (nil when database.host is unset, the same opt-in pattern
+// api.New uses): when set, the agent detail page falls back to it for an
+// agent fleet.Registry doesn't hold locally. Registry stays the fast path:
+// store is never consulted on a hit.
+func New(registry *fleet.Registry, cfg Config, startedAt time.Time, store persistence.StateStore) (*Handler, error) {
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = 5 * time.Second
 	}
@@ -94,6 +101,7 @@ func New(registry *fleet.Registry, cfg Config, startedAt time.Time) (*Handler, e
 		tmpl:     tmpl,
 		static:   http.FileServer(http.FS(staticFS)),
 		started:  startedAt,
+		store:    store,
 	}, nil
 }
 
@@ -230,6 +238,14 @@ func (h *Handler) agentPartial(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) agentData(r *http.Request) (pageData, bool) {
 	id := r.PathValue("id")
 	agent, ok := h.registry.Get(id)
+	if !ok && h.store != nil {
+		var err error
+		agent, ok, err = h.store.GetAgent(r.Context(), id)
+		if err != nil {
+			slog.Error("ui: store lookup failed", "agent_id", id, "error", err)
+			return pageData{}, false
+		}
+	}
 	if !ok {
 		return pageData{}, false
 	}

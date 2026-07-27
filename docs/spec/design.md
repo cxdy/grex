@@ -417,6 +417,19 @@ Read API additions, not yet built:
   needs an upstream change to the reference Supervisor (a dedicated,
   declared `AgentDescription` attribute); tracked separately, not yet
   filed.
+- `GET /api/agents` (list endpoint) gaining the same `StateStore`
+  fallback as `GetAgent`, merged with local registry data instead of a
+  plain miss-then-lookup: registry entries win on overlap (same
+  precedent as `GetAgent`'s single-agent fallback — local, authoritative
+  data always beats a possibly-stale DB row), DB-only rows fill in
+  agents this instance never saw connect locally, dedup happens by
+  `instance_uid` before pagination (paginate the merged set, not each
+  source separately), and existing filters (`role`, `last_seen_within`,
+  etc.) apply identically to both the registry-owned and DB-only
+  agents rather than only the local set. Jobs/dispatch routing (which
+  replica owns issuing a remote-config push or restart to a given
+  agent) is out of scope here, deferred as a separate, future concern
+  once this read path is fixed.
 
 #### Jobs: schema and execution
 

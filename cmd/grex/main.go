@@ -128,7 +128,7 @@ func run(args []string) error {
 	httpMetrics := metrics.NewHTTPMetrics(serverMetrics)
 	uiMux := http.NewServeMux()
 	api.New(registry, startedAt, store).Mount(uiMux, httpMetrics.Instrument)
-	uiHandler, err := ui.New(registry, ui.Config{PollInterval: cfg.UI.PollInterval}, startedAt)
+	uiHandler, err := ui.New(registry, ui.Config{PollInterval: cfg.UI.PollInterval}, startedAt, store)
 	if err != nil {
 		return fmt.Errorf("ui: %w", err)
 	}
