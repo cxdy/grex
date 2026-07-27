@@ -51,7 +51,7 @@ func testUIRegistry(t *testing.T) (*fleet.Registry, string) {
 
 func TestNewDefaultsZeroStartedAt(t *testing.T) {
 	r, _ := testUIRegistry(t)
-	h, err := New(r, Config{PollInterval: 0}, time.Time{})
+	h, err := New(r, Config{PollInterval: 0}, time.Time{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestNewDefaultsZeroStartedAt(t *testing.T) {
 
 func TestFleetBadPaginationAndFilters(t *testing.T) {
 	r, _ := testUIRegistry(t)
-	h, err := New(r, Config{}, time.Now())
+	h, err := New(r, Config{}, time.Now(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestAgentAndStatusPartials(t *testing.T) {
 		Health: &protobufs.ComponentHealth{Healthy: false},
 	}, fleet.ConnMeta{ViaGateway: true, Transport: "ws"})
 
-	h, err := New(r, Config{PollInterval: time.Second}, time.Now().Add(-2*time.Hour))
+	h, err := New(r, Config{PollInterval: time.Second}, time.Now().Add(-2*time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestAgentAndStatusPartials(t *testing.T) {
 
 func TestFleetPageSortAndFiltersInHTML(t *testing.T) {
 	r, _ := testUIRegistry(t)
-	h, err := New(r, Config{}, time.Now())
+	h, err := New(r, Config{}, time.Now(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

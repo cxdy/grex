@@ -35,7 +35,7 @@ func TestUIFleetPage(t *testing.T) {
 		Health: &protobufs.ComponentHealth{Healthy: true},
 	}, fleet.ConnMeta{ViaGateway: true, Transport: "ws"})
 
-	h, err := New(r, Config{PollInterval: 5 * time.Second}, time.Now())
+	h, err := New(r, Config{PollInterval: 5 * time.Second}, time.Now(), nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestUIFilterQuery(t *testing.T) {
 			},
 		}, fleet.ConnMeta{})
 	}
-	h, err := New(r, Config{}, time.Now())
+	h, err := New(r, Config{}, time.Now(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestNormalizeAttrForm(t *testing.T) {
 			}},
 		},
 	}, fleet.ConnMeta{})
-	h, err := New(r, Config{}, time.Now())
+	h, err := New(r, Config{}, time.Now(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
