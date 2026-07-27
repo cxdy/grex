@@ -7,7 +7,7 @@ small and dependency direction is roughly:
 cmd/grex
   → server, opamp, api, ui, fleet, metrics, config, buildinfo, persistence
 api → fleet, buildinfo, persistence (StateStore fallback only, optional)
-ui  → api (filters), fleet
+ui  → api (filters), fleet, persistence (StateStore fallback only, optional)
 opamp → fleet
 metrics → fleet (collector only)
 server → config, prometheus
@@ -76,12 +76,12 @@ Tests: extensive registry lifecycle coverage in `registry_test.go`.
 | `Flusher` | own ticker, drains the dirty set into `StateStore` |
 | `PurgeWorker` / `NewPurgeClient` | River periodic job, purges soft-deleted rows past `fleet.soft_delete_duration` |
 
-`internal/api`'s `GET /api/agents/{id}` is the one read path wired to
+`internal/api`'s `GET /api/agents/{id}` and `internal/ui`'s agent-detail
+page (`GET /agents/{id}`, `GET /partials/agents/{id}`) are wired to
 `StateStore.GetAgent` so far — a registry miss falls back to it instead of
-an automatic 404. Everything else (`GET /api/agents`, `internal/ui`'s own
-agent-detail lookup) still doesn't read from it. See
-[Persistence](persistence.md) for the schema and the multi-instance write
-safeguards.
+an automatic 404. `GET /api/agents` (the list endpoint) still doesn't read
+from it. See [Persistence](persistence.md) for the schema and the
+multi-instance write safeguards.
 
 Tests: real-Postgres integration coverage (`postgres_test.go`,
 `purge_test.go`), throwaway container per test, skipped if docker isn't
@@ -131,6 +131,8 @@ Mount accepts an optional `wrap` for HTTP metrics instrumentation.
 - Routes: `/`, `/agents/{id}`, `/status`, htmx partials, `/static/`
 - Reuses `api.ParseFilters` so UI and API filter semantics match
 - Presentation helpers: relative time, status labels, YAML display, sort links
+- `/agents/{id}` and its htmx partial fall back to `persistence.StateStore`
+  (if configured) on a registry miss, same pattern as `internal/api`
 
 No fleet mutation; no separate SPA build.
 

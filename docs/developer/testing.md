@@ -64,11 +64,12 @@ on every PR; full smoke may be run locally or extended in CI later.
 
 ## Manual: DB read fallback
 
-Reproduces `GET /api/agents/{id}` answering for an agent this grex process
-never saw locally — the scenario `internal/api`'s `StateStore` fallback
-exists for (see [Persistence](persistence.md)). `cmd/seed-agent` writes
-fake agents straight into Postgres, bypassing `fleet.Registry` entirely,
-simulating "a sibling replica already flushed this."
+Reproduces `GET /api/agents/{id}` (and the UI's `/agents/{id}`) answering
+for an agent this grex process never saw locally — the scenario
+`internal/api` and `internal/ui`'s `StateStore` fallback exists for (see
+[Persistence](persistence.md)). `cmd/seed-agent` writes fake agents
+straight into Postgres, bypassing `fleet.Registry` entirely, simulating "a
+sibling replica already flushed this."
 
 ```sh
 # 1. Bring up Postgres and apply both schemas (grex's own + River's).
@@ -104,6 +105,9 @@ curl -s -w '\nHTTP %{http_code}\n' http://127.0.0.1:18080/api/agents/agent-from-
 
 curl -s -o /dev/null -w 'HTTP %{http_code}\n' http://127.0.0.1:18080/api/agents/totally-unknown
 # want: 404 (missing from both registry and database)
+
+curl -s -o /dev/null -w 'HTTP %{http_code}\n' http://127.0.0.1:18080/agents/agent-from-replica-1
+# want: 200, the UI agent-detail page
 ```
 
 Kill the `go run ./cmd/grex` background job and `docker compose down -v`
