@@ -119,7 +119,7 @@ flushes first.
 
 - **Guarded UPSERT, keyed on event time, not wall-clock time.** Every
   write is `INSERT ... ON CONFLICT (instance_uid) DO UPDATE SET ... WHERE
-  <table>.updated_at < EXCLUDED.updated_at`. The value bound to
+  table.updated_at < EXCLUDED.updated_at`. The value bound to
   `updated_at` is `Agent.LastSeen` — the timestamp of the actual OpAMP
   message — never the time the flush happened to run. A stale write from
   a replica that's behind becomes a no-op against a row that's already
