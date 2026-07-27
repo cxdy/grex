@@ -71,6 +71,20 @@ Routes currently instrumented match mounted API paths (`/api/agents`,
 Standard `prometheus` client Go and process collectors are registered on the
 server registry (memory, GC, CPU, FDs, etc.).
 
+### `grex_list_agents_store_fallback_errors_total`
+
+| | |
+|--|--|
+| Type | Counter |
+| Labels | `surface` (`api`/`ui`) |
+
+One fleet-wide list request (`GET /api/agents` or the UI fleet page) whose
+database merge failed — the response degraded to local registry data only
+rather than failing the request. See
+[Persistence: Fleet-wide list](../developer/persistence.md#fleet-wide-list)
+and [Read API](../developer/read-api.md)'s `partial` response field. Only
+increments when `database.host` is set.
+
 ### Auth metrics
 
 **Not present yet.** Auth outcome series arrive with the auth milestone

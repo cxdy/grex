@@ -97,10 +97,11 @@ func reportAgent(r *fleet.Registry, healthy bool, meta fleet.ConnMeta) string {
 }
 
 type testListResponse struct {
-	Agents []map[string]any `json:"agents"`
-	Total  int              `json:"total"`
-	Limit  int              `json:"limit"`
-	Offset int              `json:"offset"`
+	Agents  []map[string]any `json:"agents"`
+	Total   int              `json:"total"`
+	Limit   int              `json:"limit"`
+	Offset  int              `json:"offset"`
+	Partial bool             `json:"partial"`
 }
 
 func newMux(t *testing.T, r *fleet.Registry) http.Handler {
@@ -110,7 +111,12 @@ func newMux(t *testing.T, r *fleet.Registry) http.Handler {
 
 func newMuxWithStore(t *testing.T, r *fleet.Registry, store persistence.StateStore) http.Handler {
 	t.Helper()
-	h := New(r, time.Now(), store)
+	return newMuxWithStoreAndMetrics(t, r, store, nil)
+}
+
+func newMuxWithStoreAndMetrics(t *testing.T, r *fleet.Registry, store persistence.StateStore, m Metrics) http.Handler {
+	t.Helper()
+	h := New(r, time.Now(), store, m)
 	mux := http.NewServeMux()
 	h.Mount(mux, nil)
 	return mux
@@ -647,7 +653,7 @@ func TestGetAgentAndStatus(t *testing.T) {
 }
 
 func TestNewZeroStartedAt(t *testing.T) {
-	h := New(newRegistry(t), time.Time{}, nil)
+	h := New(newRegistry(t), time.Time{}, nil, nil)
 	if h.startedAt.IsZero() {
 		t.Fatal("startedAt should default when zero")
 	}
@@ -707,6 +713,11 @@ type fakeAPIStateStore struct {
 	ok     bool
 	err    error
 	called bool
+
+	// listAgents/listErr back ListAgents, exercised by listAgents' DB merge.
+	listAgents []fleet.Agent
+	listErr    error
+	listCalled bool
 }
 
 var _ persistence.StateStore = (*fakeAPIStateStore)(nil)
@@ -720,8 +731,9 @@ func (*fakeAPIStateStore) SaveAgent(context.Context, fleet.Agent) error {
 	panic("not used by getAgent")
 }
 
-func (*fakeAPIStateStore) ListAgents(context.Context) ([]fleet.Agent, error) {
-	panic("not used by getAgent")
+func (f *fakeAPIStateStore) ListAgents(context.Context) ([]fleet.Agent, error) {
+	f.listCalled = true
+	return f.listAgents, f.listErr
 }
 
 func (*fakeAPIStateStore) DeleteAgent(context.Context, string) error {
@@ -771,6 +783,22 @@ func TestGetAgentStoreMissIsStill404(t *testing.T) {
 	}
 }
 
+func TestGetAgentStoreSoftDeletedIsStill404(t *testing.T) {
+	r := newRegistry(t)
+	uid := uuid.New().String()
+	evictedAt := time.Now()
+	store := &fakeAPIStateStore{
+		agent: fleet.Agent{InstanceUID: uid, EvictedAt: &evictedAt},
+		ok:    true,
+	}
+
+	mux := newMuxWithStore(t, r, store)
+	code, _ := doGetRaw(t, mux, "/api/agents/"+uid)
+	if code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for a soft-deleted store agent", code)
+	}
+}
+
 func TestGetAgentStoreErrorIs500(t *testing.T) {
 	r := newRegistry(t)
 	store := &fakeAPIStateStore{err: errors.New("db unavailable")}
@@ -803,5 +831,146 @@ func TestGetAgentNoStoreConfiguredStaysNotFound(t *testing.T) {
 	code, _ := doGetRaw(t, mux, "/api/agents/"+uuid.New().String())
 	if code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 (byte-identical to no-database behavior)", code)
+	}
+}
+
+func TestListAgentsMergesStoreAgentsNotInRegistry(t *testing.T) {
+	r := newRegistry(t)
+	localID := reportAgent(r, true, fleet.ConnMeta{})
+	dbOnlyID := uuid.New().String()
+	store := &fakeAPIStateStore{listAgents: []fleet.Agent{{InstanceUID: dbOnlyID}}}
+
+	mux := newMuxWithStore(t, r, store)
+	code, raw := doGetRaw(t, mux, "/api/agents")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, raw)
+	}
+	if !store.listCalled {
+		t.Fatal("store.ListAgents was not called")
+	}
+	var resp testListResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 2 {
+		t.Fatalf("total = %d, want 2", resp.Total)
+	}
+	var ids []string
+	for _, a := range resp.Agents {
+		ids = append(ids, a["instance_uid"].(string))
+	}
+	if !slices.Contains(ids, localID) || !slices.Contains(ids, dbOnlyID) {
+		t.Errorf("ids = %v, want both %s and %s", ids, localID, dbOnlyID)
+	}
+}
+
+func TestListAgentsExcludesSoftDeletedStoreAgents(t *testing.T) {
+	r := newRegistry(t)
+	evictedAt := time.Now()
+	store := &fakeAPIStateStore{listAgents: []fleet.Agent{{InstanceUID: uuid.New().String(), EvictedAt: &evictedAt}}}
+
+	mux := newMuxWithStore(t, r, store)
+	code, raw := doGetRaw(t, mux, "/api/agents")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, raw)
+	}
+	var resp testListResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 0 {
+		t.Fatalf("total = %d, want 0 (soft-deleted store agent excluded)", resp.Total)
+	}
+}
+
+func TestListAgentsDegradesToRegistryOnStoreError(t *testing.T) {
+	r := newRegistry(t)
+	localID := reportAgent(r, true, fleet.ConnMeta{})
+	store := &fakeAPIStateStore{listErr: errors.New("db unavailable")}
+	metrics := &fakeAPIMetrics{}
+
+	mux := newMuxWithStoreAndMetrics(t, r, store, metrics)
+	code, raw := doGetRaw(t, mux, "/api/agents")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (store error should degrade, not fail the request): body=%s", code, raw)
+	}
+	if !store.listCalled {
+		t.Fatal("store.ListAgents was not called")
+	}
+	var resp testListResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 1 || resp.Agents[0]["instance_uid"] != localID {
+		t.Fatalf("resp = %+v, want registry-only agent %s", resp, localID)
+	}
+	if !resp.Partial {
+		t.Error("partial = false, want true when the store merge failed")
+	}
+	if metrics.listStoreFallbackFailedSurface != "api" {
+		t.Errorf("ListStoreFallbackFailed surface = %q, want %q", metrics.listStoreFallbackFailedSurface, "api")
+	}
+}
+
+func TestListAgentsMergeSuccessIsNotPartial(t *testing.T) {
+	r := newRegistry(t)
+	reportAgent(r, true, fleet.ConnMeta{})
+	store := &fakeAPIStateStore{}
+	metrics := &fakeAPIMetrics{}
+
+	mux := newMuxWithStoreAndMetrics(t, r, store, metrics)
+	_, raw := doGetRaw(t, mux, "/api/agents")
+	var resp testListResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Partial {
+		t.Error("partial = true, want false when the store merge succeeded")
+	}
+	if metrics.listStoreFallbackFailedSurface != "" {
+		t.Error("ListStoreFallbackFailed should not fire when the merge succeeded")
+	}
+}
+
+func TestListAgentsNoStoreIsNotPartial(t *testing.T) {
+	r := newRegistry(t)
+	reportAgent(r, true, fleet.ConnMeta{})
+
+	mux := newMux(t, r) // nil store, same as database.host unset
+	_, raw := doGetRaw(t, mux, "/api/agents")
+	var resp testListResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Partial {
+		t.Error("partial = true, want false when no store is configured")
+	}
+}
+
+// fakeAPIMetrics is a spy Metrics for exercising listAgents' fallback-error
+// counter.
+type fakeAPIMetrics struct {
+	listStoreFallbackFailedSurface string
+}
+
+func (f *fakeAPIMetrics) ListStoreFallbackFailed(surface string) {
+	f.listStoreFallbackFailedSurface = surface
+}
+
+func TestListAgentsNoStoreConfiguredSkipsMerge(t *testing.T) {
+	r := newRegistry(t)
+	reportAgent(r, true, fleet.ConnMeta{})
+	mux := newMux(t, r) // nil store, same as database.host unset
+
+	code, raw := doGetRaw(t, mux, "/api/agents")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, raw)
+	}
+	var resp testListResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 1 {
+		t.Fatalf("total = %d, want 1", resp.Total)
 	}
 }

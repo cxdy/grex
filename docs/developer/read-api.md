@@ -59,11 +59,24 @@ Multiple matchers and bools are **ANDed**.
   "agents": [ /* SummaryView */ ],
   "total": 42,
   "limit": 100,
-  "offset": 0
+  "offset": 0,
+  "partial": false
 }
 ```
 
 Summary items omit `effective_config` and `packages`.
+
+When `database.host` is set, this list merges the local registry with one
+`ListAgents` read from the database, so agents held only by a sibling grex
+replica are still included (see
+[Persistence](persistence.md#fleet-wide-list)). `partial` is `true`
+when that database read failed: the response then reflects **only** this
+replica's local registry, and agents live solely on a sibling replica are
+missing from `total`/`agents` until the database is reachable again. This
+never happens (`partial` is always `false`) when `database.host` is unset.
+A failure here does not fail the request — HTTP status stays 200, and
+`grex_list_agents_store_fallback_errors_total{surface="api"}` increments
+(see [Metrics reference](../observability/metrics.md)).
 
 ---
 

@@ -62,6 +62,7 @@ func TestEventCounterPlacement(t *testing.T) {
 	events := NewEvents(serverReg, fleetReg)
 	events.Message()
 	events.AgentConnected("agent-1")
+	events.ListStoreFallbackFailed("api")
 
 	names := func(reg *prometheus.Registry) map[string]bool {
 		t.Helper()
@@ -78,7 +79,7 @@ func TestEventCounterPlacement(t *testing.T) {
 
 	server := names(serverReg)
 	fleet := names(fleetReg)
-	if !server["grex_opamp_messages_total"] || server["grex_agent_connects_total"] {
+	if !server["grex_opamp_messages_total"] || !server["grex_list_agents_store_fallback_errors_total"] || server["grex_agent_connects_total"] {
 		t.Errorf("server registry families wrong: %v", server)
 	}
 	if !fleet["grex_agent_connects_total"] || fleet["grex_opamp_messages_total"] {
@@ -110,6 +111,9 @@ func TestEventCounters(t *testing.T) {
 	events.AuthDenied("no_cert")
 	events.AuthDenied("no_cert")
 	events.AuthAllowed("viewer")
+	events.ListStoreFallbackFailed("api")
+	events.ListStoreFallbackFailed("api")
+	events.ListStoreFallbackFailed("ui")
 
 	assert := func(name string, want float64, c prometheus.Collector) {
 		t.Helper()
@@ -132,6 +136,8 @@ func TestEventCounters(t *testing.T) {
 	assert("gateway_connections", 1, events.gatewayConnections)
 	assert("auth denied no_cert", 2, events.authDenied.WithLabelValues("no_cert"))
 	assert("auth allowed viewer", 1, events.authAllowed.WithLabelValues("viewer"))
+	assert("list store fallback failed api", 2, events.listStoreFallbackErrors.WithLabelValues("api"))
+	assert("list store fallback failed ui", 1, events.listStoreFallbackErrors.WithLabelValues("ui"))
 }
 
 func TestNewInfoGauge(t *testing.T) {

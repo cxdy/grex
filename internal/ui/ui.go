@@ -34,6 +34,17 @@ type Config struct {
 	PollInterval time.Duration
 }
 
+// Metrics is the subset of metrics.Events this package records against.
+type Metrics interface {
+	// ListStoreFallbackFailed counts one fleet-list request whose database
+	// merge failed. This package always calls it with surface "ui".
+	ListStoreFallbackFailed(surface string)
+}
+
+type noopMetrics struct{}
+
+func (noopMetrics) ListStoreFallbackFailed(string) {}
+
 // Handler serves HTML pages and static assets for the UI listener.
 type Handler struct {
 	registry *fleet.Registry
@@ -42,19 +53,28 @@ type Handler struct {
 	static   http.Handler
 	started  time.Time
 	store    persistence.StateStore
+	metrics  Metrics
 }
 
 // New builds a UI Handler. startedAt is shown on the status page. store is
 // optional (nil when database.host is unset, the same opt-in pattern
 // api.New uses): when set, the agent detail page falls back to it for an
-// agent fleet.Registry doesn't hold locally. Registry stays the fast path:
-// store is never consulted on a hit.
-func New(registry *fleet.Registry, cfg Config, startedAt time.Time, store persistence.StateStore) (*Handler, error) {
+// agent fleet.Registry doesn't hold locally, and the fleet list page merges
+// it in the same way (api.MergeAgents) — local registry plus whatever the
+// database has for agents this replica doesn't hold, local winning on
+// overlap. Registry stays the fast path: store is never consulted on a
+// hit, and a list-merge store error degrades to a registry-only result
+// (logged and counted via metrics, not failed) with a banner shown on the
+// fleet page. metrics is optional (nil records nothing).
+func New(registry *fleet.Registry, cfg Config, startedAt time.Time, store persistence.StateStore, metrics Metrics) (*Handler, error) {
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = 5 * time.Second
 	}
 	if startedAt.IsZero() {
 		startedAt = time.Now()
+	}
+	if metrics == nil {
+		metrics = noopMetrics{}
 	}
 	funcMap := template.FuncMap{
 		"shortUID":    shortUID,
@@ -102,6 +122,7 @@ func New(registry *fleet.Registry, cfg Config, startedAt time.Time, store persis
 		static:   http.FileServer(http.FS(staticFS)),
 		started:  startedAt,
 		store:    store,
+		metrics:  metrics,
 	}, nil
 }
 
@@ -127,6 +148,9 @@ type pageData struct {
 	Total  int
 	Limit  int
 	Offset int
+	// Partial is true when a configured store's ListAgents call failed and
+	// Agents reflects the local registry only.
+	Partial bool
 	// Sort (fleet table)
 	Sort  string // column key: status, name, role, version, via, transport, last_seen, instance
 	Order string // asc | desc
@@ -186,7 +210,21 @@ func (h *Handler) fleetData(r *http.Request) (pageData, error) {
 		return pageData{}, err
 	}
 
-	matched := api.MatchingAgents(h.registry.List(), filters)
+	localAgents := h.registry.List()
+	mergedAgents := localAgents
+	var partial bool
+	if h.store != nil {
+		dbAgents, err := h.store.ListAgents(r.Context())
+		if err != nil {
+			slog.Error("ui: list store fallback failed", "error", err)
+			h.metrics.ListStoreFallbackFailed("ui")
+			partial = true
+		} else {
+			mergedAgents = api.MergeAgents(localAgents, dbAgents)
+		}
+	}
+
+	matched := api.MatchingAgents(mergedAgents, filters)
 	sortKey, order := parseSort(q)
 	sortAgents(matched, sortKey, order)
 
@@ -206,6 +244,7 @@ func (h *Handler) fleetData(r *http.Request) (pageData, error) {
 		Total:        total,
 		Limit:        limit,
 		Offset:       offset,
+		Partial:      partial,
 		Sort:         sortKey,
 		Order:        order,
 		Healthy:      q.Get("healthy"),
@@ -244,6 +283,9 @@ func (h *Handler) agentData(r *http.Request) (pageData, bool) {
 		if err != nil {
 			slog.Error("ui: store lookup failed", "agent_id", id, "error", err)
 			return pageData{}, false
+		}
+		if ok && agent.EvictedAt != nil {
+			ok = false
 		}
 	}
 	if !ok {

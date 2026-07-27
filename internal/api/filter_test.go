@@ -3,6 +3,7 @@ package api
 import (
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/dennisme/grex/internal/fleet"
 )
@@ -144,6 +145,49 @@ func TestMatchAttrNotRegex(t *testing.T) {
 	}
 	if matchAttr(drop, m) {
 		t.Error("drop agent should not match !~ 9.+")
+	}
+}
+
+func TestMergeAgentsAddsDBOnlyAgents(t *testing.T) {
+	t.Parallel()
+	local := []fleet.Agent{{InstanceUID: "local-1"}}
+	db := []fleet.Agent{{InstanceUID: "db-1"}}
+
+	merged := MergeAgents(local, db)
+
+	if len(merged) != 2 {
+		t.Fatalf("len(merged) = %d, want 2", len(merged))
+	}
+}
+
+func TestMergeAgentsLocalWinsOnOverlap(t *testing.T) {
+	t.Parallel()
+	local := []fleet.Agent{{InstanceUID: "agent-1", HealthStatus: "local"}}
+	db := []fleet.Agent{{InstanceUID: "agent-1", HealthStatus: "stale-from-db"}}
+
+	merged := MergeAgents(local, db)
+
+	if len(merged) != 1 {
+		t.Fatalf("len(merged) = %d, want 1 (no duplicate for overlapping instance_uid)", len(merged))
+	}
+	if merged[0].HealthStatus != "local" {
+		t.Errorf("HealthStatus = %q, want local registry's value to win", merged[0].HealthStatus)
+	}
+}
+
+func TestMergeAgentsExcludesEvictedDBAgents(t *testing.T) {
+	t.Parallel()
+	evictedAt := time.Now()
+	local := []fleet.Agent{{InstanceUID: "local-1"}}
+	db := []fleet.Agent{{InstanceUID: "db-1", EvictedAt: &evictedAt}}
+
+	merged := MergeAgents(local, db)
+
+	if len(merged) != 1 {
+		t.Fatalf("len(merged) = %d, want 1 (soft-deleted db-only agent excluded)", len(merged))
+	}
+	if merged[0].InstanceUID != "local-1" {
+		t.Errorf("merged = %v, want only local-1", merged)
 	}
 }
 

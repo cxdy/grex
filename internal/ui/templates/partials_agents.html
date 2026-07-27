@@ -1,4 +1,10 @@
 {{define "partials/agents.html"}}
+{{if .Partial}}
+<div class="partial-banner" role="status">
+  Database unavailable — showing agents on this replica only. Agents held
+  only by a sibling replica may be missing.
+</div>
+{{end}}
 <div class="table-wrap">
   {{if eq .Total 0}}
   <div class="empty">

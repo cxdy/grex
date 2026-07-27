@@ -2,35 +2,61 @@
 
 `internal/persistence` is a durability layer under `fleet.Registry`, not a
 replacement for it. `fleet.Registry` stays the runtime source of truth for
-every live read path (API, UI, metrics); the single-agent read paths
-covered below are the only places grex reads from Postgres today. See
+every live read path (API, UI, metrics); the read paths covered below are
+the only places grex reads from Postgres today. See
 [Fleet state](fleet-state.md) for the in-memory model this sits
 underneath, and [SPEC: Agent state schema](../spec/design.md) for the full
 design rationale — this page covers what's actually built.
 
-## Status: opt-in, single-agent read paths wired in
+## Status: opt-in, read paths wired in
 
 Persistence only activates when `database.host` is set. Unset, grex behaves
 byte-identical to a build with no database code at all — no connection
 attempted, no background goroutines started.
 
 `fleet.Registry` is still authoritative and faster for everything it
-holds. The read paths wired to fall back to the database are `GET
-/api/agents/{id}` and `internal/ui`'s agent-detail page (`GET
+holds. Two shapes of read path fall back to the database. Both share the
+same rule: registry hits never consult the database, so there's no added
+latency for the common case. The fallback result reflects that other
+replica's last flush, not live state: `connected` and other session fields
+can be a few seconds stale, same tolerance already accepted for the write
+path.
+
+### Single-agent
+
+`GET /api/agents/{id}` and `internal/ui`'s agent-detail page (`GET
 /agents/{id}`, `GET /partials/agents/{id}`): on a registry miss, each
 handler calls `StateStore.GetAgent` before returning 404 — this is what
 makes an agent live on a *sibling* grex replica (already flushed to
 Postgres, never seen by this process's own registry) answerable instead of
-a false 404. Registry hits never consult the database — no added latency
-for the common case. The fallback result reflects that other replica's
-last flush, not live state: `connected` and other session fields can be a
-few seconds stale, same tolerance already accepted for the write path. The
-UI keeps the same byte-identical 404 for a genuine miss and for a store
-error alike (logged server-side, not leaked into the HTML response); the
-JSON API instead returns a distinct 500 on a store error.
+a false 404. The UI keeps the same byte-identical 404 for a genuine miss
+and for a store error alike (logged server-side, not leaked into the HTML
+response); the JSON API instead returns a distinct 500 on a store error.
 
-`GET /api/agents` (the list endpoint) doesn't have this fallback yet —
-future work, not built.
+### Fleet-wide list
+
+`GET /api/agents` and `internal/ui`'s fleet page (`GET /partials/agents`)
+merge the local registry with one `StateStore.ListAgents` call
+(`api.MergeAgents`) — local wins on overlap, it's fresher than the batched
+write path.
+
+Unlike the single-agent path, a store error here doesn't fail the request:
+local registry data is valid on its own regardless of database health, so
+the handler logs the error, increments
+`grex_list_agents_store_fallback_errors_total{surface="api"|"ui"}` (see
+[Metrics reference](../observability/metrics.md)), and serves a
+registry-only list instead of losing known-good data over a database
+hiccup. The JSON API's `partial` response field and the UI fleet page's
+banner both reflect that degraded state — see [Read API](read-api.md).
+
+### Soft-deleted rows
+
+Both `StateStore.GetAgent` and `StateStore.ListAgents` return soft-deleted
+rows too (`Agent.EvictedAt` set — see below); filtering those out of a
+"live" read is this API/UI layer's job, not the persistence layer's. Every
+read path above does that filtering: a soft-deleted agent is treated as
+not-found (single-agent) or excluded from the merge (list), never
+presented as if still live.
 
 ## Schema
 
