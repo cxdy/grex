@@ -6,7 +6,7 @@ small and dependency direction is roughly:
 ```text
 cmd/grex
   → server, opamp, api, ui, fleet, metrics, config, buildinfo, persistence
-api → fleet, buildinfo
+api → fleet, buildinfo, persistence (StateStore fallback only, optional)
 ui  → api (filters), fleet
 opamp → fleet
 metrics → fleet (collector only)
@@ -67,7 +67,7 @@ Tests: extensive registry lifecycle coverage in `registry_test.go`.
 
 ## `internal/persistence`
 
-**Role:** durability layer under `fleet.Registry`, opt-in, write-only.
+**Role:** durability layer under `fleet.Registry`, opt-in.
 
 | Type | Purpose |
 |------|---------|
@@ -76,7 +76,10 @@ Tests: extensive registry lifecycle coverage in `registry_test.go`.
 | `Flusher` | own ticker, drains the dirty set into `StateStore` |
 | `PurgeWorker` / `NewPurgeClient` | River periodic job, purges soft-deleted rows past `fleet.soft_delete_duration` |
 
-Nothing in `cmd/grex`'s runtime reads from `StateStore` yet. See
+`internal/api`'s `GET /api/agents/{id}` is the one read path wired to
+`StateStore.GetAgent` so far — a registry miss falls back to it instead of
+an automatic 404. Everything else (`GET /api/agents`, `internal/ui`'s own
+agent-detail lookup) still doesn't read from it. See
 [Persistence](persistence.md) for the schema and the multi-instance write
 safeguards.
 
@@ -108,7 +111,7 @@ Tests: unit `handler_test.go`, end-to-end `e2e_test.go`.
 | Route | Handler |
 |-------|---------|
 | `GET /api/agents` | Paginated, filtered list (`SummaryView`) |
-| `GET /api/agents/{id}` | Full `DetailView` |
+| `GET /api/agents/{id}` | Full `DetailView`; falls back to `persistence.StateStore` (if configured) on a registry miss |
 | `GET /api/status` | Build info + fleet counts |
 | `GET /api/attributes` | Distinct attribute keys (optional `prefix`) |
 | `GET /api/attributes/values` | Distinct values for `key` (optional `prefix`) |

@@ -7,16 +7,26 @@ Postgres today. See [Fleet state](fleet-state.md) for the in-memory model
 this sits underneath, and [SPEC: Agent state schema](../spec/design.md) for
 the full design rationale — this page covers what's actually built.
 
-## Status: opt-in, write-only
+## Status: opt-in, one read path wired in
 
 Persistence only activates when `database.host` is set. Unset, grex behaves
 byte-identical to a build with no database code at all — no connection
 attempted, no background goroutines started.
 
-`StateStore.GetAgent`/`ListAgents` exist and are exercised in tests, but
-nothing in `cmd/grex`'s runtime calls them. Wiring reads back in (API/UI
-falling back to the database for an agent a given replica doesn't hold
-locally) is future work, not built.
+`fleet.Registry` is still authoritative and faster for everything it
+holds. The one read path wired to fall back to the database is `GET
+/api/agents/{id}`: on a registry miss, `internal/api.Handler` calls
+`StateStore.GetAgent` before returning 404 — this is what makes an agent
+live on a *sibling* grex replica (already flushed to Postgres, never seen
+by this process's own registry) answerable instead of a false 404.
+Registry hits never consult the database — no added latency for the
+common case. The fallback result reflects that other replica's last
+flush, not live state: `connected` and other session fields can be a few
+seconds stale, same tolerance already accepted for the write path.
+
+`GET /api/agents` (the list endpoint) and `internal/ui`'s own agent-detail
+handler (a separate `registry.Get` call, not wired to this one) don't have
+this fallback yet — future work, not built.
 
 ## Schema
 
@@ -103,62 +113,64 @@ affinity to a particular replica: it can reconnect to a *different* grex
 on every connection, and nothing guarantees the replica holding older data
 flushes first.
 
-**Guarded UPSERT, keyed on event time, not wall-clock time.** Every write
-is `INSERT ... ON CONFLICT (instance_uid) DO UPDATE SET ... WHERE
-<table>.updated_at < EXCLUDED.updated_at`. The value bound to `updated_at`
-is `Agent.LastSeen` — the timestamp of the actual OpAMP message — never
-the time the flush happened to run. A stale write from a replica that's
-behind becomes a no-op against a row that's already newer, regardless of
-which replica's write reaches Postgres first.
+- **Guarded UPSERT, keyed on event time, not wall-clock time.** Every
+  write is `INSERT ... ON CONFLICT (instance_uid) DO UPDATE SET ... WHERE
+  <table>.updated_at < EXCLUDED.updated_at`. The value bound to
+  `updated_at` is `Agent.LastSeen` — the timestamp of the actual OpAMP
+  message — never the time the flush happened to run. A stale write from
+  a replica that's behind becomes a no-op against a row that's already
+  newer, regardless of which replica's write reaches Postgres first.
 
-**One whole-transaction gate, not three independent guards.**
-`agent_effective_config` has no per-row timestamp of its own (it's a
-wholesale delete-then-insert, not an upsert) — a table-by-table guard
-would leave it unprotected. Instead, `SaveAgent` checks whether the
-`agents` UPSERT actually applied (`RowsAffected() == 0` means the guard
-rejected it); if so, the whole transaction is abandoned before touching
-`agent_session` or `agent_effective_config` at all. This was a real gap
-found after the fact, not part of the original design — a stale write
-could otherwise still clobber `agent_effective_config` with old files
-after a newer replica had already written current ones.
+- **One whole-transaction gate, not three independent guards.**
+  `agent_effective_config` has no per-row timestamp of its own (it's a
+  wholesale delete-then-insert, not an upsert) — a table-by-table guard
+  would leave it unprotected. Instead, `SaveAgent` checks whether the
+  `agents` UPSERT actually applied (`RowsAffected() == 0` means the guard
+  rejected it); if so, the whole transaction is abandoned before touching
+  `agent_session` or `agent_effective_config` at all. This was a real gap
+  found after the fact, not part of the original design — a stale write
+  could otherwise still clobber `agent_effective_config` with old files
+  after a newer replica had already written current ones.
 
-**`first_seen` never moves forward.** It's in the `INSERT` column list but
-deliberately absent from `ON CONFLICT DO UPDATE SET`. A replica meeting an
-agent for the first time locally creates its own registry entry with
-`FirstSeen` set to *its own* connect time — wrong, if the agent connected
-to a different replica earlier. Omitting the column from the update means
-that wrong value is discarded on conflict; the true first-seen time,
-written once on the actual first `INSERT`, survives untouched.
+- **`first_seen` never moves forward.** It's in the `INSERT` column list
+  but deliberately absent from `ON CONFLICT DO UPDATE SET`. A replica
+  meeting an agent for the first time locally creates its own registry
+  entry with `FirstSeen` set to *its own* connect time — wrong, if the
+  agent connected to a different replica earlier. Omitting the column
+  from the update means that wrong value is discarded on conflict; the
+  true first-seen time, written once on the actual first `INSERT`,
+  survives untouched.
 
-**`Sweep`/`SetConnected` never touch `LastSeen`.** This is the invariant
-the whole guard depends on, documented on both methods in
-`internal/fleet/registry.go`. A disconnect detected well after an agent's
-last real message (e.g. by `Sweep`, possibly after the agent already
-reconnected elsewhere and flushed newer data) still carries the *old*
-timestamp, so that late write is correctly rejected instead of clobbering
-the reconnect. If `Sweep` were ever changed to stamp `LastSeen` at
-detection time, this guarantee breaks.
+- **`Sweep`/`SetConnected` never touch `LastSeen`.** This is the
+  invariant the whole guard depends on, documented on both methods in
+  `internal/fleet/registry.go`. A disconnect detected well after an
+  agent's last real message (e.g. by `Sweep`, possibly after the agent
+  already reconnected elsewhere and flushed newer data) still carries the
+  *old* timestamp, so that late write is correctly rejected instead of
+  clobbering the reconnect. If `Sweep` were ever changed to stamp
+  `LastSeen` at detection time, this guarantee breaks.
 
-**Reconnect-elsewhere is a read-side problem, not solved by writes alone
-— and not built yet.** No write-side timing can guarantee a replica's
-data lands before an agent reconnects elsewhere; the intended fix (see
-the SPEC) is the same mechanism that already handles a `grex` restart
-today: `ReportFullState`. A replica with no — or insufficiently fresh —
-local state for an `instance_uid` asks the agent to resend everything,
-rather than depending on flush timing at all. Extending that check to
-consult the database (not just local memory) on connect is what
-DB-read-fallback work would add later.
+- **Reconnect-elsewhere is a read-side problem, not solved by writes
+  alone — and not built yet.** No write-side timing can guarantee a
+  replica's data lands before an agent reconnects elsewhere; the intended
+  fix (see the SPEC) is the same mechanism that already handles a `grex`
+  restart today: `ReportFullState`. A replica with no — or insufficiently
+  fresh — local state for an `instance_uid` asks the agent to resend
+  everything, rather than depending on flush timing at all. Extending
+  that check to consult the database (not just local memory) on connect
+  is what DB-read-fallback work would add later.
 
-**Sharding Postgres is a non-goal for grex.** One logical endpoint per
-fleet, HA via a primary plus replica(s) (the CloudNativePG shape fits
-well on Kubernetes, which grex already targets) — not partition-per-shard.
-Grex's app code never routes a per-agent write or read to a specific
-shard. A consumer can shard their own Postgres deployment as their own
-infrastructure choice; grex itself is built assuming one writable logical
-endpoint, optionally a separate read-only one for future read traffic.
-Because of that, a future fleet-wide list read (a given replica's view
-merged with what the database has for agents it doesn't hold) is one
-query plus a merge, not a scatter-gather across shards.
+- **Sharding Postgres is a non-goal for grex.** One logical endpoint per
+  fleet, HA via a primary plus replica(s) (the CloudNativePG shape fits
+  well on Kubernetes, which grex already targets) — not
+  partition-per-shard. Grex's app code never routes a per-agent write or
+  read to a specific shard. A consumer can shard their own Postgres
+  deployment as their own infrastructure choice; grex itself is built
+  assuming one writable logical endpoint, optionally a separate read-only
+  one for future read traffic. Because of that, a future fleet-wide list
+  read (a given replica's view merged with what the database has for
+  agents it doesn't hold) is one query plus a merge, not a scatter-gather
+  across shards.
 
 ## Migrations
 

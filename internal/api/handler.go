@@ -13,6 +13,7 @@ import (
 
 	"github.com/dennisme/grex/internal/buildinfo"
 	"github.com/dennisme/grex/internal/fleet"
+	"github.com/dennisme/grex/internal/persistence"
 )
 
 const (
@@ -24,15 +25,24 @@ const (
 type Handler struct {
 	registry  *fleet.Registry
 	startedAt time.Time
+	store     persistence.StateStore
 }
 
 // New builds a Handler over the given registry. startedAt is used for uptime
-// in GET /api/status; pass time.Now() at process start.
-func New(registry *fleet.Registry, startedAt time.Time) *Handler {
+// in GET /api/status; pass time.Now() at process start. store is optional
+// (nil when database.host is unset, the same opt-in pattern persistence's
+// Flusher and purge job already use): when set, GET /api/agents/{id} falls
+// back to it for an agent fleet.Registry doesn't hold locally — an agent
+// live on a sibling grex replica, already flushed to the database. The
+// fallback reflects that replica's last flush, not live state: connected
+// and other session fields can be a few seconds stale, same tolerance
+// already accepted for the write path (see docs/developer/persistence.md).
+// Registry stays the fast path: store is never consulted on a hit.
+func New(registry *fleet.Registry, startedAt time.Time, store persistence.StateStore) *Handler {
 	if startedAt.IsZero() {
 		startedAt = time.Now()
 	}
-	return &Handler{registry: registry, startedAt: startedAt}
+	return &Handler{registry: registry, startedAt: startedAt, store: store}
 }
 
 // Mount registers API routes on mux. Paths use Go 1.22+ method patterns.
@@ -104,6 +114,14 @@ func (h *Handler) getAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agent, ok := h.registry.Get(id)
+	if !ok && h.store != nil {
+		var err error
+		agent, ok, err = h.store.GetAgent(r.Context(), id)
+		if err != nil {
+			http.Error(w, "lookup failed", http.StatusInternalServerError)
+			return
+		}
+	}
 	if !ok {
 		http.Error(w, "agent not found", http.StatusNotFound)
 		return

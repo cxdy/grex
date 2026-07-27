@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,6 +19,7 @@ import (
 	"github.com/open-telemetry/opamp-go/protobufs"
 
 	"github.com/dennisme/grex/internal/fleet"
+	"github.com/dennisme/grex/internal/persistence"
 )
 
 func testRegistry(t *testing.T, n int) *fleet.Registry {
@@ -102,7 +105,12 @@ type testListResponse struct {
 
 func newMux(t *testing.T, r *fleet.Registry) http.Handler {
 	t.Helper()
-	h := New(r, time.Now())
+	return newMuxWithStore(t, r, nil)
+}
+
+func newMuxWithStore(t *testing.T, r *fleet.Registry, store persistence.StateStore) http.Handler {
+	t.Helper()
+	h := New(r, time.Now(), store)
 	mux := http.NewServeMux()
 	h.Mount(mux, nil)
 	return mux
@@ -639,7 +647,7 @@ func TestGetAgentAndStatus(t *testing.T) {
 }
 
 func TestNewZeroStartedAt(t *testing.T) {
-	h := New(newRegistry(t), time.Time{})
+	h := New(newRegistry(t), time.Time{}, nil)
 	if h.startedAt.IsZero() {
 		t.Fatal("startedAt should default when zero")
 	}
@@ -688,5 +696,112 @@ func TestGetAgentNotFoundAndStatusMix(t *testing.T) {
 	}
 	if fleetStats["total"].(float64) < 3 {
 		t.Errorf("total = %v", fleetStats["total"])
+	}
+}
+
+// fakeAPIStateStore is a minimal spy StateStore for exercising getAgent's DB
+// fallback. Only GetAgent is exercised by the handler; the rest panic if
+// ever called, since nothing here should reach them.
+type fakeAPIStateStore struct {
+	agent  fleet.Agent
+	ok     bool
+	err    error
+	called bool
+}
+
+var _ persistence.StateStore = (*fakeAPIStateStore)(nil)
+
+func (f *fakeAPIStateStore) GetAgent(context.Context, string) (fleet.Agent, bool, error) {
+	f.called = true
+	return f.agent, f.ok, f.err
+}
+
+func (*fakeAPIStateStore) SaveAgent(context.Context, fleet.Agent) error {
+	panic("not used by getAgent")
+}
+
+func (*fakeAPIStateStore) ListAgents(context.Context) ([]fleet.Agent, error) {
+	panic("not used by getAgent")
+}
+
+func (*fakeAPIStateStore) DeleteAgent(context.Context, string) error {
+	panic("not used by getAgent")
+}
+
+func (*fakeAPIStateStore) SoftDeleteAgent(context.Context, string, time.Time) error {
+	panic("not used by getAgent")
+}
+
+func TestGetAgentFallsBackToStoreOnRegistryMiss(t *testing.T) {
+	r := newRegistry(t)
+	uid := uuid.New().String()
+	store := &fakeAPIStateStore{
+		agent: fleet.Agent{InstanceUID: uid, Healthy: true, HealthReported: true},
+		ok:    true,
+	}
+
+	mux := newMuxWithStore(t, r, store)
+	code, raw := doGetRaw(t, mux, "/api/agents/"+uid)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, raw)
+	}
+	if !store.called {
+		t.Fatal("store.GetAgent was not called on a registry miss")
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["instance_uid"] != uid {
+		t.Errorf("instance_uid = %v, want %v", got["instance_uid"], uid)
+	}
+}
+
+func TestGetAgentStoreMissIsStill404(t *testing.T) {
+	r := newRegistry(t)
+	store := &fakeAPIStateStore{ok: false}
+
+	mux := newMuxWithStore(t, r, store)
+	code, raw := doGetRaw(t, mux, "/api/agents/"+uuid.New().String())
+	if code != http.StatusNotFound {
+		t.Fatalf("status = %d, body=%s", code, raw)
+	}
+	if !store.called {
+		t.Fatal("store.GetAgent was not called on a registry miss")
+	}
+}
+
+func TestGetAgentStoreErrorIs500(t *testing.T) {
+	r := newRegistry(t)
+	store := &fakeAPIStateStore{err: errors.New("db unavailable")}
+
+	mux := newMuxWithStore(t, r, store)
+	code, _ := doGetRaw(t, mux, "/api/agents/"+uuid.New().String())
+	if code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", code)
+	}
+}
+
+func TestGetAgentRegistryHitNeverConsultsStore(t *testing.T) {
+	r := newRegistry(t)
+	id := reportAgent(r, true, fleet.ConnMeta{})
+	store := &fakeAPIStateStore{} // would panic if GetAgent were ever called with ok left false incorrectly
+
+	mux := newMuxWithStore(t, r, store)
+	code, _ := doGetRaw(t, mux, "/api/agents/"+id)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+	if store.called {
+		t.Error("store.GetAgent was called even though the registry already had the agent")
+	}
+}
+
+func TestGetAgentNoStoreConfiguredStaysNotFound(t *testing.T) {
+	r := newRegistry(t)
+	mux := newMux(t, r) // nil store, same as database.host unset
+	code, _ := doGetRaw(t, mux, "/api/agents/"+uuid.New().String())
+	if code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (byte-identical to no-database behavior)", code)
 	}
 }
