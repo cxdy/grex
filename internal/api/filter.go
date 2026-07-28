@@ -206,6 +206,30 @@ func ParseFilters(q url.Values) (Filters, error) {
 	return f, nil
 }
 
+// MergeAgents combines a replica's local registry view with a database
+// read, for a fleet-wide list spanning agents held by sibling replicas
+// (see docs/spec/design.md's "Reads: a single grex replica's ListAgents
+// merges local memory with one database query"). local wins on overlap —
+// it's fresher, since the database write path is intentionally batched. A
+// db agent with EvictedAt set is a soft-deleted row (see
+// docs/developer/persistence.md); it's excluded rather than presented as
+// live.
+func MergeAgents(local, db []fleet.Agent) []fleet.Agent {
+	merged := make([]fleet.Agent, len(local), len(local)+len(db))
+	copy(merged, local)
+	seen := make(map[string]bool, len(local))
+	for _, a := range local {
+		seen[a.InstanceUID] = true
+	}
+	for _, a := range db {
+		if seen[a.InstanceUID] || a.EvictedAt != nil {
+			continue
+		}
+		merged = append(merged, a)
+	}
+	return merged
+}
+
 // MatchingAgents returns agents satisfying every filter.
 func MatchingAgents(agents []fleet.Agent, f Filters) []fleet.Agent {
 	if f.Empty() {

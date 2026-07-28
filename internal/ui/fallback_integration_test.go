@@ -62,6 +62,46 @@ func TestAgentPageFallsBackToRealPostgres(t *testing.T) {
 	}
 }
 
+// TestFleetPartialFallsBackToRealPostgres covers the fleet-wide list
+// version of the same scenario: an agent flushed by some other grex
+// replica, never seen by this process's own fleet.Registry, still appears
+// in the fleet list through a real PostgresStore merge.
+func TestFleetPartialFallsBackToRealPostgres(t *testing.T) {
+	store := newUITestStore(t)
+	ctx := context.Background()
+
+	agent := fleet.Agent{
+		InstanceUID:  "agent-from-sibling-replica",
+		FirstSeen:    time.Now().UTC().Truncate(time.Microsecond),
+		LastSeen:     time.Now().UTC().Truncate(time.Microsecond),
+		Healthy:      true,
+		HealthStatus: "StatusOK",
+		Identifying:  map[string]string{"service.name": "otelcol-contrib"},
+		Connected:    true,
+	}
+	if err := store.SaveAgent(ctx, agent); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+
+	registry, localID := testUIRegistry(t)
+	mux := newMuxWithStore(t, registry, store)
+
+	req := httptest.NewRequest(http.MethodGet, "/partials/agents", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, localID) {
+		t.Errorf("body missing local registry agent %s", localID)
+	}
+	if !strings.Contains(body, "otelcol-contrib") {
+		t.Errorf("body missing agent from sibling replica: %s", body)
+	}
+}
+
 // newUITestStore starts a throwaway Postgres container, applies grex's own
 // migrations (internal/persistence/migrations), and returns a real
 // PostgresStore against it. Skips the calling test if docker isn't

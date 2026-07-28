@@ -59,11 +59,24 @@ Multiple matchers and bools are **ANDed**.
   "agents": [ /* SummaryView */ ],
   "total": 42,
   "limit": 100,
-  "offset": 0
+  "offset": 0,
+  "partial": false
 }
 ```
 
 Summary items omit `effective_config` and `packages`.
+
+When `database.host` is set, this list merges the local registry with one
+`ListAgents` read from the database, so agents held only by a sibling grex
+replica are still included (see
+[Persistence](persistence.md#fleet-wide-list)). `partial` is `true`
+when that database read failed: the response then reflects **only** this
+replica's local registry, and agents live solely on a sibling replica are
+missing from `total`/`agents` until the database is reachable again. This
+never happens (`partial` is always `false`) when `database.host` is unset.
+A failure here does not fail the request — HTTP status stays 200, and
+`grex_list_agents_store_fallback_errors_total{surface="api"}` increments
+(see [Metrics reference](../observability/metrics.md)).
 
 ---
 
@@ -149,29 +162,28 @@ See `fleet.AgentView` for field names. Notable points:
 
 Against the compose dev stack, the UI listener requires a client
 certificate mapped to a role (`deploy/compose/grex.yaml`'s
-`auth.role_mapping`); `deploy/compose/certs/user-admin.pem` is one of the
-dev certs `gen-certs.sh` mints for exactly this. `-k` skips CA verification
-here because the dev CA isn't in your system trust store, not because
-grex's TLS is optional.
+`auth.role_mapping`). Use
+[`scripts/gxcurl`](testing.md#scriptsgxcurl-mtls-curl-wrapper) for these —
+it supplies the `--cert`/`--key`/`-k` boilerplate so you never hand-build
+those paths; every example below goes through it except the last, which
+has no mTLS involved at all.
 
 ```sh
-CERTS=deploy/compose/certs
+scripts/gxcurl -u admin 'https://localhost:8080/api/agents?connected=true&limit=50' | jq
 
-curl -k --cert "$CERTS/user-admin.pem" --key "$CERTS/user-admin-key.pem" \
-  'https://localhost:8080/api/agents?connected=true&limit=50' | jq
+scripts/gxcurl -u admin 'https://localhost:8080/api/agents?match=service.name=~"otel.*"' | jq
 
-curl -k --cert "$CERTS/user-admin.pem" --key "$CERTS/user-admin-key.pem" \
-  'https://localhost:8080/api/agents?match=service.name=~"otel.*"' | jq
+scripts/gxcurl -u admin "https://localhost:8080/api/agents/${INSTANCE_UID}" | jq
 
-curl -k --cert "$CERTS/user-admin.pem" --key "$CERTS/user-admin-key.pem" \
-  "https://localhost:8080/api/agents/${INSTANCE_UID}" | jq
+scripts/gxcurl -u admin 'https://localhost:8080/api/status' | jq
 
-curl -k --cert "$CERTS/user-admin.pem" --key "$CERTS/user-admin-key.pem" \
-  'https://localhost:8080/api/status' | jq
-
-curl -k --cert "$CERTS/user-admin.pem" --key "$CERTS/user-admin-key.pem" \
-  'https://localhost:8080/api/attributes?prefix=service' | jq
+scripts/gxcurl -u admin 'https://localhost:8080/api/attributes?prefix=service' | jq
 ```
 
 If `ui_tls.client_ca_file` isn't set (mTLS off), the same requests work
-over plain `http://` with no `--cert`/`--key`/`-k`.
+over plain `http://` with no cert at all — `gxcurl` doesn't apply here
+since there's no cert to supply:
+
+```sh
+curl -s 'http://localhost:8080/api/status' | jq
+```

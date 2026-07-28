@@ -52,6 +52,7 @@ type Events struct {
 	gatewayConnections         prometheus.Gauge
 	authDenied                 *prometheus.CounterVec
 	authAllowed                *prometheus.CounterVec
+	listStoreFallbackErrors    *prometheus.CounterVec
 }
 
 // NewEvents builds the counters. OpAMP server-health counters register on
@@ -111,8 +112,12 @@ func NewEvents(server, fleet prometheus.Registerer) *Events {
 			Name: "grex_auth_allowed_total",
 			Help: "mTLS requests to the UI or telemetry listener allowed, by resolved role.",
 		}, []string{"role"}),
+		listStoreFallbackErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "grex_list_agents_store_fallback_errors_total",
+			Help: "Fleet-wide list requests where the database merge failed and only local registry data was served, by surface.",
+		}, []string{"surface"}),
 	}
-	server.MustRegister(e.messages, e.messageErrors, e.authDenied, e.authAllowed)
+	server.MustRegister(e.messages, e.messageErrors, e.authDenied, e.authAllowed, e.listStoreFallbackErrors)
 	fleet.MustRegister(
 		e.agentConnects, e.agentDisconnects, e.agentsEvicted, e.agentsPurged,
 		e.reports, e.missingAttributes, e.reservedAttributeConflicts,
@@ -173,6 +178,13 @@ func (e *Events) AuthDenied(reason string) { e.authDenied.WithLabelValues(reason
 // AuthAllowed counts one mTLS request allowed on the UI or telemetry
 // listener, by the role it resolved to.
 func (e *Events) AuthAllowed(role string) { e.authAllowed.WithLabelValues(role).Inc() }
+
+// ListStoreFallbackFailed counts one fleet-wide list request whose database
+// merge failed (surface: "api" or "ui"), degrading to a registry-only
+// result rather than failing the request — see docs/developer/persistence.md.
+func (e *Events) ListStoreFallbackFailed(surface string) {
+	e.listStoreFallbackErrors.WithLabelValues(surface).Inc()
+}
 
 var (
 	descAgentsConnected = prometheus.NewDesc(

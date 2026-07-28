@@ -156,6 +156,11 @@ type Agent struct {
 	// reports as an AgentDescription attribute; those values are shadowed
 	// in the read API by the top-level field of the same name.
 	ReservedAttributeConflicts []string `json:"reserved_attribute_conflicts,omitempty"`
+	// EvictedAt is set only on an Agent read back from persistence.StateStore
+	// for a row that's been soft-deleted (see docs/developer/persistence.md).
+	// Registry-held agents never set it. A read path presenting "live" fleet
+	// state must treat a non-nil EvictedAt the same as not-found.
+	EvictedAt *time.Time `json:"-"`
 }
 
 // Capabilities is AgentCapabilities decoded into named fields.

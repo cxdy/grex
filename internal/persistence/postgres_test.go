@@ -285,6 +285,70 @@ func TestListAgents(t *testing.T) {
 	}
 }
 
+func TestGetAgentReportsEvictedAt(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if err := store.SaveAgent(ctx, testAgent("agent-1", now)); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+
+	got, ok, err := store.GetAgent(ctx, "agent-1")
+	if err != nil || !ok {
+		t.Fatalf("GetAgent before soft delete: ok=%v err=%v", ok, err)
+	}
+	if got.EvictedAt != nil {
+		t.Fatalf("EvictedAt = %v, want nil before soft delete", got.EvictedAt)
+	}
+
+	if err := store.SoftDeleteAgent(ctx, "agent-1", now); err != nil {
+		t.Fatalf("SoftDeleteAgent: %v", err)
+	}
+
+	got, ok, err = store.GetAgent(ctx, "agent-1")
+	if err != nil || !ok {
+		t.Fatalf("GetAgent after soft delete: ok=%v err=%v, want still present (soft delete, not removed)", ok, err)
+	}
+	if got.EvictedAt == nil {
+		t.Fatal("EvictedAt = nil, want set after soft delete")
+	}
+}
+
+func TestListAgentsIncludesSoftDeletedWithEvictedAtSet(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if err := store.SaveAgent(ctx, testAgent("agent-1", now)); err != nil {
+		t.Fatalf("SaveAgent agent-1: %v", err)
+	}
+	if err := store.SaveAgent(ctx, testAgent("agent-2", now)); err != nil {
+		t.Fatalf("SaveAgent agent-2: %v", err)
+	}
+	if err := store.SoftDeleteAgent(ctx, "agent-1", now); err != nil {
+		t.Fatalf("SoftDeleteAgent: %v", err)
+	}
+
+	agents, err := store.ListAgents(ctx)
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(agents) != 2 {
+		t.Fatalf("ListAgents = %d agents, want 2 (soft-deleted row still included)", len(agents))
+	}
+	byID := make(map[string]fleet.Agent, len(agents))
+	for _, a := range agents {
+		byID[a.InstanceUID] = a
+	}
+	if byID["agent-1"].EvictedAt == nil {
+		t.Error("agent-1.EvictedAt = nil, want set")
+	}
+	if byID["agent-2"].EvictedAt != nil {
+		t.Error("agent-2.EvictedAt = non-nil, want nil")
+	}
+}
+
 func TestDeleteAgentCascades(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

@@ -812,6 +812,16 @@ a.page-link:focus-visible {
   cursor: default;
 }
 
+/* —— Partial data banner —— */
+.partial-banner {
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-4);
+  border-radius: var(--radius-sm);
+  color: var(--warning);
+  background: var(--warning-dim);
+  font-size: var(--text-sm);
+}
+
 /* —— Empty / error —— */
 .empty {
   padding: var(--space-6);

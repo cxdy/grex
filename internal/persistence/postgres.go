@@ -153,9 +153,9 @@ func (s *PostgresStore) SaveAgent(ctx context.Context, agent fleet.Agent) error 
 	return nil
 }
 
-// GetAgent reads one agent back, joining across all three tables. Not
-// wired into grex's runtime anywhere yet (no reset-on-load hydration, no
-// API/UI reads from the database) — this exists so SaveAgent is testable.
+// GetAgent reads one agent back, joining across all three tables. Includes
+// soft-deleted rows (Agent.EvictedAt set) — filtering those out for a
+// "live" view is the API/UI layer's job, not this one's; see Agent.EvictedAt.
 func (s *PostgresStore) GetAgent(ctx context.Context, instanceUID string) (fleet.Agent, bool, error) {
 	agents, err := s.queryAgents(ctx, `WHERE a.instance_uid = $1`, instanceUID)
 	if err != nil {
@@ -167,8 +167,8 @@ func (s *PostgresStore) GetAgent(ctx context.Context, instanceUID string) (fleet
 	return agents[0], true, nil
 }
 
-// ListAgents reads every agent back. Same "not wired in yet" caveat as
-// GetAgent.
+// ListAgents reads every agent back, including soft-deleted rows. Same
+// caveat as GetAgent.
 func (s *PostgresStore) ListAgents(ctx context.Context) ([]fleet.Agent, error) {
 	return s.queryAgents(ctx, "")
 }
@@ -179,7 +179,7 @@ func (s *PostgresStore) queryAgents(ctx context.Context, where string, args ...a
 			a.instance_uid, a.first_seen, a.last_seen, a.healthy, a.health_error,
 			a.health_status, a.health_start_time, a.health_status_time, a.health_reported,
 			a.capabilities, a.identifying, a.non_identifying, a.missing_attributes,
-			a.reserved_attribute_conflicts, a.packages,
+			a.reserved_attribute_conflicts, a.packages, a.evicted_at,
 			s.connected, s.remote_addr, s.tls_subject, s.via_gateway, s.transport,
 			s.description_reported, s.sequence_num
 		FROM agents a
@@ -217,6 +217,7 @@ func scanAgent(rows pgx.Rows) (fleet.Agent, error) {
 	var (
 		a                                     fleet.Agent
 		healthStartTime, healthStatusTime     *time.Time
+		evictedAt                             *time.Time
 		capabilities, sequenceNum             int64
 		identifying, nonIdentifying, packages []byte
 		connected, viaGateway                 *bool
@@ -226,7 +227,7 @@ func scanAgent(rows pgx.Rows) (fleet.Agent, error) {
 		&a.InstanceUID, &a.FirstSeen, &a.LastSeen, &a.Healthy, &a.HealthError,
 		&a.HealthStatus, &healthStartTime, &healthStatusTime, &a.HealthReported,
 		&capabilities, &identifying, &nonIdentifying, &a.MissingAttributes,
-		&a.ReservedAttributeConflicts, &packages,
+		&a.ReservedAttributeConflicts, &packages, &evictedAt,
 		&connected, &remoteAddr, &tlsSubject, &viaGateway, &transport,
 		&a.DescriptionReported, &sequenceNum)
 	if err != nil {
@@ -235,6 +236,7 @@ func scanAgent(rows pgx.Rows) (fleet.Agent, error) {
 
 	a.Capabilities = uint64(capabilities) //nolint:gosec // bit-for-bit storage, no arithmetic performed on this value
 	a.SequenceNum = uint64(sequenceNum)   //nolint:gosec // bit-for-bit storage, no arithmetic performed on this value
+	a.EvictedAt = evictedAt
 	if healthStartTime != nil {
 		a.HealthStartTime = *healthStartTime
 	}

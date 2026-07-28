@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -59,6 +60,51 @@ func TestGetAgentFallsBackToRealPostgres(t *testing.T) {
 	}
 	if got["healthy"] != true {
 		t.Errorf("healthy = %v, want true", got["healthy"])
+	}
+}
+
+// TestListAgentsFallsBackToRealPostgres covers the fleet-wide list version
+// of the same scenario: an agent flushed by some other grex replica, never
+// seen by this process's own fleet.Registry, still appears in GET
+// /api/agents through a real PostgresStore merge.
+func TestListAgentsFallsBackToRealPostgres(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	agent := fleet.Agent{
+		InstanceUID:  "agent-from-sibling-replica",
+		FirstSeen:    time.Now().UTC().Truncate(time.Microsecond),
+		LastSeen:     time.Now().UTC().Truncate(time.Microsecond),
+		Healthy:      true,
+		HealthStatus: "StatusOK",
+		Identifying:  map[string]string{"service.name": "otelcol-contrib"},
+		Connected:    true,
+	}
+	if err := store.SaveAgent(ctx, agent); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+
+	registry := newRegistry(t)
+	localID := reportAgent(registry, true, fleet.ConnMeta{})
+	mux := newMuxWithStore(t, registry, store)
+
+	code, raw := doGetRaw(t, mux, "/api/agents")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, raw)
+	}
+	var resp listResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 2 {
+		t.Fatalf("total = %d, want 2", resp.Total)
+	}
+	var ids []string
+	for _, a := range resp.Agents {
+		ids = append(ids, a.InstanceUID)
+	}
+	if !slices.Contains(ids, localID) || !slices.Contains(ids, agent.InstanceUID) {
+		t.Errorf("ids = %v, want both %s and %s", ids, localID, agent.InstanceUID)
 	}
 }
 
