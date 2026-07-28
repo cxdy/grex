@@ -24,4 +24,4 @@ exporters:
 # Remove this replace and go back to the plain observiq/observiq-otel-collector
 # image once the fix lands upstream in a tagged opampgateway release.
 replaces:
-  - github.com/observiq/bindplane-otel-contrib/extension/opampgateway => github.com/dennisme/bindplane-otel-contrib/extension/opampgateway v0.0.0-20260725053755-bd7c35a42de9
+  - github.com/observiq/bindplane-otel-contrib/extension/opampgateway => github.com/dennisme/bindplane-otel-contrib/extension/opampgateway v0.0.0-20260727195210-8648b7b07bfe
