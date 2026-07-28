@@ -62,6 +62,41 @@ Smoke is the multi-container honesty check: grex health, metrics, and
 collector log signals. CI builds the compose images (`docker compose build`)
 on every PR; full smoke may be run locally or extended in CI later.
 
+## `scripts/gxcurl`: mTLS curl wrapper
+
+The compose stack's UI and telemetry listeners require a client
+certificate mapped to a role (`deploy/compose/grex.yaml`'s
+`auth.role_mapping`) — every request needs `--cert`/`--key` against one of
+the identities `deploy/compose/gen-certs.sh` mints, plus `-k` since those
+dev certs' server SAN covers `DNS:localhost`, not the `127.0.0.1`
+addresses used locally (the same reason `deploy/compose/smoke.sh` passes
+`-k` itself). `scripts/gxcurl` wraps `curl` with that boilerplate so ad hoc
+poking against the running compose stack doesn't need it typed out each
+time:
+
+```sh
+just compose-up
+
+scripts/gxcurl https://127.0.0.1:8080/api/status                # -u admin (default)
+scripts/gxcurl -u alice https://127.0.0.1:8080/api/agents
+scripts/gxcurl -u mallory -o /dev/null -w '%{http_code}\n' https://127.0.0.1:8080/api/status
+# want: 403 — mallory has no role_mapping entry (see smoke.sh's ui_matrix)
+
+scripts/gxcurl -u prometheus https://127.0.0.1:9090/metrics/fleet
+```
+
+`-u <identity>` picks `deploy/compose/certs/<identity>.pem` (and its
+matching `-key.pem`); a bare name like `alice` expands to `user-alice` or
+`service-alice`, whichever file exists, so both the short names above and
+gen-certs.sh's full names (`agent-1`, `opamp-gateway-client`, etc.) work.
+Default identity is `admin`. `GXCURL_CERTS` overrides the certs directory
+if you're not running from the repo root. Missing certs point at `docker
+compose up gen-certs` rather than failing silently.
+
+Not useful against OpAMP (`:4320`) — that's a websocket protocol, not
+something `curl` speaks meaningfully — and not needed for the plaintext
+`go run ./cmd/grex` recipe below, which has no `*_tls` config at all.
+
 ## Manual: DB read fallback
 
 Reproduces `GET /api/agents/{id}` (and the UI's `/agents/{id}`) answering
@@ -108,6 +143,40 @@ curl -s -o /dev/null -w 'HTTP %{http_code}\n' http://127.0.0.1:18080/api/agents/
 
 curl -s -o /dev/null -w 'HTTP %{http_code}\n' http://127.0.0.1:18080/agents/agent-from-replica-1
 # want: 200, the UI agent-detail page
+```
+
+### Fleet-wide list merge and the partial-data banner
+
+With the same grex process from step 3 still running, confirm the
+fleet-wide list merge (not just single-agent) and the degrade path it
+falls back to when Postgres is unreachable:
+
+```sh
+# 5. Confirm the merge: the seeded agents show up in the fleet-wide list
+#    even though this process's own registry never saw them.
+curl -s http://127.0.0.1:18080/api/agents | jq '.partial, (.agents | map(.instance_uid))'
+# want: false, an array including "agent-from-replica-1" and
+# "agent-from-replica-2"
+
+open http://127.0.0.1:18080/  # or curl; want both seeded agents in the table, no banner
+
+# 6. Break the database merge without stopping grex, to see the degrade
+#    path: partial:true, the UI banner, and the fallback metric.
+docker compose stop postgres
+
+curl -s http://127.0.0.1:18080/api/agents | jq '.partial'
+# want: true (agents/total now reflect the local registry only)
+
+open http://127.0.0.1:18080/  # or curl; want a "Database unavailable" banner above the table
+
+curl -s http://127.0.0.1:19090/metrics | grep grex_list_agents_store_fallback_errors_total
+# want: grex_list_agents_store_fallback_errors_total{surface="api"} and
+# {surface="ui"} both >= 1, one per surface hit above
+
+# 7. Bring Postgres back and confirm the banner clears.
+docker compose start postgres
+curl -s http://127.0.0.1:18080/api/agents | jq '.partial'
+# want: false again
 ```
 
 Kill the `go run ./cmd/grex` background job and `docker compose down -v`

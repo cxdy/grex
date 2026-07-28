@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# gxcurl wraps curl with the mTLS client certificate needed to hit grex's
+# UI/telemetry listeners locally against the compose dev stack's certs
+# (see deploy/compose/gen-certs.sh). Mirrors deploy/compose/smoke.sh's cert
+# handling: -k, because the dev server cert's SAN covers DNS:localhost, not
+# the 127.0.0.1 addresses these local recipes target.
+#
+# Usage:
+#   gxcurl [-u <identity>] <curl args...>
+#
+# <identity> selects deploy/compose/certs/<identity>.pem (and its matching
+# -key.pem). A bare name without a user-/service- prefix (e.g. "admin",
+# "alice", "prometheus") expands to user-<name> or service-<name>,
+# whichever file exists, so gen-certs.sh's full names still work too.
+# Default identity: admin (user-admin.pem).
+#
+# Identities from gen-certs.sh: user-admin, user-alice, user-mallory,
+# service-prometheus (SPIFFE-mapped, for the UI/telemetry listeners), plus
+# agent-1, agent-2, gateway, opamp-gateway-client (OpAMP clients — not
+# curl-friendly, opamp is a websocket protocol, but the certs resolve too).
+#
+# Examples:
+#   gxcurl https://127.0.0.1:8080/api/status
+#   gxcurl -u alice https://127.0.0.1:8080/api/agents
+#   gxcurl -u mallory -o /dev/null -w '%{http_code}\n' https://127.0.0.1:8080/api/status
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+certs="${GXCURL_CERTS:-$repo_root/deploy/compose/certs}"
+identity="admin"
+
+if [ "${1:-}" = "-u" ]; then
+    if [ $# -lt 2 ]; then
+        echo "gxcurl: -u requires an identity name" >&2
+        exit 1
+    fi
+    identity="$2"
+    shift 2
+fi
+
+resolve_cert_name() {
+    name="$1"
+    for candidate in "$name" "user-$name" "service-$name"; do
+        if [ -f "$certs/$candidate.pem" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    echo "gxcurl: no cert for '$name' in $certs (want $name.pem, user-$name.pem, or service-$name.pem)" >&2
+    if [ ! -d "$certs" ]; then
+        echo "gxcurl: $certs does not exist — run 'docker compose up gen-certs' first" >&2
+    fi
+    exit 1
+}
+
+cert_name=$(resolve_cert_name "$identity")
+cert="$certs/$cert_name.pem"
+key="$certs/$cert_name-key.pem"
+
+if [ ! -f "$key" ]; then
+    echo "gxcurl: missing $key" >&2
+    exit 1
+fi
+
+exec curl -k --cert "$cert" --key "$key" "$@"
