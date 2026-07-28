@@ -69,10 +69,16 @@ certificate mapped to a role (`deploy/compose/grex.yaml`'s
 `auth.role_mapping`) — every request needs `--cert`/`--key` against one of
 the identities `deploy/compose/gen-certs.sh` mints, plus `-k` since those
 dev certs' server SAN covers `DNS:localhost`, not the `127.0.0.1`
-addresses used locally (the same reason `deploy/compose/smoke.sh` passes
-`-k` itself). `scripts/gxcurl` wraps `curl` with that boilerplate so ad hoc
-poking against the running compose stack doesn't need it typed out each
-time:
+addresses used locally. `scripts/gxcurl` wraps `curl` with that
+boilerplate so ad hoc poking against the running compose stack doesn't
+need it typed out each time — `deploy/compose/smoke.sh`'s own cert-bearing
+checks (`ui_matrix`, the `/metrics` and fleet-metric calls) go through it
+too now, so the CI smoke test and manual poking share one interface
+instead of two copies of the same cert logic. **Use `scripts/gxcurl` for
+any mTLS request against the compose stack — don't hand-roll
+`curl --cert/--key/-k`.** The one exception is hitting an endpoint with no
+client cert at all (e.g. asserting a bare `curl` gets 403), since there's
+no cert for gxcurl to supply in that case.
 
 ```sh
 just compose-up
