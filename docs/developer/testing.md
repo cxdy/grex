@@ -138,7 +138,10 @@ database:
   dbname: grex
   sslmode: disable
 EOF
-go run ./cmd/grex -config /tmp/db-fallback-config.yaml &
+go run ./cmd/grex -config /tmp/db-fallback-config.yaml > /tmp/db-fallback-grex.log 2>&1 &
+# grex's log lines interleave with your shell if left on stdout; redirect
+# to a file and tail it in a separate terminal instead:
+#   tail -f /tmp/db-fallback-grex.log
 
 # 4. Fetch an id this process's own registry never reported.
 curl -s -w '\nHTTP %{http_code}\n' http://127.0.0.1:18080/api/agents/agent-from-replica-1
@@ -188,7 +191,8 @@ curl -s http://127.0.0.1:18080/api/agents | jq '.partial'
 Kill the `go run ./cmd/grex` background job and `docker compose down -v`
 when done — it's easy to leave a stray process holding the ports across
 terminal sessions; check with `lsof -i :14320 -i :18080 -i :19090` if a
-later run reports "address already in use."
+later run reports "address already in use." `/tmp/db-fallback-grex.log`
+is worth a look first if anything above didn't return what you expected.
 
 ## What not to do
 
