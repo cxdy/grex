@@ -67,10 +67,18 @@ services:
   envoy:
     # Inner load-balancing tier: least-connections across grex/grex-2.
     # opamp-gateway dials this instead of a single grex instance directly.
+    # --concurrency 1: Envoy's per-worker-thread connection accounting means
+    # near-simultaneous connections handled by different threads can each
+    # see "0 active" and pick the same host, coincidence, not a bug in the
+    # LB policy. Single-threaded is fine at this connection volume; a real
+    # multi-connection-per-second deployment would want more threads and
+    # would not see this race at any meaningful frequency (see
+    # docs/admin/high-availability.md).
     image: envoyproxy/envoy:v1.33.0
-    command: ["-c", "/etc/envoy/envoy.yaml"]
+    command: ["-c", "/etc/envoy/envoy.yaml", "--concurrency", "1"]
     volumes:
       - ./deploy/compose/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./deploy/compose/envoy-healthcheck.sh:/envoy-healthcheck.sh:ro
     ports:
       - "127.0.0.1:9901:9901"
     depends_on:
@@ -79,8 +87,12 @@ services:
       grex-2:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "bash -c '(exec 3<>/dev/tcp/127.0.0.1/9901) 2>/dev/null'"]
-      interval: 5s
+      # Not just "is the admin port up" — see envoy-healthcheck.sh: waits
+      # for both grex backends to be discovered and health-checked, so
+      # opamp-gateway (which depends on envoy being healthy) never opens
+      # its upstream connections while Envoy still only knows about one.
+      test: ["CMD", "bash", "/envoy-healthcheck.sh"]
+      interval: 2s
       timeout: 3s
       retries: 12
 

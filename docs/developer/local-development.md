@@ -68,6 +68,17 @@ and `deploy/charts/smoke.sh --help`.
   delete `deploy/compose/certs/server*.pem` (or the whole directory) and
   rerun `gen-certs` if TLS handshakes to `grex-2` or through `envoy` fail
   hostname verification.
+- Occasionally `smoke.sh` reports both gateway-relayed agents landing on
+  one grex replica instead of splitting across both — this is expected,
+  not a regression. `opamp-gateway` opens its 2 upstream connections
+  microseconds apart at startup, tighter than a TCP handshake, so Envoy's
+  `LEAST_REQUEST` active-connection count sometimes has no signal yet for
+  the second pick. `smoke.sh` reports this, it doesn't fail on it; see the
+  comments in `deploy/compose/envoy.yaml` and
+  `deploy/compose/opamp-gateway.yaml` for why this is left as-is rather
+  than worked around (switching to `ROUND_ROBIN` or raising `connections`
+  would either give up the production LB policy's actual justification or
+  just mask the race behind more trials).
 
 ## Documentation site
 

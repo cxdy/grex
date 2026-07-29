@@ -7,6 +7,13 @@ extensions:
   opampgateway:
     server:
       endpoint: wss://envoy:4320/v1/opamp
+      # 2, one per grex replica, deliberately not bumped higher: both
+      # connects fire microseconds apart at startup (confirmed via this
+      # extension's own logs), tighter than a TCP handshake, so they
+      # sometimes both land on the same grex replica through Envoy's
+      # LEAST_REQUEST tie-break — see deploy/compose/smoke.sh's note on
+      # this. Left as-is rather than raising this to mask the race behind
+      # more trials.
       connections: 2
       tls:
         ca_file: /certs/ca.pem
