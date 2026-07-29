@@ -12,21 +12,36 @@
 ## Target topology
 
 ```text
-   otelcol agents
-        │
+   otelcol agent / Supervisor
+        │                           opamp-go client tries every address
+        │                           in a DNS answer (falls back to plain
+        │                           net.Dialer) — connect-time failover
+        │                           for free, no LB needed at this hop
         ▼
-   OpAMP gateway(s)                 (opampgateway extension, own
-        │                            least-conn across its own N
-        │                            upstream connections only)
+   multi-answer DNS (A/AAAA)        large agent population self-averages
+        │                           across the gateway pool; only a risk
+        │                           under mass-reconnect bursts (see
+        │                           Scaling with gateways)
+        ▼
+   OpAMP gateway pool (N)           opampgateway extension: least-conn
+        │                          only across its OWN upstream pool
+        │                          (server.connections), never across
+        │                          grex replicas
         ▼
    cloud TCP load balancer          via the cloud controller manager
    (flow-hash / round robin)        (Service type=LoadBalancer) — required
         │                           plumbing to get external traffic into
         │                           the cluster, not a tuning knob
         ▼
-   Envoy (N instances)              least-connections across grex
+   Envoy (N instances)              THE load-bearing LB in this whole
+        │                           chain: least-connections across grex
         │                           replicas (TCP passthrough — grex's
-        │                           own mTLS termination is unchanged)
+        │                           own mTLS termination is unchanged).
+        │                           Fixes the small-N problem DNS/round
+        │                           robin can't — a gateway's upstream
+        │                           pool is few connections, one bad pick
+        │                           is 100% skew, unlike the large agent
+        │                           population above.
         ▼
    grex (N replicas)                stateless app tier; memory is a
         │                           cache over Postgres, never its own
@@ -41,6 +56,14 @@ A client-facing LB (global or per-DC) may sit in front of the gateway tier
 too — that hop is about routing clients to a nearby gateway and is
 independent of everything below it; dropping it for a single-DC deployment
 changes nothing about the rest of this topology.
+
+Only one Envoy tier is load-bearing here: gateway-to-grex. Agent-to-gateway
+does not need one by default — DNS plus the client's own connect-time
+fallback across the RRset is enough, because the agent population is large
+enough to self-average the way a gateway's small upstream-connection count
+cannot. A second Envoy tier in front of the gateway pool is only worth
+adding if mass-reconnect skew is an observed problem, not a default part of
+this topology.
 
 ## Layers
 
