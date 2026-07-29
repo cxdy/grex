@@ -2,7 +2,10 @@
 # endpoint, mirroring the intended production layout: server health scraped
 # fast, fleet series scraped at heartbeat granularity with its own
 # sample_limit so a fleet cardinality blowout cannot drop server health
-# samples.
+# samples. Each job scrapes both grex replicas as separate targets — same
+# shape as production, replicas told apart by Prometheus's own `instance`
+# label, no grex-side change needed (see docs/spec/design.md's Load
+# balancing section).
 global:
   scrape_interval: 15s
 
@@ -18,7 +21,7 @@ scrape_configs:
       cert_file: /certs/service-prometheus.pem
       key_file: /certs/service-prometheus-key.pem
     static_configs:
-      - targets: ["grex:9090"]
+      - targets: ["grex:9090", "grex-2:9090"]
 
   - job_name: grex-fleet
     scheme: https
@@ -30,7 +33,7 @@ scrape_configs:
       cert_file: /certs/service-prometheus.pem
       key_file: /certs/service-prometheus-key.pem
     static_configs:
-      - targets: ["grex:9090"]
+      - targets: ["grex:9090", "grex-2:9090"]
 
   - job_name: otelcol
     static_configs:
@@ -38,6 +41,13 @@ scrape_configs:
           - "otelcol-agent-1:8888"
           - "otelcol-agent-2:8888"
           - "otelcol-gateway:8888"
+
+  # Envoy's own per-upstream connection-count stats, to compare directly
+  # against grex_agents_connected per replica.
+  - job_name: envoy
+    metrics_path: /stats/prometheus
+    static_configs:
+      - targets: ["envoy:9901"]
 
   - job_name: grex-postgres
     static_configs:

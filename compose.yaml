@@ -34,6 +34,56 @@ services:
       timeout: 3s
       retries: 12
 
+  grex-2:
+    # Second grex replica, purely to exercise Envoy's least-connections
+    # balancing locally (see envoy service below and
+    # docs/spec/design.md's Load balancing section). Same image/config as
+    # grex; nothing shared between the two beyond the config file and certs,
+    # matching 1.0's in-memory-per-process fleet state.
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["-config", "/etc/grex/config.yaml"]
+    ports:
+      - "127.0.0.1:8081:8080"
+      - "127.0.0.1:9092:9090"
+      - "127.0.0.1:4321:4320"
+    volumes:
+      - ./deploy/compose/grex.yaml:/etc/grex/config.yaml:ro
+      - ./deploy/compose/certs:/certs:ro
+    depends_on:
+      gen-certs:
+        condition: service_completed_successfully
+      river-migrate:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://127.0.0.1:9090/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  envoy:
+    # Inner load-balancing tier: least-connections across grex/grex-2.
+    # opamp-gateway dials this instead of a single grex instance directly.
+    image: envoyproxy/envoy:v1.33.0
+    command: ["-c", "/etc/envoy/envoy.yaml"]
+    volumes:
+      - ./deploy/compose/envoy.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "127.0.0.1:9901:9901"
+    depends_on:
+      grex:
+        condition: service_healthy
+      grex-2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '(exec 3<>/dev/tcp/127.0.0.1/9901) 2>/dev/null'"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
   prometheus:
     image: prom/prometheus:v3.13.1
     ports:
@@ -43,6 +93,10 @@ services:
       - ./deploy/compose/certs:/certs:ro
     depends_on:
       grex:
+        condition: service_healthy
+      grex-2:
+        condition: service_healthy
+      envoy:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/-/healthy"]
@@ -139,7 +193,7 @@ services:
       - ./deploy/compose/opamp-gateway.yaml:/etc/otelcol/config.yaml:ro
       - ./deploy/compose/certs:/certs:ro
     depends_on:
-      grex:
+      envoy:
         condition: service_healthy
 
   otelcol-agent-1:

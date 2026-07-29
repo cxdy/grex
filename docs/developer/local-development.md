@@ -56,6 +56,18 @@ and `deploy/charts/smoke.sh --help`.
 - Plaintext OpAMP is fine for unit tests (`internal/testcert` when TLS is needed)
 - Compose enables mTLS and `log.level: debug` / `json` for grex
 - UI poll interval defaults to 5s; lower it only if you are UI-polishing
+- Compose runs two grex instances (`grex`, `grex-2`) behind an Envoy
+  least-connections tier (`deploy/compose/envoy.yaml`), so `opamp-gateway`'s
+  upstream connections actually spread across replicas — see
+  [Scaling with gateways](../admin/scaling-with-gateways.md#load-balancing-across-grex-replicas).
+  `grex-2` is reachable directly on host ports `8081`/`9092`/`4321` (same
+  layout as `grex`'s `8080`/`9090`/`4320`) for `gxcurl`/debugging.
+- If certs generated before this topology existed are still on disk
+  (`deploy/compose/certs/`), `gen-certs.sh`'s per-file idempotency means the
+  server cert won't pick up the new `grex-2`/`envoy` SANs automatically —
+  delete `deploy/compose/certs/server*.pem` (or the whole directory) and
+  rerun `gen-certs` if TLS handshakes to `grex-2` or through `envoy` fail
+  hostname verification.
 
 ## Documentation site
 
