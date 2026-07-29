@@ -56,6 +56,29 @@ and `deploy/charts/smoke.sh --help`.
 - Plaintext OpAMP is fine for unit tests (`internal/testcert` when TLS is needed)
 - Compose enables mTLS and `log.level: debug` / `json` for grex
 - UI poll interval defaults to 5s; lower it only if you are UI-polishing
+- Compose runs two grex instances (`grex`, `grex-2`) behind an Envoy
+  least-connections tier (`deploy/compose/envoy.yaml`), so `opamp-gateway`'s
+  upstream connections actually spread across replicas — see
+  [Scaling with gateways](../admin/scaling-with-gateways.md#load-balancing-across-grex-replicas).
+  `grex-2` is reachable directly on host ports `8081`/`9092`/`4321` (same
+  layout as `grex`'s `8080`/`9090`/`4320`) for `gxcurl`/debugging.
+- If certs generated before this topology existed are still on disk
+  (`deploy/compose/certs/`), `gen-certs.sh`'s per-file idempotency means the
+  server cert won't pick up the new `grex-2`/`envoy` SANs automatically —
+  delete `deploy/compose/certs/server*.pem` (or the whole directory) and
+  rerun `gen-certs` if TLS handshakes to `grex-2` or through `envoy` fail
+  hostname verification.
+- Occasionally `smoke.sh` reports both gateway-relayed agents landing on
+  one grex replica instead of splitting across both — this is expected,
+  not a regression. `opamp-gateway` opens its 2 upstream connections
+  microseconds apart at startup, tighter than a TCP handshake, so Envoy's
+  `LEAST_REQUEST` active-connection count sometimes has no signal yet for
+  the second pick. `smoke.sh` reports this, it doesn't fail on it; see the
+  comments in `deploy/compose/envoy.yaml` and
+  `deploy/compose/opamp-gateway.yaml` for why this is left as-is rather
+  than worked around (switching to `ROUND_ROBIN` or raising `connections`
+  would either give up the production LB policy's actual justification or
+  just mask the race behind more trials).
 
 ## Documentation site
 

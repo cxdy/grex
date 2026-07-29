@@ -55,3 +55,11 @@ Product intent lives under [SPEC](../spec/index.md). The design
 - Go **1.26+**
 - `just build` / `just test` / `just lint` (`golangci-lint`)
 - Docker Compose for integration-style smoke tests
+
+## Prior art
+
+- [opampcommander](https://github.com/minuk-dev/opampcommander) — another
+  OpAMP control plane, similar goals (fleet view, remote config, RBAC). Uses
+  MongoDB plus optional Kafka event bus for multi-node coordination, versus
+  grex's Postgres (planned) and a `kubectl`-style CLI (`opampctl`), versus
+  grex's config-file-only binary today.

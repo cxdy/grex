@@ -1,0 +1,66 @@
+# Inner load-balancing tier in front of the grex replicas (see
+# docs/spec/design.md's "Load balancing: an LB in front of grex is required,
+# not optional"). Pure TCP passthrough: Envoy never terminates or inspects
+# the OpAMP TLS/mTLS traffic, it only picks which grex backend gets the raw
+# bytes, so grex's own mTLS boundary at the OpAMP listener is unchanged.
+# opamp-gateway dials this listener instead of a single grex instance
+# directly (see opamp-gateway.yaml's server.endpoint).
+admin:
+  address:
+    socket_address: { address: 0.0.0.0, port_value: 9901 }
+
+static_resources:
+  listeners:
+    - name: opamp_ingress
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 4320 }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.tcp_proxy
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+                stat_prefix: opamp_tcp
+                cluster: grex_opamp
+
+  clusters:
+    - name: grex_opamp
+      connect_timeout: 1s
+      type: STRICT_DNS
+      dns_lookup_family: V4_ONLY
+      # Default is 5s; a newly-started grex-2 shouldn't sit outside the
+      # cluster's known host set for that long during compose startup.
+      dns_refresh_rate: 1s
+      # LEAST_REQUEST has no HTTP request concept for a raw TCP cluster; it
+      # falls back to active-connection count, i.e. least-connections. New
+      # replicas start at zero and are naturally preferred until they catch
+      # up (see docs/spec/design.md). That count only increments once a
+      # connection is established, not at selection time — so two
+      # near-simultaneous selections (opamp-gateway opens its upstream
+      # pool microseconds apart at startup, see opamp-gateway.yaml) can
+      # both see "0 active" and tie-break onto the same replica. Not fixed
+      # by concurrency/health-check/DNS tuning (those cover different,
+      # real races); kept as LEAST_REQUEST anyway rather than switching to
+      # ROUND_ROBIN, since production's actual justification for this
+      # policy — a newly scaled-up replica preferentially catching up — is
+      # more valuable than perfect determinism on a 2-connection local-dev
+      # startup burst. See deploy/compose/smoke.sh's note on this.
+      lb_policy: LEAST_REQUEST
+      # A resolved-but-not-yet-accepting host (grex-2 still starting) would
+      # otherwise be raced against rather than excluded until it's actually
+      # up. Cheap TCP connect check, fast thresholds — local dev only.
+      health_checks:
+        - timeout: 1s
+          interval: 1s
+          unhealthy_threshold: 1
+          healthy_threshold: 1
+          tcp_health_check: {}
+      load_assignment:
+        cluster_name: grex_opamp
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: grex, port_value: 4320 }
+              - endpoint:
+                  address:
+                    socket_address: { address: grex-2, port_value: 4320 }

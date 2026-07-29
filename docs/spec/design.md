@@ -265,7 +265,125 @@ This is a **read**-side reconciliation story only. It says nothing about
 specific agent needs its *live* socket, and nothing above says which
 replica currently holds it — that's the harder, separate half of
 per-agent sharding already flagged as the reason to defer it (see Jobs:
-schema and execution's "dispatch needs the target's live connection").
+schema and execution's "dispatch needs the target's live connection"),
+resolved below.
+
+#### Load balancing: an LB in front of grex is required, not optional
+
+A multi-replica grex app tier only works if connections actually land on
+more than one replica in the first place. That doesn't happen by itself —
+an LB (or equivalent) between the gateway tier and grex is required
+infrastructure, not an optional extra layer, for two independent reasons:
+
+- **The observIQ `opampgateway` extension's own load balancing is scoped
+  to its own upstream pool, not across grex replicas.** `server.connections`
+  (default `1`, configurable) is how many upstream WebSocket connections
+  *one gateway* opens, and the gateway does least-connections *across those
+  N connections* to spread its own agents evenly. `server.endpoint` is a
+  single address — the gateway has no concept of "here are several grex
+  backends, choose one." Which replica each of those N connections lands
+  on is entirely down to whatever `server.endpoint` resolves to: a bare
+  grex-1 address pins every one of that gateway's connections to grex-1
+  regardless of the gateway's internal balancing.
+- **grex does not do this either.** Already explicit in the admin docs:
+  "Automatic gateway discovery or grex-side load balancing of gateways" is
+  listed as not provided (`docs/admin/scaling-with-gateways.md`). Nothing
+  on the grex side fans a gateway's connections out across replicas.
+
+So spreading connections across grex replicas requires an LB (ideally
+least-connections, for the same long-lived-WS reasoning as the rebalancing
+discussion above — a round-robin decision only fires at connect time, and
+these connections are held open indefinitely) sitting at whatever address
+`server.endpoint` points to. Without it, distribution across replicas is
+either manual static assignment (each gateway's `server.endpoint`
+hand-pointed at a specific replica, no automatic failover) or entirely
+accidental (bare DNS round robin at dial time, no load awareness, worse
+the smaller a gateway's `server.connections` count is — the common
+default of `1` means a single unlucky pin is 100% of that gateway's
+traffic on one replica).
+
+This is a distinct hop from any client-facing LB (global or per-DC) in
+front of the gateway tier — dropping the latter for a single-DC topology
+says nothing about this one; they solve different problems and neither
+substitutes for the other.
+
+Even a fully Kubernetes-native path still needs a cloud TCP load balancer
+(`Service.type=LoadBalancer`, provisioned through the cloud controller
+manager) as the outer hop whenever gateways connect from outside the
+cluster network — that hop is unavoidable plumbing, not a design choice,
+and is flow-hash/round-robin rather than least-connections. That's fine:
+its job is only "get the connection into the cluster," not "pick the
+grex replica" — the inner hop below is what needs to be least-connections
+aware.
+
+**Decided: Envoy as the inner load-balancing tier**, TCP proxy mode in
+front of the grex pods, doing the actual least-connections selection.
+Chosen over the IPVS-mode-kube-proxy alternative (no new component, but
+not portable across every CNI/managed-k8s flavor) and bare HAProxy
+(passthrough-simple, but less useful if Gateway API / Envoy tooling is
+already the team's chosen k8s ingress layer) — team already knows Envoy
+well, so operational familiarity wins here over marginal simplicity.
+
+**Local dev follow-up (not yet built):** the Compose stack needs Envoy's
+admin/stats interface enabled and a Prometheus scrape job added
+alongside the existing `grex-server`/`grex-fleet` jobs
+(`docs/observability/scraping.md`), so Envoy's own connection-distribution
+metrics are visible next to grex's. Exercising this locally also means
+Compose running more than one grex instance, which it doesn't do today
+(single `grex` service, matching `replicaCount: 1`). Cross-replica
+comparison itself needs no new grex metric: `grex_agents_connected`
+(Gauge, `docs/observability/metrics.md:101`) is already local in-memory
+state per process, scraped per target, comparable across replicas via
+Prometheus's own `instance` label today, independent of the Postgres-backed
+state work above. Implementation tracked separately.
+
+#### Dispatch routing: agent_connections and cross-replica handoff
+
+Reads self-heal across replicas because any replica can answer from the
+shared database. Dispatch can't: a `ServerToAgent` message (config offer,
+restart command) only reaches the agent through whichever replica's
+process currently holds its live OpAMP socket in memory, and a database
+query alone doesn't say which one that is right now.
+
+**Decided: an `agent_connections` ownership table, plus Postgres
+`LISTEN`/`NOTIFY` for cross-replica handoff.** Two separate problems, two
+mechanisms:
+
+- **Ownership: which replica holds this agent's socket, right now.** A
+  new `agent_connections` table, one row per live `instance_uid`, not
+  reused from the state-freshness story above since it tracks a different
+  thing (socket ownership, not data freshness). Every direct-agent or
+  gateway-relayed connection registers here on connect and deregisters (or
+  lets a lease expire) on disconnect. Same staleness/lease-expiry problem
+  the read-side story already has for a crashed replica that never gets a
+  clean disconnect event — reuse whatever TTL/heartbeat mechanism that
+  side lands on rather than inventing a second one.
+  - `instance_uid` — PK, the socket being tracked.
+  - `replica_id` — whichever grex process (pod name, or similar stable
+    identity) currently holds the connection.
+  - `connected_at`, `last_seen` — `last_seen` is what a lease-expiry sweep
+    checks; a replica that crashes without deregistering leaves a stale
+    row here until it ages out, same shape as agent staleness eviction.
+- **Handoff: getting the message to that replica.** A River worker on
+  *any* replica can claim a `job_targets` dispatch row, but only the owning
+  replica (per `agent_connections`) has the live socket. That worker looks
+  up the owner, then publishes on a Postgres `LISTEN`/`NOTIFY` channel keyed
+  to that `replica_id`; the owning replica's listener (subscribed to its
+  own channel since startup) picks up the payload and writes it to the
+  live connection it already holds. No second broker, consistent with why
+  River was chosen over a Kafka-backed queue in the first place — Postgres
+  is already the dependency, `LISTEN`/`NOTIFY` doesn't add one.
+
+**Not durable yet, and known.** `LISTEN`/`NOTIFY` delivers to whatever's
+listening *right now*; a notification published while the owning replica
+is mid-restart or partitioned is simply lost; nothing re-sends it. First
+cut accepts that gap, since it degrades no worse than "agent didn't get
+the message this dispatch attempt," which River's existing retry/backoff
+(see above) already covers on the next attempt as long as
+`agent_connections` still points at a live owner by then. Making this
+durable, an outbox row per notification, replica acks it, a sweep re-sends
+unacked ones past some window, is real future work, not yet designed;
+called out here as the known gap rather than deferred silently.
 
 #### Agent state schema
 
@@ -470,9 +588,9 @@ infrastructure. Two things it doesn't give for free:
   endpoint decision above (Agent sharding scheme) rules out DB-level
   shard routing, but grex itself is still multi-replica — dispatching to
   a specific agent needs whichever replica currently holds its socket,
-  not just a database query. Nothing decided here solves that; it's the
-  separate, harder half of "reconnect-elsewhere" (see Agent sharding
-  scheme), and jobs/dispatch stay blocked on it.
+  not just a database query. See Dispatch routing: agent_connections and
+  cross-replica handoff (under Agent sharding scheme) for the decided
+  ownership-table-plus-`LISTEN`/`NOTIFY` shape; not yet built.
 
 **Lifecycle, safety, and first action (decided, not yet implemented):**
 
@@ -491,6 +609,25 @@ infrastructure. Two things it doesn't give for free:
 - **Retry/backoff**: fibonacci, capped, for a `job_targets` dispatch
   attempt that finds its agent not currently connected. Exact cap not
   chosen yet.
+- **Owning-replica crash mid-dispatch: detectable, not self-healing.**
+  Retry/backoff above only covers the target not being connected *when a
+  worker tries to dispatch* (`send_failed`, retried immediately). A
+  different case: the owning replica commits `job_targets.status = sent`
+  (see Dispatch routing: agent_connections and cross-replica handoff),
+  then dies before the agent's completion status arrives. The agent's
+  connection dies with it, it reconnects to a different replica, and
+  `agent_connections` self-heals for that reconnect same as reads do — but
+  the `job_targets` row stays `sent` with no completion status, and
+  nothing re-examines it. The timeout above (un-reconnected target marked
+  `failed`) is meant to catch this once its number is chosen, but marking
+  it `failed` is not itself specified to trigger a new dispatch attempt.
+  The only thing that currently notices is the 1.1 compliance check
+  below, run on demand by a human, who creates a follow-up job for
+  whatever it lists as non-compliant. No automatic retry closes this loop
+  today; that's consistent with jobs being point-in-time rather than
+  continuous (see Known scope boundary below) — an automatic version of
+  this is really the same shape as the parked Declarative/policy layer
+  idea (see Open questions), not something jobs do on their own.
 - **Authorization**: `viewer` can read jobs and their status; `admin` can
   read and create. The first place the `viewer`/`admin` split (see
   Permission table schema) actually differs in behavior.
@@ -571,6 +708,61 @@ Jobs section above is avoiding (that's about brokers, not migrators). Real
 work — actual `.sql` migration files, wiring both migrators into a deploy
 step, and turning `internal/persistence`'s stubs into working
 implementations — is a future PR; nothing here is built yet.
+
+#### Config source of truth: sync and apply
+
+Config-push (the job action from the table above) needs a config body from
+somewhere. Two options for where that body lives:
+
+- **Inline in the job request.** Simplest: `POST /api/jobs` carries the
+  config text directly. Nothing new to build, but the config a fleet ends
+  up running is whatever was pasted into an API/CLI call at dispatch time —
+  no record of which git commit or Helm release it came from, and no way
+  to answer "does the fleet still match what's in git" later.
+- **A separate desired-config table, populated only by sync.** The
+  config-push job references a stored row instead of carrying the config
+  itself. Keeps a human from ever hand-editing config through grex: the
+  only writer is a CLI command that reads from an existing IaC source
+  (Helm values, a checked-out git repo) and uploads it as-is.
+
+**Decided: separate table, `config_sources`, sync and apply as two CLI
+calls.** This is the sync half of the parked Declarative/policy layer
+question (see Open questions) — the apply half stays exactly the job model
+already decided above (plan/arm/5-minute-delay/dispatch), not a new
+continuous reconciler.
+
+- `id` — PK.
+- `source_type` (`helm` | `git`) — enum, not a free-text string, so the CLI
+  and API agree on what `source_ref` means for each. A future source (e.g.
+  an OCI artifact) adds an enum value, not a schema change.
+- `source_ref` — the exact origin: a git commit SHA for `git`, a chart
+  name + release + revision for `helm`. Captured automatically by
+  `grex config sync` at sync time, never hand-entered — this is what makes
+  "which commit is this fleet running" answerable later, the actual point
+  of tying config to IaC instead of pasting a body into an API call.
+- `selector` — the same agent-attribute filter language `GET /api/agents`
+  and jobs already use; decides which agents this config is meant for.
+- `config` — the rendered config body (or its hash, if the body is stored
+  elsewhere and only the hash is needed for the compliance predicate
+  already scoped under Jobs: schema and execution).
+- `synced_by` — caller identity, same identity model as job creation.
+- `created_at`.
+
+`grex config sync` only ever inserts a `config_sources` row: pure write, no
+dispatch, no side effect on any agent. `grex jobs apply --config
+<config_sources.id>` creates a `jobs` row whose action is `config-push`
+pointed at that row's `id` — everything after that is the job lifecycle
+already decided (arm, 5-minute cancellable delay, dispatch, compliance
+check against the config's hash). The desired state a human can audit
+(`config_sources`, tied to a commit) stays separate from whether it was
+ever applied (`jobs`/`job_targets`); `config_sources` alone never changes
+an agent's config.
+
+Still parked, not resolved here: a continuous/level-triggered mode
+("whenever an agent matching this selector checks in out of compliance
+with its `config_sources` row, auto-apply") is the harder half of the
+Declarative/policy layer question below. This section only removes the
+"where did this config come from" gap for the human-triggered path.
 
 ## Architecture
 
@@ -1227,6 +1419,32 @@ per package, compose stack as the end-to-end harness).
 - Post-1.0 migration tooling: `golang-migrate` for grex's own tables, River's
   own migrator for River's tables, run independently against one Postgres
   database. See Jobs: schema and execution. Not yet implemented.
+- Config source of truth (post-1.0, not yet implemented): a `config_sources`
+  table (`source_type` enum `helm`/`git`, `source_ref`, `selector`,
+  `config`), written only by `grex config sync`; `grex jobs apply` creates
+  the actual `config-push` job against it. Sync and apply stay two separate
+  calls so config never mutates a fleet by itself. See Config source of
+  truth: sync and apply.
+- Dispatch routing (post-1.0, not yet implemented): an `agent_connections`
+  table records which grex replica currently holds each agent's live
+  socket; a River worker on any replica looks up the owner and hands off
+  the message via Postgres `LISTEN`/`NOTIFY` on a per-replica channel, no
+  second broker. Not durable yet — a notification to a replica that isn't
+  listening at that instant is lost, covered for now by River's existing
+  retry/backoff rather than redelivery. See Dispatch routing:
+  agent_connections and cross-replica handoff.
+- Load balancing gateway-to-grex connections (required infrastructure, not
+  built by grex): the `opampgateway` extension's own least-connections
+  logic only spreads a gateway's agents across its own upstream connection
+  pool (`server.connections`), never across multiple grex replicas — and
+  grex explicitly does not do gateway-side load balancing either. An LB
+  is required for any multi-replica grex deployment; without one,
+  distribution across replicas is manual static assignment or unweighted
+  DNS-at-dial-time luck. Decided: Envoy, TCP proxy mode, least-connections,
+  as the inner tier behind whatever cloud TCP LB gets a connection into
+  the cluster. Local dev (Envoy metrics + scrape job, multi-instance
+  Compose) not yet built. See Load balancing: an LB in front of grex is
+  required, not optional.
 
 ## Open questions
 
@@ -1239,19 +1457,24 @@ per package, compose stack as the end-to-end harness).
   the backoff cap, and whether jobs require fleet-wide Supervisor
   adoption or must degrade for bare-extension agents still churning
   `instance_uid` on restart.
-- **Declarative/policy layer** (post-1.0, future idea, not designed):
-  jobs above are edge-triggered ("do X now to these agents"). A
+- **Declarative/policy layer** (post-1.0, future idea, partly designed):
+  jobs above are edge-triggered ("do X now to these agents"). The *sync*
+  half of "where does desired config come from" is now designed (see
+  Config source of truth: sync and apply) — `config_sources`, populated
+  only by `grex config sync` from Helm/git, applied only by a separate
+  human-triggered `grex jobs apply`. What's still open is the
   level-triggered complement — "whenever an agent matching some filter
-  checks in without X, apply X" — is a different primitive: continuous,
-  no single dispatch moment, no natural "done." Cheap to build on top of
-  what jobs/compliance already need, since the trigger point is the same
-  per-check-in code path (`internal/opamp`'s handler → `fleet.Registry`)
-  and the condition it evaluates is the same compliance predicate a
-  job's success check and `GET /api/jobs/{id}/compliance` already use —
-  just evaluated per check-in instead of on-demand, auto-creating a job
-  for a non-compliant agent instead of a human doing it. Not free: fires
-  automatically and repeatedly with no human in the loop, so it needs its
-  own safety story (rate limiting, a circuit breaker after N failures, an
-  audit trail) rather than inheriting jobs' 5-minute-arm-and-cancel
-  mechanism, which only makes sense for a human-initiated action. Not
-  scoped or scheduled; parked here as a named idea.
+  checks in out of compliance with its `config_sources` row, apply it
+  automatically" — a different primitive: continuous, no single dispatch
+  moment, no natural "done." Cheap to build on top of what jobs/compliance
+  already need, since the trigger point is the same per-check-in code path
+  (`internal/opamp`'s handler → `fleet.Registry`) and the condition it
+  evaluates is the same compliance predicate a job's success check and
+  `GET /api/jobs/{id}/compliance` already use — just evaluated per check-in
+  instead of on-demand, auto-creating a job for a non-compliant agent
+  instead of a human doing it. Not free: fires automatically and
+  repeatedly with no human in the loop, so it needs its own safety story
+  (rate limiting, a circuit breaker after N failures, an audit trail)
+  rather than inheriting jobs' 5-minute-arm-and-cancel mechanism, which
+  only makes sense for a human-initiated action. Not scoped or scheduled;
+  parked here as a named idea.

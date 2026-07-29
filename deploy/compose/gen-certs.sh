@@ -32,7 +32,7 @@ EOF
     rm "$name.csr"
 }
 
-issue server "subjectAltName=DNS:grex,DNS:localhost
+issue server "subjectAltName=DNS:grex,DNS:grex-2,DNS:envoy,DNS:localhost
 extendedKeyUsage=serverAuth"
 issue opamp-gateway "subjectAltName=DNS:opamp-gateway,DNS:localhost
 extendedKeyUsage=serverAuth"

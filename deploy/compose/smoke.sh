@@ -48,44 +48,89 @@ curl -fsS http://127.0.0.1:5556/dex/.well-known/openid-configuration |
     grep -q '"issuer"' || fail "dex openid-configuration"
 
 # Full chain asserted via grex metrics: three collectors connect through the
-# OpAMP gateway, grex answers their connect delegations and registers each
-# agent.
-metric() {
-    scripts/gxcurl -u prometheus -s https://127.0.0.1:9090/metrics/fleet |
-        awk -v name="$1" 'index($0, name) == 1 {print $NF; exit}'
+# OpAMP gateway, which multiplexes over 2 upstream connections that Envoy
+# least-connections balances across both grex replicas (grex, grex-2 —
+# deploy/compose/envoy.yaml). Metrics are per-process, so checks below sum
+# across both replicas. Distribution across replicas is reported, not
+# asserted — see the note further down.
+GREX_HOSTS="127.0.0.1:9090 127.0.0.1:9092"
+
+metric_at() {
+    host="$1" name="$2"
+    scripts/gxcurl -u prometheus -s "https://$host/metrics/fleet" |
+        awk -v name="$name" 'index($0, name) == 1 {print $NF; exit}'
 }
 
-wait_metric() {
+metric_sum() {
+    name="$1"
+    total=0 any=
+    for host in $GREX_HOSTS; do
+        got=$(metric_at "$host" "$name")
+        [ -n "$got" ] || continue
+        any=1
+        total=$(awk -v t="$total" -v g="$got" 'BEGIN{printf "%d", t+g}')
+    done
+    [ -n "$any" ] && echo "$total"
+}
+
+wait_metric_sum() {
     name="$1" op="$2" want="$3"
     for _ in $(seq 1 30); do
-        got=$(metric "$name")
+        got=$(metric_sum "$name")
         if [ -n "$got" ]; then
             case "$op" in
-            eq) [ "${got%.*}" -eq "$want" ] && return 0 ;;
-            ge) [ "${got%.*}" -ge "$want" ] && return 0 ;;
+            eq) [ "$got" -eq "$want" ] && return 0 ;;
+            ge) [ "$got" -ge "$want" ] && return 0 ;;
             esac
         fi
         sleep 2
     done
-    fail "$name: want $op $want, got ${got:-absent}"
+    fail "$name (summed across grex, grex-2): want $op $want, got ${got:-absent}"
 }
 
-wait_metric 'grex_agents_connected{transport="ws",via="gateway"}' eq 3
-wait_metric 'grex_gateway_connections' eq 2
-wait_metric 'grex_gateway_connects_total{result="accepted"}' ge 3
-wait_metric 'grex_agents_noncompliant' eq 0
-wait_metric 'grex_agent_reports_total{type="status"}' ge 3
-wait_metric 'grex_agents_awaiting_full_state' eq 0
+wait_metric_sum 'grex_agents_connected{transport="ws",via="gateway"}' eq 3
+wait_metric_sum 'grex_gateway_connections' eq 2
+wait_metric_sum 'grex_gateway_connects_total{result="accepted"}' ge 3
+wait_metric_sum 'grex_agents_noncompliant' eq 0
+wait_metric_sum 'grex_agent_reports_total{type="status"}' ge 3
+wait_metric_sum 'grex_agents_awaiting_full_state' eq 0
 
-# Prometheus scrapes both grex endpoints as separate healthy jobs, plus the
-# three collectors' internal telemetry.
+# Report (don't hard-fail on) distribution across the two replicas.
+# opamp-gateway opens its 2 upstream connections microseconds apart —
+# tighter than a TCP handshake, so Envoy's LEAST_REQUEST active-connection
+# count (only incremented once a connection is established, not at
+# selection time) sometimes has no signal yet for the second pick and both
+# land on the same backend. Confirmed via opamp-gateway's own logs
+# (~80us between the two "connecting to upstream" lines) and isolated with
+# synthetic staggered-vs-simultaneous probes through the same Envoy — not
+# fixable by LB config (concurrency/health-check/DNS tuning already fixed
+# two separate real races upstream of this one), it's a small-N tie
+# inherent to any current-load LB facing near-zero-delta near-simultaneous
+# arrivals. Deliberately not working around it here by switching to
+# ROUND_ROBIN (would give up LEAST_REQUEST's "new replica gets more until
+# it catches up" property, the actual reason it was chosen for production)
+# or bumping opamp-gateway.yaml's connections beyond 2 (would only mask
+# the race behind more trials, not demonstrate anything different). See
+# docs/spec/design.md's Load balancing section.
+g1=$(metric_at "127.0.0.1:9090" 'grex_agents_connected{transport="ws",via="gateway"}')
+g2=$(metric_at "127.0.0.1:9092" 'grex_agents_connected{transport="ws",via="gateway"}')
+if [ "${g1:-0}" = "0" ] || [ "${g2:-0}" = "0" ]; then
+    echo "NOTE: all agents landed on one grex replica this run (grex=${g1:-0}, grex-2=${g2:-0})." \
+        "Known small-N startup race, not a failure — see comment above." >&2
+else
+    echo "gateway-relayed agents split across replicas: grex=$g1, grex-2=$g2"
+fi
+
+# Prometheus scrapes both grex replicas as separate targets per job (2 each
+# for grex-server/grex-fleet), the three collectors' internal telemetry,
+# and Envoy's stats endpoint.
 for _ in $(seq 1 30); do
     up=$(curl -s http://127.0.0.1:9091/api/v1/targets |
-        python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(1 for t in d['data']['activeTargets'] if t['health']=='up' and t['labels']['job'] in ('grex-server','grex-fleet','otelcol')))" 2>/dev/null || echo 0)
-    [ "$up" = 5 ] && break
+        python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(1 for t in d['data']['activeTargets'] if t['health']=='up' and t['labels']['job'] in ('grex-server','grex-fleet','otelcol','envoy')))" 2>/dev/null || echo 0)
+    [ "$up" = 8 ] && break
     sleep 2
 done
-[ "$up" = 5 ] || fail "prometheus targets up: want 5, got ${up:-0}"
+[ "$up" = 8 ] || fail "prometheus targets up: want 8, got ${up:-0}"
 
 for svc in otelcol-agent-1 otelcol-agent-2 otelcol-gateway; do
     docker compose logs --no-color "$svc" | grep -ic opamp > /dev/null ||

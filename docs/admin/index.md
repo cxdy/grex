@@ -25,6 +25,7 @@ and understand process lifecycle.
 | [Authentication](authentication.md) | Current state + planned UI/API auth |
 | [Health and lifecycle](health-and-lifecycle.md) | Probes, drain, shutdown |
 | [Scaling with gateways](scaling-with-gateways.md) | OpAMP gateway topology |
+| [High availability](high-availability.md) | Target multi-replica architecture (mostly design, not yet shipped) |
 
 ## Security posture (today)
 
