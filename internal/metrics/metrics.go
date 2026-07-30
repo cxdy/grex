@@ -4,6 +4,8 @@
 package metrics
 
 import (
+	"time"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 
@@ -53,6 +55,8 @@ type Events struct {
 	authDenied                 *prometheus.CounterVec
 	authAllowed                *prometheus.CounterVec
 	listStoreFallbackErrors    *prometheus.CounterVec
+	writeDuration              *prometheus.HistogramVec
+	writeTimeout               *prometheus.GaugeVec
 }
 
 // NewEvents builds the counters. OpAMP server-health counters register on
@@ -116,12 +120,22 @@ func NewEvents(server, fleet prometheus.Registerer) *Events {
 			Name: "grex_list_agents_store_fallback_errors_total",
 			Help: "Fleet-wide list requests where the database merge failed and only local registry data was served, by surface.",
 		}, []string{"surface"}),
+		writeDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "grex_persistence_write_duration_seconds",
+			Help:    "Persistence write duration in seconds, by operation (save_agent, soft_delete_agent, save_session). Recorded on every attempt, success or timeout.",
+			Buckets: prometheus.DefBuckets,
+		}, []string{"op"}),
+		writeTimeout: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "grex_persistence_write_timeout_seconds",
+			Help: "Configured timeout for a persistence write operation, by operation. Compare against grex_persistence_write_duration_seconds: an average/percentile approaching or crossing this line signals DB, network, or load trouble before writes actually start failing.",
+		}, []string{"op"}),
 	}
 	server.MustRegister(e.messages, e.messageErrors, e.authDenied, e.authAllowed, e.listStoreFallbackErrors)
 	fleet.MustRegister(
 		e.agentConnects, e.agentDisconnects, e.agentsEvicted, e.agentsPurged,
 		e.reports, e.missingAttributes, e.reservedAttributeConflicts,
 		e.gatewayConnects, e.gatewayConnections,
+		e.writeDuration, e.writeTimeout,
 	)
 	return e
 }
@@ -139,6 +153,20 @@ func (e *Events) AgentEvicted(string) { e.agentsEvicted.Inc() }
 // AgentsPurged records n soft-deleted agent rows removed by the retention
 // purge job. Not part of fleet.Events; called directly by the purge worker.
 func (e *Events) AgentsPurged(n int) { e.agentsPurged.Add(float64(n)) }
+
+// ObserveWriteDuration implements persistence.WriteMetrics. Not part of
+// fleet.Events; called directly by Flusher/SessionSnapshotter around each
+// persistence write attempt.
+func (e *Events) ObserveWriteDuration(op string, d time.Duration) {
+	e.writeDuration.WithLabelValues(op).Observe(d.Seconds())
+}
+
+// SetWriteTimeout implements persistence.WriteMetrics. Called once at
+// Flusher/SessionSnapshotter construction, not per write — it's a static
+// comparison line, not a per-attempt observation.
+func (e *Events) SetWriteTimeout(op string, timeout time.Duration) {
+	e.writeTimeout.WithLabelValues(op).Set(timeout.Seconds())
+}
 
 // ReportReceived implements fleet.Events.
 func (e *Events) ReportReceived(_, kind string) { e.reports.WithLabelValues(kind).Inc() }

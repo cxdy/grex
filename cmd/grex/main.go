@@ -106,6 +106,7 @@ func run(args []string) error {
 	var dbPool *pgxpool.Pool
 	var dirtyTracker *persistence.DirtyTracker
 	var store persistence.StateStore
+	var maxConcurrentWrites int
 	if cfg.Database.Host != "" {
 		dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 			cfg.Database.Host, cfg.Database.Port, cfg.Database.User, cfg.Database.Password,
@@ -119,6 +120,13 @@ func run(args []string) error {
 		store = persistence.NewPostgresStore(pool)
 		dirtyTracker = persistence.NewDirtyTracker()
 		registryEvents = fleet.MultiEvents(events, dirtyTracker)
+		fleetMetrics.MustRegister(persistence.NewPoolCollector(pool))
+		// Bounding concurrent writes at the pool's own configured size means
+		// grex never asks Postgres for more connections than pgxpool already
+		// knows it has, self-consistent by construction (see
+		// persistence.PoolCollector's doc comment on why this defaults to the
+		// grex process's own CPU count, not the database's actual capacity).
+		maxConcurrentWrites = int(pool.Config().MaxConns)
 	}
 
 	registry := fleet.New(fleet.Config{
@@ -156,10 +164,10 @@ func run(args []string) error {
 	go registry.Run(ctx)
 	var purgeClient *river.Client[pgx.Tx]
 	if dbPool != nil {
-		flusher := persistence.NewFlusher(registry, dirtyTracker, store, persistenceFlushInterval, logger)
+		flusher := persistence.NewFlusher(registry, dirtyTracker, store, persistenceFlushInterval, logger, maxConcurrentWrites, events)
 		go flusher.Run(ctx)
 
-		snapshotter := persistence.NewSessionSnapshotter(registry, store, sessionSnapshotInterval, logger)
+		snapshotter := persistence.NewSessionSnapshotter(registry, store, sessionSnapshotInterval, logger, maxConcurrentWrites, events)
 		go snapshotter.Run(ctx)
 
 		purgeClient, err = persistence.NewPurgeClient(dbPool, cfg.Fleet.SoftDeleteDuration, events, logger)

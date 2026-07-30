@@ -140,6 +140,48 @@ func TestEventCounters(t *testing.T) {
 	assert("list store fallback failed ui", 1, events.listStoreFallbackErrors.WithLabelValues("ui"))
 }
 
+// TestWriteMetrics covers persistence.WriteMetrics's two methods: a
+// duration histogram recorded per attempt, and a timeout gauge set once,
+// both labeled by op so an operator can compare them directly per
+// operation (see internal/persistence.WriteMetrics's doc comment).
+func TestWriteMetrics(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	events := NewEvents(reg, reg)
+
+	events.SetWriteTimeout("save_agent", 5*time.Second)
+	events.ObserveWriteDuration("save_agent", 100*time.Millisecond)
+	events.ObserveWriteDuration("save_agent", 200*time.Millisecond)
+	events.ObserveWriteDuration("save_session", 10*time.Millisecond)
+
+	if got := testutil.ToFloat64(events.writeTimeout.WithLabelValues("save_agent")); got != 5 {
+		t.Errorf("write timeout gauge (save_agent) = %v, want 5", got)
+	}
+	if got := testutil.CollectAndCount(events.writeDuration, "grex_persistence_write_duration_seconds"); got != 2 {
+		t.Errorf("write duration series count = %d, want 2 (save_agent, save_session)", got)
+	}
+
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sampleCount uint64
+	for _, fam := range families {
+		if fam.GetName() != "grex_persistence_write_duration_seconds" {
+			continue
+		}
+		for _, m := range fam.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "op" && l.GetValue() == "save_agent" {
+					sampleCount = m.GetHistogram().GetSampleCount()
+				}
+			}
+		}
+	}
+	if sampleCount != 2 {
+		t.Errorf("save_agent histogram sample count = %d, want 2", sampleCount)
+	}
+}
+
 func TestNewInfoGauge(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	NewInfoGauge(reg, "grex_build_info", "Build information.", prometheus.Labels{
