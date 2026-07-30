@@ -73,16 +73,30 @@ func (d *DirtyTracker) Drain() []string {
 // Sweep ticker: liveness/eviction and durability are different concerns and
 // must not share a schedule even if their intervals end up similar.
 type Flusher struct {
-	registry *fleet.Registry
-	dirty    *DirtyTracker
-	store    StateStore
-	interval time.Duration
-	log      *slog.Logger
+	registry      *fleet.Registry
+	dirty         *DirtyTracker
+	store         StateStore
+	interval      time.Duration
+	log           *slog.Logger
+	maxConcurrent int
+	metrics       WriteMetrics
 }
 
 // NewFlusher builds a Flusher. registry is read via Get, never written.
-func NewFlusher(registry *fleet.Registry, dirty *DirtyTracker, store StateStore, interval time.Duration, log *slog.Logger) *Flusher {
-	return &Flusher{registry: registry, dirty: dirty, store: store, interval: interval, log: log}
+// maxConcurrent bounds how many SaveAgent/SoftDeleteAgent calls run at once
+// within a single flushOnce (see runConcurrent) — a stuck write only
+// occupies one slot instead of blocking every agent queued after it.
+// interval doubles as each write's timeout (see writeWithTimeout): a write
+// can't outlive its own next retry opportunity. metrics may be nil.
+func NewFlusher(registry *fleet.Registry, dirty *DirtyTracker, store StateStore, interval time.Duration, log *slog.Logger, maxConcurrent int, metrics WriteMetrics) *Flusher {
+	if metrics != nil {
+		metrics.SetWriteTimeout("save_agent", interval)
+		metrics.SetWriteTimeout("soft_delete_agent", interval)
+	}
+	return &Flusher{
+		registry: registry, dirty: dirty, store: store, interval: interval, log: log,
+		maxConcurrent: maxConcurrent, metrics: metrics,
+	}
 }
 
 // Run flushes on every interval tick until ctx is done.
@@ -100,10 +114,11 @@ func (f *Flusher) Run(ctx context.Context) {
 }
 
 // flushOnce drains the dirty set and saves each agent still present in the
-// registry. Whatever doesn't make it into this flush before a crash is
-// simply lost from the database: agents already re-report everything on
-// reconnect (ReportFullState), so durability here only needs to survive
-// seconds of staleness, not be per-message-perfect.
+// registry, up to maxConcurrent at once (see runConcurrent). Whatever
+// doesn't make it into this flush before a crash — or times out, see
+// writeWithTimeout — is simply lost from the database: agents already
+// re-report everything on reconnect (ReportFullState), so durability here
+// only needs to survive seconds of staleness, not be per-message-perfect.
 //
 // An id no longer in the registry was evicted between being marked dirty
 // and this flush; there's nothing left to save, so it's soft-deleted
@@ -112,16 +127,28 @@ func (f *Flusher) Run(ctx context.Context) {
 // retention window is measured in days, not the seconds of imprecision
 // this introduces.
 func (f *Flusher) flushOnce(ctx context.Context) {
-	for _, id := range f.dirty.Drain() {
-		agent, ok := f.registry.Get(id)
-		if !ok {
-			if err := f.store.SoftDeleteAgent(ctx, id, time.Now()); err != nil {
-				f.log.Error("persistence soft-delete failed", "instance_uid", id, "error", err)
+	ids := f.dirty.Drain()
+	tasks := make([]func(), 0, len(ids))
+	for _, id := range ids {
+		id := id
+		tasks = append(tasks, func() {
+			agent, ok := f.registry.Get(id)
+			if !ok {
+				err := writeWithTimeout(ctx, f.interval, f.metrics, "soft_delete_agent", func(ctx context.Context) error {
+					return f.store.SoftDeleteAgent(ctx, id, time.Now())
+				})
+				if err != nil {
+					f.log.Error("persistence soft-delete failed", "instance_uid", id, "error", err)
+				}
+				return
 			}
-			continue
-		}
-		if err := f.store.SaveAgent(ctx, agent); err != nil {
-			f.log.Error("persistence flush failed", "instance_uid", id, "error", err)
-		}
+			err := writeWithTimeout(ctx, f.interval, f.metrics, "save_agent", func(ctx context.Context) error {
+				return f.store.SaveAgent(ctx, agent)
+			})
+			if err != nil {
+				f.log.Error("persistence flush failed", "instance_uid", id, "error", err)
+			}
+		})
 	}
+	runConcurrent(tasks, f.maxConcurrent)
 }

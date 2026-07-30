@@ -7,12 +7,27 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/dennisme/grex/internal/fleet"
 	"github.com/open-telemetry/opamp-go/protobufs"
 )
+
+// testInstanceUID builds a deterministic, distinct fleet.Agent instance_uid
+// from a small integer, so tests can report several different agents
+// without hand-writing a 16-byte literal each time.
+func testInstanceUID(t *testing.T, n byte) (id string, raw []byte) {
+	t.Helper()
+	raw = make([]byte, 16)
+	raw[15] = n
+	id, err := fleet.InstanceUID(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id, raw
+}
 
 // erroringStateStore fails every SaveAgent/SoftDeleteAgent call, to exercise
 // Flusher.flushOnce's error-logging branches. GetAgent/ListAgents/DeleteAgent
@@ -85,7 +100,7 @@ func TestFlusherSavesDirtyAgents(t *testing.T) {
 	uid := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
 	registry.Report(&protobufs.AgentToServer{InstanceUid: uid}, fleet.ConnMeta{})
 
-	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger())
+	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger(), 4, nil)
 	flusher.flushOnce(context.Background())
 
 	id, err := fleet.InstanceUID(uid)
@@ -103,7 +118,7 @@ func TestFlusherSoftDeletesAgentNoLongerInRegistry(t *testing.T) {
 	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), nil)
 
 	dirty.AgentEvicted("gone")
-	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger())
+	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger(), 4, nil)
 	flusher.flushOnce(context.Background())
 
 	if len(store.agents) != 0 {
@@ -133,7 +148,7 @@ func TestFlusherSoftDeletesEvictedAgentAgainstRealPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger())
+	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger(), 4, nil)
 	flusher.flushOnce(ctx) // agent exists, saved for real before eviction
 
 	if _, ok, err := store.GetAgent(ctx, id); err != nil || !ok {
@@ -179,7 +194,7 @@ func TestFlusherRunFlushesOnTick(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	flusher := NewFlusher(registry, dirty, store, 20*time.Millisecond, discardLogger())
+	flusher := NewFlusher(registry, dirty, store, 20*time.Millisecond, discardLogger(), 4, nil)
 	done := make(chan struct{})
 	go func() {
 		flusher.Run(ctx)
@@ -215,7 +230,7 @@ func TestFlusherLogsStoreErrors(t *testing.T) {
 
 	var buf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&buf, nil))
-	flusher := NewFlusher(registry, dirty, erroringStateStore{}, time.Hour, log)
+	flusher := NewFlusher(registry, dirty, erroringStateStore{}, time.Hour, log, 4, nil)
 	flusher.flushOnce(context.Background()) // must not panic
 
 	out := buf.String()
@@ -224,5 +239,132 @@ func TestFlusherLogsStoreErrors(t *testing.T) {
 	}
 	if !strings.Contains(out, "persistence soft-delete failed") || !strings.Contains(out, "soft delete failed") {
 		t.Errorf("log missing SoftDeleteAgent failure: %s", out)
+	}
+}
+
+// blockingFlusherStore blocks SaveAgent for one specific instance_uid until
+// its context is done; every other instance_uid saves immediately and
+// records when it completed. Used to prove one stuck agent's write doesn't
+// force the rest of the same flushOnce batch to queue behind it.
+type blockingFlusherStore struct {
+	stuckID string
+
+	mu        sync.Mutex
+	completed map[string]time.Time
+}
+
+func newBlockingFlusherStore(stuckID string) *blockingFlusherStore {
+	return &blockingFlusherStore{stuckID: stuckID, completed: make(map[string]time.Time)}
+}
+
+func (b *blockingFlusherStore) SaveAgent(ctx context.Context, agent fleet.Agent) error {
+	if agent.InstanceUID == b.stuckID {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	b.mu.Lock()
+	b.completed[agent.InstanceUID] = time.Now()
+	b.mu.Unlock()
+	return nil
+}
+
+func (b *blockingFlusherStore) SaveSession(context.Context, fleet.Agent) error {
+	panic("not used by Flusher")
+}
+
+func (b *blockingFlusherStore) SoftDeleteAgent(context.Context, string, time.Time) error {
+	panic("not used by this test")
+}
+
+func (b *blockingFlusherStore) GetAgent(context.Context, string) (fleet.Agent, bool, error) {
+	panic("not used by Flusher")
+}
+
+func (b *blockingFlusherStore) ListAgents(context.Context) ([]fleet.Agent, error) {
+	panic("not used by Flusher")
+}
+
+func (b *blockingFlusherStore) DeleteAgent(context.Context, string) error {
+	panic("not used by Flusher")
+}
+
+var _ StateStore = (*blockingFlusherStore)(nil)
+
+// TestFlusherStuckAgentDoesNotBlockOthers is the concrete Flusher-level
+// version of runConcurrent's own property test: a single stuck SaveAgent
+// call must not delay the other agents in the same flushOnce batch.
+func TestFlusherStuckAgentDoesNotBlockOthers(t *testing.T) {
+	dirty := NewDirtyTracker()
+	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), dirty)
+
+	stuckID, stuckRaw := testInstanceUID(t, 1)
+	registry.Report(&protobufs.AgentToServer{InstanceUid: stuckRaw}, fleet.ConnMeta{})
+	var fastIDs []string
+	for n := byte(2); n <= 6; n++ {
+		id, raw := testInstanceUID(t, n)
+		registry.Report(&protobufs.AgentToServer{InstanceUid: raw}, fleet.ConnMeta{})
+		fastIDs = append(fastIDs, id)
+	}
+
+	store := newBlockingFlusherStore(stuckID)
+	timeout := 200 * time.Millisecond
+	flusher := NewFlusher(registry, dirty, store, timeout, discardLogger(), 4, nil)
+
+	start := time.Now()
+	flusher.flushOnce(context.Background())
+	elapsed := time.Since(start)
+
+	if elapsed < timeout {
+		t.Fatalf("flushOnce returned before the stuck write's %v timeout: elapsed=%v", timeout, elapsed)
+	}
+	for _, id := range fastIDs {
+		completedAt, ok := store.completed[id]
+		if !ok {
+			t.Fatalf("agent %s was never saved", id)
+		}
+		if completedAt.Sub(start) > timeout/2 {
+			t.Errorf("agent %s completed at +%v after start, want well before the stuck agent's %v timeout (it shouldn't have queued behind it)",
+				id, completedAt.Sub(start), timeout)
+		}
+	}
+}
+
+// TestFlusherRecordsWriteMetricsForBothOps covers both flushOnce paths:
+// SaveAgent (an agent still in the registry) and SoftDeleteAgent (one
+// evicted before this flush ran).
+func TestFlusherRecordsWriteMetricsForBothOps(t *testing.T) {
+	dirty := NewDirtyTracker()
+	store := &fakeStateStore{}
+	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), dirty)
+
+	_, raw := testInstanceUID(t, 1)
+	registry.Report(&protobufs.AgentToServer{InstanceUid: raw}, fleet.ConnMeta{})
+	dirty.AgentEvicted("gone")
+
+	metrics := newFakeWriteMetrics()
+	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger(), 4, metrics)
+	flusher.flushOnce(context.Background())
+
+	if got := metrics.durationCount("save_agent"); got != 1 {
+		t.Errorf("durationCount(save_agent) = %d, want 1", got)
+	}
+	if got := metrics.durationCount("soft_delete_agent"); got != 1 {
+		t.Errorf("durationCount(soft_delete_agent) = %d, want 1", got)
+	}
+}
+
+// TestNewFlusherSetsWriteTimeoutOnce covers construction, not a flush: the
+// configured timeout must be recorded once per op immediately, not lazily
+// on first write.
+func TestNewFlusherSetsWriteTimeoutOnce(t *testing.T) {
+	metrics := newFakeWriteMetrics()
+	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), nil)
+	NewFlusher(registry, NewDirtyTracker(), &fakeStateStore{}, 7*time.Second, discardLogger(), 4, metrics)
+
+	if got := metrics.timeouts["save_agent"]; got != 7*time.Second {
+		t.Errorf("timeouts[save_agent] = %v, want 7s", got)
+	}
+	if got := metrics.timeouts["soft_delete_agent"]; got != 7*time.Second {
+		t.Errorf("timeouts[soft_delete_agent] = %v, want 7s", got)
 	}
 }

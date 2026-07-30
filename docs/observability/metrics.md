@@ -107,6 +107,25 @@ increments when `database.host` is set.
 | `grex_gateway_connections` | Gauge | — | Open connections that sent a gateway connect message |
 | `grex_gateway_connects_total` | Counter | `result` (`accepted`/`rejected`) | Per-agent gateway connect answers |
 
+### Persistence
+
+Only emitted when `database.host` is set. `grex_persistence_write_duration_seconds`
+and `grex_persistence_write_timeout_seconds` share the `op` label
+(`save_agent`, `soft_delete_agent`, `save_session`) so they're directly
+comparable per operation — average/percentile duration approaching or
+crossing the timeout line signals DB, network, or load trouble before
+writes actually start failing. `grex_persistence_pool_*` show whether the
+connection pool itself is the bottleneck (e.g. grex sized with far more
+CPUs, hence a far larger default pgx pool, than Postgres can actually
+sustain concurrent writes for).
+
+| Name | Type | Labels | Description |
+|------|------|--------|-------------|
+| `grex_persistence_write_duration_seconds` | Histogram | `op` | Write duration, recorded on every attempt, success or timeout |
+| `grex_persistence_write_timeout_seconds` | Gauge | `op` | Configured timeout for that operation, set once at startup |
+| `grex_persistence_pool_acquired_conns` | Gauge | — | Connections currently acquired (in use) from the pool |
+| `grex_persistence_pool_max_conns` | Gauge | — | Configured maximum pool size |
+
 ### Health and compliance
 
 | Name | Type | Labels | Description |

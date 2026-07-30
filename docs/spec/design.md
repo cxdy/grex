@@ -487,6 +487,52 @@ sharding scheme's reconnect-elsewhere section for where this was found and
 fixed). Not routed through River: this is continuous background
 persistence, not a discrete one-shot task.
 
+**Bounded, observable writes: timeout, concurrency, and metrics — built.**
+`Flusher.flushOnce` and `SessionSnapshotter.snapshotOnce` both used to loop
+serially, one write at a time, no timeout: a single stuck write (a hung
+transaction holding a row lock) could block every other agent queued
+behind it in that tick, for an unbounded time. Fixed with three pieces,
+together:
+
+- **Timeout.** Every `SaveAgent`/`SoftDeleteAgent`/`SaveSession` call is
+  wrapped in `context.WithTimeout(ctx, interval)` — the timeout equals
+  that component's own tick interval, so a write can't outlive its own
+  next retry opportunity. Self-healing already covers the rest: the next
+  tick re-attempts with whatever's currently true, nothing is lost by
+  cutting a stuck write off rather than leaving it to hang.
+- **Bounded concurrency.** Both loops now run their batch through
+  `runConcurrent`, a semaphore-bounded worker pool, instead of a plain
+  `for` loop. A stuck write now only occupies one of the bounded slots
+  instead of blocking everything queued after it. The bound itself is
+  read from `pool.Config().MaxConns` in `cmd/grex/main.go` — self-
+  consistent by construction, grex never asks Postgres for more
+  connections than pgxpool already knows it has, and no new config field.
+  Note this doesn't relate the bound to the *database's* actual capacity:
+  pgxpool's own default (unset `pool_max_conns`) is `max(4,
+  runtime.NumCPU())` — the grex process's own CPU count, nothing to do
+  with Postgres's. A grex container sized with far more CPUs than
+  Postgres can sustain concurrent writes for would still saturate the DB;
+  see the pool metrics below for how that shows up.
+- **Metrics**, same interface-in-`persistence`/implemented-by-`metrics.Events`
+  pattern as `PurgeMetrics`: `grex_persistence_write_duration_seconds{op}`
+  (Histogram, every attempt, success or timeout) and
+  `grex_persistence_write_timeout_seconds{op}` (Gauge, set once at
+  construction) — the comparison line an operator needs, average/
+  percentile duration approaching or crossing the timeout signals DB,
+  network, or load trouble before writes actually start failing.
+  `grex_persistence_pool_acquired_conns`/`grex_persistence_pool_max_conns`
+  (`persistence.PoolCollector`, scrape-time, mirrors
+  `metrics.FleetCollector`'s shape) give the sharper, more direct signal
+  for the CPU-vs-database-capacity mismatch above: acquired pinned at max
+  means the pool itself, not just one slow query, is the bottleneck.
+
+Explicitly not done here, separate future work: SQL-level batching
+(`pgx.Batch` or multi-row `VALUES`) to cut the total round-trip count
+further. Considered and deferred — it trades away per-agent fault
+isolation unless implemented carefully, and total round-trip count wasn't
+the demonstrated bottleneck; the metrics above exist partly so that
+decision has real data behind it if it's revisited.
+
 **Multi-writer safety: a conditional `UPSERT`, no separate lock.** Once
 more than one replica can flush the same `instance_uid` (see
 reconnect-elsewhere above — no connection affinity, an agent can talk to
