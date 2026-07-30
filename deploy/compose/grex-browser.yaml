@@ -1,0 +1,58 @@
+# Dedicated, plain-HTTP grex instance for casual local browsing (Chrome,
+# etc.) without installing a short-lived mTLS client cert. Not part of the
+# Envoy/gateway HA topology (grex.yaml's grex/grex-2) — no agents connect
+# to this instance directly, it exists purely so the UI and /riverui are
+# reachable without cert friction. Shares the same Postgres, so it shows
+# the same real fleet via the cross-replica DB merge (see
+# docs/spec/design.md's Agent sharding scheme) even though it holds no
+# agent's live connection itself.
+listeners:
+  opamp: ":4320"
+  ui: ":8080"
+  telemetry: ":9090"
+
+opamp_tls:
+  cert_file: /certs/server.pem
+  key_file: /certs/server-key.pem
+  client_ca_file: /certs/ca.pem
+
+# No ui_tls: omitting it entirely means the UI listener gets neither TLS
+# (server.listenerTLSConfig returns nil without a cert_file) nor the
+# mTLS/role-check middleware (server.New's wrap() only applies it when
+# client_ca_file is set) — plain HTTP, fully open, by design, only on this
+# instance.
+
+telemetry_tls:
+  cert_file: /certs/server.pem
+  key_file: /certs/server-key.pem
+  client_ca_file: /certs/ca.pem
+
+auth:
+  default_role: none
+  role_mapping:
+    - match: exact
+      spiffe_id: spiffe://grex-api.internal/user/alice
+      role: viewer
+    - match: exact
+      spiffe_id: spiffe://grex-api.internal/user/admin
+      role: admin
+    - match: exact
+      spiffe_id: spiffe://grex-api.internal/service/prometheus
+      role: viewer
+
+fleet:
+  required_attributes:
+    - deployment.environment
+    - service.namespace
+
+database:
+  host: postgres
+  port: 5432
+  user: grex
+  password: grex-dev-password
+  dbname: grex
+  sslmode: disable
+
+log:
+  level: debug
+  format: json

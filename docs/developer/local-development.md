@@ -62,6 +62,11 @@ and `deploy/charts/smoke.sh --help`.
   [Scaling with gateways](../admin/scaling-with-gateways.md#load-balancing-across-grex-replicas).
   `grex-2` is reachable directly on host ports `8081`/`9092`/`4321` (same
   layout as `grex`'s `8080`/`9090`/`4320`) for `gxcurl`/debugging.
+- Want to poke around the UI or `/riverui` in a browser without installing
+  a client cert? `grex-browser` (`deploy/compose/grex-browser.yaml`) has
+  no `ui_tls` at all, plain HTTP: <http://127.0.0.1:8082>. Not part of the
+  Envoy/gateway pool, but shares the same Postgres, so it shows the same
+  fleet via the cross-replica DB merge.
 - If certs generated before this topology existed are still on disk
   (`deploy/compose/certs/`), `gen-certs.sh`'s per-file idempotency means the
   server cert won't pick up the new `grex-2`/`envoy` SANs automatically —
