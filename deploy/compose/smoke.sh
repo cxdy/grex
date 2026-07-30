@@ -148,6 +148,25 @@ for host in 127.0.0.1:8080 127.0.0.1:8081; do
 done
 echo "cross-replica DB merge confirmed: both replicas report the full fleet via GET /api/agents"
 
+# River UI is mounted only when database.host is set (deploy/compose/
+# grex.yaml sets it) — reuses the purge job's own River client. Same
+# mTLS-gated UI listener as everything else (server.go wraps the whole
+# uiMux once), so it needs a client cert same as any other UI route; no
+# separate riverui-specific auth mechanism was added.
+code=$(scripts/gxcurl -u alice -s -o /dev/null -w '%{http_code}' https://127.0.0.1:8080/riverui/)
+[ "$code" = "200" ] || fail "grex /riverui/: want 200, got $code"
+code=$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:8080/riverui/)
+[ "$code" = "403" ] || fail "grex /riverui/ with no cert: want 403, got $code"
+
+# grex-browser (deploy/compose/grex-browser.yaml) has no ui_tls at all:
+# plain HTTP, no client cert needed, not even -k for a self-signed cert.
+# Not part of the Envoy/gateway pool, but shares the same Postgres, so it
+# shows the same fleet via the cross-replica DB merge.
+code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8082/api/status)
+[ "$code" = "200" ] || fail "grex-browser /api/status (plain http, no cert): want 200, got $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8082/riverui/)
+[ "$code" = "200" ] || fail "grex-browser /riverui/ (plain http, no cert): want 200, got $code"
+
 # Prometheus scrapes both grex replicas as separate targets per job (2 each
 # for grex-server/grex-fleet), the three collectors' internal telemetry,
 # and Envoy's stats endpoint.

@@ -64,6 +64,35 @@ services:
       timeout: 3s
       retries: 12
 
+  grex-browser:
+    # Plain-HTTP instance for casual local browsing (see
+    # deploy/compose/grex-browser.yaml) — not part of the Envoy/gateway HA
+    # topology, no agents connect to it, exists only so the UI/riverui are
+    # reachable in a browser without installing an mTLS client cert.
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["-config", "/etc/grex/config.yaml"]
+    ports:
+      - "127.0.0.1:8082:8080"
+      - "127.0.0.1:9095:9090"
+      - "127.0.0.1:4322:4320"
+    volumes:
+      - ./deploy/compose/grex-browser.yaml:/etc/grex/config.yaml:ro
+      - ./deploy/compose/certs:/certs:ro
+    depends_on:
+      gen-certs:
+        condition: service_completed_successfully
+      river-migrate:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://127.0.0.1:9090/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
   envoy:
     # Inner load-balancing tier: least-connections across grex/grex-2.
     # opamp-gateway dials this instead of a single grex instance directly.

@@ -38,9 +38,21 @@ Optional TLS/mTLS per `opamp_tls.*`.
 
 Details: [Read API](../developer/read-api.md).
 
+### River UI
+
+| Path | Description |
+|------|-------------|
+| `GET /riverui/…` | [River](https://riverqueue.com)'s own job/queue UI and API, mounted only when `database.host` is set |
+
+Reuses the same River client the soft-delete purge job runs — today the
+only jobs visible are `purge_evicted_agents` runs, since grex's own
+mutation jobs (restart, config-push) aren't built yet. No riverui-specific
+auth was added; it's mounted on the same listener as the rest of the UI,
+so the mTLS + role mapping below applies to it identically.
+
 **Auth:** optional mTLS with SPIFFE IDs, per `ui_tls.client_ca_file` and
-`auth.role_mapping`. Applies to every UI/API path when configured. See
-[Authentication](../admin/authentication.md).
+`auth.role_mapping`. Applies to every UI/API path when configured,
+including `/riverui/…`. See [Authentication](../admin/authentication.md).
 
 ## Telemetry listener (`listeners.telemetry`, default `:9090`)
 

@@ -1,16 +1,22 @@
 package main
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/dennisme/grex/internal/config"
 	"github.com/dennisme/grex/internal/server"
@@ -65,6 +71,41 @@ func TestNewLoggerLevelsAndFormats(t *testing.T) {
 			// Exercise the handler without asserting output.
 			log.Info("test")
 		})
+	}
+}
+
+// TestMountRiverUI covers mountRiverUI in isolation: river.NewClient and
+// riverui.NewHandler are both lazy (verified empirically — neither
+// attempts a real connection at construction time, only Start/actual
+// queries do), so this needs no live Postgres, just a syntactically valid
+// (but unreachable) DSN.
+func TestMountRiverUI(t *testing.T) {
+	pool, err := pgxpool.New(context.Background(), "host=127.0.0.1 port=1 user=x password=x dbname=x sslmode=disable")
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	defer pool.Close()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{Logger: logger})
+	if err != nil {
+		t.Fatalf("river.NewClient: %v", err)
+	}
+
+	uiMux := http.NewServeMux()
+	handler, err := mountRiverUI(uiMux, client, logger)
+	if err != nil {
+		t.Fatalf("mountRiverUI: %v", err)
+	}
+	if handler == nil {
+		t.Fatal("mountRiverUI returned a nil handler")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/riverui/", nil)
+	rec := httptest.NewRecorder()
+	uiMux.ServeHTTP(rec, req)
+	if rec.Code == http.StatusNotFound {
+		t.Errorf("GET /riverui/ = 404, want the route mounted")
 	}
 }
 

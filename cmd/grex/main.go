@@ -20,6 +20,8 @@ import (
 
 	"net/http"
 
+	"riverqueue.com/riverui"
+
 	"github.com/dennisme/grex/internal/api"
 	"github.com/dennisme/grex/internal/buildinfo"
 	"github.com/dennisme/grex/internal/config"
@@ -30,6 +32,33 @@ import (
 	"github.com/dennisme/grex/internal/server"
 	"github.com/dennisme/grex/internal/ui"
 )
+
+// mountRiverUI wraps River's own job/queue UI (riverqueue.com/riverui) at
+// /riverui, reusing the same River client the purge job already runs
+// (persistence.NewPurgeClient) — no second River client. No riverui-
+// specific auth added: it mounts on uiMux, the same mux server.New wraps
+// once with mTLS + SPIFFE role mapping when ui_tls.client_ca_file is
+// configured (see docs/admin/authentication.md), so this route inherits
+// that access control for free. That's a different axis from the
+// browser-login OIDC flow that's still unbuilt (issue #11) — this isn't
+// blocked on that, and doesn't need riverui's own
+// RIVER_BASIC_AUTH_USER/PASS mechanism, which would be a second,
+// inconsistent auth story to rip out later. Caller must still call
+// Start(ctx) on the returned handler before it's fully functional (caching
+// and background query support), same two-step shape as riverui's own
+// example.
+func mountRiverUI(uiMux *http.ServeMux, purgeClient *river.Client[pgx.Tx], logger *slog.Logger) (*riverui.Handler, error) {
+	handler, err := riverui.NewHandler(&riverui.HandlerOpts{
+		Logger:    logger,
+		Prefix:    "/riverui",
+		Endpoints: riverui.NewEndpoints(purgeClient, nil),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("river ui: %w", err)
+	}
+	uiMux.Handle("/riverui/", handler)
+	return handler, nil
+}
 
 const shutdownGrace = 10 * time.Second
 
@@ -107,6 +136,7 @@ func run(args []string) error {
 	var dirtyTracker *persistence.DirtyTracker
 	var store persistence.StateStore
 	var maxConcurrentWrites int
+	var purgeClient *river.Client[pgx.Tx]
 	if cfg.Database.Host != "" {
 		dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 			cfg.Database.Host, cfg.Database.Port, cfg.Database.User, cfg.Database.Password,
@@ -127,6 +157,16 @@ func run(args []string) error {
 		// persistence.PoolCollector's doc comment on why this defaults to the
 		// grex process's own CPU count, not the database's actual capacity).
 		maxConcurrentWrites = int(pool.Config().MaxConns)
+
+		// Constructed here (not deferred to the goroutine-launching block
+		// below) so mountRiverUI can mount its handler on uiMux before
+		// srv.Start() begins serving it — registering a new route on a mux
+		// already being served concurrently is a race. Only Start(ctx),
+		// which needs the shutdown context, waits until after srv.Start().
+		purgeClient, err = persistence.NewPurgeClient(pool, cfg.Fleet.SoftDeleteDuration, events, logger)
+		if err != nil {
+			return fmt.Errorf("purge client: %w", err)
+		}
 	}
 
 	registry := fleet.New(fleet.Config{
@@ -150,6 +190,14 @@ func run(args []string) error {
 	}
 	uiHandler.Mount(uiMux)
 
+	var riverUIHandler *riverui.Handler
+	if dbPool != nil {
+		riverUIHandler, err = mountRiverUI(uiMux, purgeClient, logger)
+		if err != nil {
+			return err
+		}
+	}
+
 	srv := server.New(cfg, logger,
 		server.OpAMP{Handler: handler, ConnContext: connCtx},
 		server.UI{Handler: uiMux},
@@ -162,7 +210,6 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	go registry.Run(ctx)
-	var purgeClient *river.Client[pgx.Tx]
 	if dbPool != nil {
 		flusher := persistence.NewFlusher(registry, dirtyTracker, store, persistenceFlushInterval, logger, maxConcurrentWrites, events)
 		go flusher.Run(ctx)
@@ -170,12 +217,11 @@ func run(args []string) error {
 		snapshotter := persistence.NewSessionSnapshotter(registry, store, sessionSnapshotInterval, logger, maxConcurrentWrites, events)
 		go snapshotter.Run(ctx)
 
-		purgeClient, err = persistence.NewPurgeClient(dbPool, cfg.Fleet.SoftDeleteDuration, events, logger)
-		if err != nil {
-			return fmt.Errorf("purge client: %w", err)
-		}
 		if err := purgeClient.Start(ctx); err != nil {
 			return fmt.Errorf("start purge client: %w", err)
+		}
+		if err := riverUIHandler.Start(ctx); err != nil {
+			return fmt.Errorf("start river ui: %w", err)
 		}
 		defer func() {
 			stopCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
