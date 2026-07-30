@@ -117,9 +117,11 @@ services:
       retries: 12
 
   postgres:
-    # Dev-only infra for the future durable state and job dispatch backend
+    # Dev-only infra for the durable state and future job dispatch backend
     # (see internal/persistence, docs/spec/design.md's Post-1.0 roadmap).
-    # Nothing reads or writes to it yet: no migrations, no schema.
+    # Both grex and grex-2 read/write this via deploy/compose/grex.yaml's
+    # database: block — persistence, the read API's cross-replica DB
+    # fallback, and the soft-delete purge job are all active in this stack.
     image: postgres:17.2-alpine
     environment:
       POSTGRES_USER: grex

@@ -39,6 +39,18 @@ fleet:
     - deployment.environment
     - service.namespace
 
+# Opt-in: persistence, the read API's cross-replica DB fallback, and the
+# soft-delete purge job all activate on database.host being set (see
+# cmd/grex/main.go). Same block on both grex and grex-2 — one shared
+# Postgres, matching compose.yaml's postgres service.
+database:
+  host: postgres
+  port: 5432
+  user: grex
+  password: grex-dev-password
+  dbname: grex
+  sslmode: disable
+
 log:
   # debug in dev so per-agent lifecycle lines are visible to smoke.sh;
   # production default is info, which keeps per-connection logging quiet.

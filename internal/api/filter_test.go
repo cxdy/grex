@@ -150,10 +150,11 @@ func TestMatchAttrNotRegex(t *testing.T) {
 
 func TestMergeAgentsAddsDBOnlyAgents(t *testing.T) {
 	t.Parallel()
+	now := time.Now()
 	local := []fleet.Agent{{InstanceUID: "local-1"}}
-	db := []fleet.Agent{{InstanceUID: "db-1"}}
+	db := []fleet.Agent{{InstanceUID: "db-1", LastSeen: now}}
 
-	merged := MergeAgents(local, db)
+	merged := MergeAgents(local, db, now, 30*time.Second)
 
 	if len(merged) != 2 {
 		t.Fatalf("len(merged) = %d, want 2", len(merged))
@@ -162,10 +163,11 @@ func TestMergeAgentsAddsDBOnlyAgents(t *testing.T) {
 
 func TestMergeAgentsLocalWinsOnOverlap(t *testing.T) {
 	t.Parallel()
+	now := time.Now()
 	local := []fleet.Agent{{InstanceUID: "agent-1", HealthStatus: "local"}}
-	db := []fleet.Agent{{InstanceUID: "agent-1", HealthStatus: "stale-from-db"}}
+	db := []fleet.Agent{{InstanceUID: "agent-1", HealthStatus: "stale-from-db", LastSeen: now}}
 
-	merged := MergeAgents(local, db)
+	merged := MergeAgents(local, db, now, 30*time.Second)
 
 	if len(merged) != 1 {
 		t.Fatalf("len(merged) = %d, want 1 (no duplicate for overlapping instance_uid)", len(merged))
@@ -177,17 +179,76 @@ func TestMergeAgentsLocalWinsOnOverlap(t *testing.T) {
 
 func TestMergeAgentsExcludesEvictedDBAgents(t *testing.T) {
 	t.Parallel()
-	evictedAt := time.Now()
+	now := time.Now()
+	evictedAt := now
 	local := []fleet.Agent{{InstanceUID: "local-1"}}
-	db := []fleet.Agent{{InstanceUID: "db-1", EvictedAt: &evictedAt}}
+	db := []fleet.Agent{{InstanceUID: "db-1", EvictedAt: &evictedAt, LastSeen: now}}
 
-	merged := MergeAgents(local, db)
+	merged := MergeAgents(local, db, now, 30*time.Second)
 
 	if len(merged) != 1 {
 		t.Fatalf("len(merged) = %d, want 1 (soft-deleted db-only agent excluded)", len(merged))
 	}
 	if merged[0].InstanceUID != "local-1" {
 		t.Errorf("merged = %v, want only local-1", merged)
+	}
+}
+
+// A DB-only agent's Connected flag reflects whatever the owning replica last
+// flushed. If that replica crashed hard (no clean disconnect), the flag can
+// be stale forever — Registry.Sweep only walks the local in-memory map, it
+// never sees DB-only rows. MergeAgents must apply the same staleness rule
+// Sweep uses locally (SessionUpdatedAt older than disconnectAfter) rather
+// than trusting a DB-only agent's Connected value unconditionally.
+func TestMergeAgentsStaleDBConnectedIsCorrected(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	disconnectAfter := 30 * time.Second
+	local := []fleet.Agent{{InstanceUID: "local-1"}}
+	db := []fleet.Agent{{
+		InstanceUID:      "db-1",
+		Connected:        true,
+		SessionUpdatedAt: now.Add(-disconnectAfter - time.Second), // just past the threshold
+	}}
+
+	merged := MergeAgents(local, db, now, disconnectAfter)
+
+	var dbAgent fleet.Agent
+	for _, a := range merged {
+		if a.InstanceUID == "db-1" {
+			dbAgent = a
+		}
+	}
+	if dbAgent.Connected {
+		t.Error("Connected = true, want false: no replica has refreshed the session within disconnectAfter")
+	}
+}
+
+// The mirror case: a DB-only agent whose session was refreshed recently (a
+// sibling replica really does hold this connection) must keep Connected
+// true. The staleness check must not overcorrect to "always false for
+// DB-only rows."
+func TestMergeAgentsFreshDBConnectedIsPreserved(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	disconnectAfter := 30 * time.Second
+	local := []fleet.Agent{{InstanceUID: "local-1"}}
+	db := []fleet.Agent{{
+		InstanceUID:      "db-1",
+		Connected:        true,
+		SessionUpdatedAt: now.Add(-time.Second), // well within the threshold
+	}}
+
+	merged := MergeAgents(local, db, now, disconnectAfter)
+
+	var dbAgent fleet.Agent
+	for _, a := range merged {
+		if a.InstanceUID == "db-1" {
+			dbAgent = a
+		}
+	}
+	if !dbAgent.Connected {
+		t.Error("Connected = false, want true: last_seen is within disconnectAfter, a sibling replica likely still holds this connection")
 	}
 }
 

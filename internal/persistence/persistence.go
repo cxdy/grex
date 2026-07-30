@@ -1,9 +1,12 @@
 // Package persistence is the durable counterpart to internal/fleet.Registry:
-// PostgresStore implements StateStore, and Flusher keeps it current from a
-// Registry's Events notifications. internal/fleet.Registry remains the
-// runtime source of truth for live fleet state; nothing reads from
-// StateStore anywhere in grex's own runtime yet (see docs/spec/design.md's
-// Post-1.0 roadmap). JobQueue is still just an interface shape, per the
+// PostgresStore implements StateStore, Flusher keeps the agents/
+// agent_effective_config tables current from a Registry's dirty-tracked
+// Events notifications, and SessionSnapshotter independently keeps
+// agent_session current on its own wholesale cadence (see docs/spec/
+// design.md's Agent state schema). internal/fleet.Registry remains the
+// runtime source of truth for live fleet state; internal/api and
+// internal/ui fall back to StateStore for an agent this replica doesn't
+// hold locally. JobQueue is still just an interface shape, per the
 // "Jobs: schema and execution" section — nothing implements or calls it.
 package persistence
 
@@ -18,6 +21,16 @@ import (
 // can persist agent state and reload it across a grex restart.
 type StateStore interface {
 	SaveAgent(ctx context.Context, agent fleet.Agent) error
+	// SaveSession writes only agent_session (connected, remote_addr,
+	// tls_subject, via_gateway, transport, description_reported,
+	// sequence_num), independent of the agents table. Used by
+	// SessionSnapshotter's wholesale per-tick pass over every registered
+	// agent, deliberately not routed through SaveAgent: agent_session needs
+	// refreshing on every tick regardless of whether identity/health data
+	// changed, and paying SaveAgent's full JSONB-column rewrite cost for that
+	// would scale badly with fleet size. Guarded the same way as SaveAgent,
+	// keyed on agent.LastSeen.
+	SaveSession(ctx context.Context, agent fleet.Agent) error
 	GetAgent(ctx context.Context, instanceUID string) (fleet.Agent, bool, error)
 	ListAgents(ctx context.Context) ([]fleet.Agent, error)
 	DeleteAgent(ctx context.Context, instanceUID string) error

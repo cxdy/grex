@@ -731,6 +731,10 @@ func (*fakeAPIStateStore) SaveAgent(context.Context, fleet.Agent) error {
 	panic("not used by getAgent")
 }
 
+func (*fakeAPIStateStore) SaveSession(context.Context, fleet.Agent) error {
+	panic("not used by getAgent")
+}
+
 func (f *fakeAPIStateStore) ListAgents(context.Context) ([]fleet.Agent, error) {
 	f.listCalled = true
 	return f.listAgents, f.listErr
@@ -766,6 +770,67 @@ func TestGetAgentFallsBackToStoreOnRegistryMiss(t *testing.T) {
 	}
 	if got["instance_uid"] != uid {
 		t.Errorf("instance_uid = %v, want %v", got["instance_uid"], uid)
+	}
+}
+
+// A DB-only agent (registry miss) whose stored Connected=true is stale
+// (session_updated_at past the registry's HeartbeatInterval, matching
+// Sweep's own threshold) must be reported as disconnected — the owning
+// replica may have crashed without ever clearing this, and Sweep only
+// evaluates locally registered agents, never a DB-only fallback like this
+// one.
+func TestGetAgentStoreStaleConnectedIsReportedDisconnected(t *testing.T) {
+	r := newRegistry(t) // HeartbeatInterval: 30s
+	uid := uuid.New().String()
+	store := &fakeAPIStateStore{
+		agent: fleet.Agent{
+			InstanceUID:      uid,
+			Connected:        true,
+			SessionUpdatedAt: time.Now().Add(-time.Minute), // past the 30s threshold
+		},
+		ok: true,
+	}
+
+	mux := newMuxWithStore(t, r, store)
+	code, raw := doGetRaw(t, mux, "/api/agents/"+uid)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, raw)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["connected"] != false {
+		t.Errorf("connected = %v, want false: session_updated_at is past HeartbeatInterval", got["connected"])
+	}
+}
+
+// The mirror case: a DB-only agent whose session was refreshed recently
+// keeps Connected true — the staleness check must not overcorrect to
+// "always false for a DB fallback."
+func TestGetAgentStoreFreshConnectedIsPreserved(t *testing.T) {
+	r := newRegistry(t) // HeartbeatInterval: 30s
+	uid := uuid.New().String()
+	store := &fakeAPIStateStore{
+		agent: fleet.Agent{
+			InstanceUID:      uid,
+			Connected:        true,
+			SessionUpdatedAt: time.Now().Add(-time.Second), // well within the threshold
+		},
+		ok: true,
+	}
+
+	mux := newMuxWithStore(t, r, store)
+	code, raw := doGetRaw(t, mux, "/api/agents/"+uid)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, raw)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["connected"] != true {
+		t.Errorf("connected = %v, want true: last_seen is within HeartbeatInterval", got["connected"])
 	}
 }
 

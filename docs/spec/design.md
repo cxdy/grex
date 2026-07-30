@@ -260,6 +260,41 @@ timing at all; flush-on-disconnect is still worth doing as a best-effort
 optimization (fewer graceful reconnects need the fallback), just not
 load-bearing.
 
+**A related, narrower gap, found and closed separately:** the
+connect-time self-heal above is about the *agent's own* reconnect. It says
+nothing about a *third party reading the API* for an agent that hasn't
+reconnected at all — e.g. its owning replica crashed hard and it simply
+never comes back. `Registry.Sweep` only walks the local in-memory map, it
+never evaluates a DB-only row, so nothing was correcting a stale
+`connected: true` a crashed replica's last flush left behind; it would
+have been visible via every sibling replica's API indefinitely. Fixed:
+`api.StaleConnected` applies the identical threshold `Sweep` uses locally
+(`Registry.HeartbeatInterval`) to DB-only agents at merge/read time
+(`internal/api`'s `MergeAgents` and `getAgent`, `internal/ui`'s equivalent
+lookup), one shared definition of "stale" for both local and DB-only
+agents rather than two.
+
+Fixing that surfaced a second, deeper gap in what data the check had to work
+with: it started out checking `agents.last_seen`, which only advances on a
+dirty-tracked flush (identity/health field changes) — a perfectly healthy,
+quiet agent sending lightweight heartbeats with no reportable field change
+would never re-flush `last_seen` at all after its first report, making
+every connected agent look stale within one `HeartbeatInterval` of going
+quiet, not just a genuinely crashed one. This is exactly the case Agent
+state schema below anticipated ("agent_session ... can be snapshotted
+wholesale each tick rather than tracked in the dirty set") but hadn't been
+built. Fixed by building it: `persistence.SessionSnapshotter` writes
+`agent_session` for every registered agent on its own ticker, independent
+of dirty tracking, and `fleet.Agent.SessionUpdatedAt` (sourced from
+`agent_session.updated_at`, not `agents.last_seen`) is what
+`StaleConnected` actually checks now. Also required loosening
+`agent_session`'s own write guard from a strict advance to allowing ties
+(`<=` not `<`): `Registry.Sweep` marks a disconnect without ever advancing
+`LastSeen` (by design, `LastSeen` must only ever mean "last real message"),
+so a disconnect write's own event time is, by construction, tied with
+whatever's already stored — rejecting ties would have silently dropped
+every disconnect.
+
 This is a **read**-side reconciliation story only. It says nothing about
 **dispatch**: once mutation ships, sending a restart/config-push to a
 specific agent needs its *live* socket, and nothing above says which
@@ -408,15 +443,19 @@ along the identity/session line the in-memory struct blurs today:
   without pulling every agent's config on every list query.
 - `agent_session` — `(instance_uid, connected, remote_addr, tls_subject,
   via_gateway, transport, description_reported, sequence_num,
-  updated_at)`. Everything here resets to disconnected on load, no
-  exceptions: whatever loads a `StateStore` into the registry at grex
-  startup must force `connected=false` and `description_reported=false`
-  on every row before serving traffic. A restored `connected=true` is
-  simply wrong — the agent hasn't reconnected to this process yet, same
-  reasoning `ReportFullState` already applies for gateway-relayed agents.
-  `sequence_num` is kept for display/debugging only; nothing may read it
-  back to resume ordering checks after a reconnect, since the agent's own
-  counter isn't guaranteed continuous across a restart either.
+  updated_at)`. As built, `StateStore` is never loaded wholesale into
+  `Registry` at startup — reads merge local memory with a live `StateStore`
+  query per request instead (see Agent sharding scheme's reconnect-elsewhere
+  section). A stored `connected=true` for an agent this replica doesn't
+  hold locally is only trustworthy as long as it's fresh: `updated_at`
+  (`fleet.Agent.SessionUpdatedAt` once read back) is what `api.StaleConnected`
+  checks to correct a stale `connected=true` at read time — the "restored
+  connected=true is simply wrong" concern this bullet originally named is
+  real, it's just handled at read time against a live row, not at a load
+  time that doesn't exist. `sequence_num` is kept for display/debugging
+  only; nothing may read it back to resume ordering checks after a
+  reconnect, since the agent's own counter isn't guaranteed continuous
+  across a restart either.
 
 **Write path: batched, not per-report.** `Report()`/`SetConnected()` run
 on the OpAMP message-handling hot path; a synchronous write to Postgres
@@ -436,10 +475,17 @@ already re-report everything on reconnect (`ReportFullState`) regardless
 of what the database had; durability here needs to survive seconds of
 staleness, not be per-message-perfect. `agent_session` churns far more
 than `agents`/`agent_effective_config` and its precision matters less (a
-connect/disconnect a few seconds stale in the database is fine) — it can
-flush on a looser cadence, or be snapshotted wholesale each tick rather
-than tracked in the dirty set. Not routed through River: this is
-continuous background persistence, not a discrete one-shot task.
+connect/disconnect a few seconds stale in the database is fine) —
+**built**, not just an option anymore: `persistence.SessionSnapshotter`
+snapshots it wholesale every tick for every registered agent, independent
+of the dirty set. Necessary, not just cheaper: `agents`/`agent_session`
+are dirty-tracked together via the same `Report()` events, so a quiet,
+healthy agent sending heartbeats with no reportable field change would
+otherwise never re-flush `agent_session` either, and `Connected` would go
+stale in the database well before any real problem exists (see Agent
+sharding scheme's reconnect-elsewhere section for where this was found and
+fixed). Not routed through River: this is continuous background
+persistence, not a discrete one-shot task.
 
 **Multi-writer safety: a conditional `UPSERT`, no separate lock.** Once
 more than one replica can flush the same `instance_uid` (see
@@ -704,10 +750,13 @@ silently breaking the worker against a stale schema if one is missed;
 running River's migrator on its own carries that forward automatically.
 Both migrators run against the same database from the same deploy step;
 this is tooling separation, not the "two pieces of infrastructure" the
-Jobs section above is avoiding (that's about brokers, not migrators). Real
-work — actual `.sql` migration files, wiring both migrators into a deploy
-step, and turning `internal/persistence`'s stubs into working
-implementations — is a future PR; nothing here is built yet.
+Jobs section above is avoiding (that's about brokers, not migrators). This
+part shipped: `internal/persistence` has real migrations for the agent
+state schema above (not stubs), both migrators are wired into the Compose
+deploy step, and the write/read paths described in Agent state schema are
+implemented and tested. Still not built: the permission-table and
+jobs/job_targets migrations, since those schemas are still open questions
+above, not decided shapes with nothing to migrate yet.
 
 #### Config source of truth: sync and apply
 

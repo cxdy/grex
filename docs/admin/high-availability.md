@@ -2,11 +2,17 @@
 
 !!! warning "Mostly design, not yet shipped"
     This page describes the **target** architecture for running grex with no
-    single point of failure. Most of it is not built: today grex runs as a
-    single replica (`replicaCount` pinned to 1 in the Helm chart), in-memory
-    fleet state, no shared database. The one piece proven to work is the
-    Envoy least-connections layer, demonstrated in the Compose dev stack —
-    everything else here is tracked as design in
+    single point of failure. Most of it is not built. `replicaCount` stays
+    pinned to 1 in the Helm chart, which has no `database.*` values to wire
+    up Postgres for a production deploy at all — so nothing here actually
+    runs with more than one replica today, regardless of what the binary
+    itself can already do. Two pieces are proven to work: the Envoy
+    least-connections layer (Compose dev stack), and — further along than
+    this page used to say — `internal/persistence`'s agent-state schema,
+    write path, and read-side API fallback (`GET /api/agents[/{id}]` merges
+    local memory with Postgres) are real and wired into `cmd/grex`, not
+    stubs. See the table below for exactly what that covers and what still
+    doesn't exist; everything else here is tracked as design in
     [SPEC: design.md](../spec/design.md), not implemented.
 
 ## Target topology
@@ -73,8 +79,8 @@ this topology.
 | Outer cloud LB | `Service.type=LoadBalancer` via the CCM; flow-hash/round-robin, not least-conn — its job is only getting a connection into the cluster | Required, **not wired into the Helm chart yet** | [design.md: Load balancing](../spec/design.md#load-balancing-an-lb-in-front-of-grex-is-required-not-optional) |
 | Inner LB (Envoy) | TCP proxy, `LEAST_REQUEST` (least-connections for a raw TCP cluster) across grex replicas | **Proven in Compose** (`deploy/compose/envoy.yaml`); not yet in the Helm chart | [design.md: Load balancing](../spec/design.md#load-balancing-an-lb-in-front-of-grex-is-required-not-optional), [Scaling with gateways](scaling-with-gateways.md#load-balancing-across-grex-replicas) |
 | grex app tier | Always stateless; N replicas share one logical Postgres endpoint, never sharded per-agent | Not built — `replicaCount` pinned to 1 | [design.md: Agent sharding scheme](../spec/design.md#agent-sharding-scheme) |
-| Shared Postgres | CloudNativePG shape: one writable endpoint, HA via primary + replica(s), placement (rack/AZ/site) is the operator's choice | Not built — `internal/persistence` is stubs only, no schema | [design.md: Post-1.0 roadmap](../spec/design.md#post-10-roadmap-state-database-and-sharding) |
-| Reads self-heal | Any replica answers from local memory merged with a DB query; stale/missing state falls back to `ReportFullState` | Not built (needs shared Postgres above) | [design.md: Agent sharding scheme](../spec/design.md#agent-sharding-scheme) |
+| Shared Postgres | CloudNativePG shape: one writable endpoint, HA via primary + replica(s), placement (rack/AZ/site) is the operator's choice | **Schema and write path built** (`agents`/`agent_session`/`agent_effective_config`, dirty-tracked batched flush plus an independent wholesale `agent_session` snapshot on its own ticker, multi-writer-safe `UPSERT`, River-based soft-delete purge — `internal/persistence`, wired in `cmd/grex` behind `database.host`; verified against Compose's two-replica stack with `database.host` set on both). Not built: CloudNativePG HA/placement itself is an operator concern outside grex, and the Helm chart has no `database.*` values to configure this for a real deployment yet | [design.md: Post-1.0 roadmap](../spec/design.md#post-10-roadmap-state-database-and-sharding) |
+| Reads self-heal | Any replica answers from local memory merged with a DB query; stale/missing state falls back to `ReportFullState` | **Partially built.** The API-serving-time merge is real (`GET /api/agents[/{id}]` already merge local registry with a `StateStore` query, soft-deleted rows excluded). A DB-only agent's `connected` flag is staleness-checked at read time (`api.StaleConnected`, same threshold `Registry.Sweep` uses locally) against `SessionUpdatedAt`, not `LastSeen` — `persistence.SessionSnapshotter` keeps `agent_session` fresh on its own wholesale per-tick pass, independent of dirty-tracking, since a quiet healthy agent's `LastSeen` alone would go stale in the database well before any real problem exists. A crashed owning replica's stale `connected: true` no longer persists forever via sibling replicas' API responses. Not built: the OpAMP connect-time half — checking DB freshness for an agent connecting to a *different* replica than last time and requesting `ReportFullState` if stale; today `needsFullState` only checks this replica's own local registry | [design.md: Agent sharding scheme](../spec/design.md#agent-sharding-scheme) |
 | Dispatch routing | `agent_connections` ownership table + Postgres `LISTEN`/`NOTIFY` handoff, so a job created on any replica reaches the replica that actually holds the agent's live socket | Not built. Known gap: not durable (a notification to a replica that isn't listening at that instant is lost); an owning replica dying mid-dispatch is detectable via the 1.1 compliance check, not self-healing | [design.md: Dispatch routing](../spec/design.md#dispatch-routing-agent_connections-and-cross-replica-handoff), [Jobs: schema and execution](../spec/design.md#jobs-schema-and-execution) |
 | Config source of truth | `config_sources` table (`helm`/`git`), sync and apply as two separate human-triggered steps, so IaC stays the real source of truth instead of grex becoming a second one | Not built | [design.md: Config source of truth](../spec/design.md#config-source-of-truth-sync-and-apply) |
 

@@ -193,6 +193,104 @@ func TestSaveAgentRejectsStaleWrite(t *testing.T) {
 	}
 }
 
+// TestSaveAgentPersistsDisconnectEvenWhenLastSeenUnchanged covers a real,
+// always-reachable gap: Registry.Sweep marks a missed-heartbeat agent
+// disconnected without ever touching LastSeen (see Sweep's own doc
+// comment), so the dirty-triggered flush that follows carries the exact
+// same LastSeen as what's already stored. The agents-table guard correctly
+// rejects that as "not newer" — but agent_session must still record
+// Connected=false; it must not be silently skipped just because the
+// agents-table write was a no-op.
+func TestSaveAgentPersistsDisconnectEvenWhenLastSeenUnchanged(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	lastSeen := time.Now().UTC().Truncate(time.Microsecond)
+	connected := testAgent("agent-1", lastSeen)
+	connected.Connected = true
+	if err := store.SaveAgent(ctx, connected); err != nil {
+		t.Fatalf("SaveAgent (connected): %v", err)
+	}
+
+	disconnected := testAgent("agent-1", lastSeen) // same LastSeen, Sweep never advances it
+	disconnected.Connected = false
+	if err := store.SaveAgent(ctx, disconnected); err != nil {
+		t.Fatalf("SaveAgent (disconnected): %v", err)
+	}
+
+	got, ok, err := store.GetAgent(ctx, "agent-1")
+	if err != nil || !ok {
+		t.Fatalf("GetAgent: %v, %v", ok, err)
+	}
+	if got.Connected {
+		t.Error("Connected = true, want false: the disconnect write must not be skipped just because LastSeen didn't advance")
+	}
+}
+
+// TestSaveSessionRefreshesIndependentOfAgentsTable covers the wholesale
+// periodic session snapshot's own write path (persistence.SessionSnapshotter
+// calls SaveSession directly, not SaveAgent): it must be able to refresh
+// agent_session on its own, without touching (or needing) the agents table
+// at all.
+func TestSaveSessionRefreshesIndependentOfAgentsTable(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	t1 := time.Now().UTC().Truncate(time.Microsecond)
+	agent := testAgent("agent-1", t1)
+	if err := store.SaveAgent(ctx, agent); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+
+	t2 := t1.Add(time.Minute)
+	agent.LastSeen = t2 // SessionSnapshotter's wholesale pass: fresher heartbeat, no identity/health change
+	if err := store.SaveSession(ctx, agent); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+
+	got, ok, err := store.GetAgent(ctx, "agent-1")
+	if err != nil || !ok {
+		t.Fatalf("GetAgent: %v, %v", ok, err)
+	}
+	if !got.SessionUpdatedAt.Equal(t2) {
+		t.Errorf("SessionUpdatedAt = %v, want %v", got.SessionUpdatedAt, t2)
+	}
+	if !got.LastSeen.Equal(t1) {
+		t.Errorf("LastSeen (agents table) = %v, want unchanged %v: SaveSession must not touch the agents table", got.LastSeen, t1)
+	}
+}
+
+// TestSaveSessionRejectsStaleWrite mirrors TestSaveAgentRejectsStaleWrite for
+// the standalone session write path.
+func TestSaveSessionRejectsStaleWrite(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	older := time.Now().UTC().Truncate(time.Microsecond)
+	newer := older.Add(time.Hour)
+
+	agent := testAgent("agent-1", newer)
+	agent.Connected = true
+	if err := store.SaveAgent(ctx, agent); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+
+	stale := agent
+	stale.LastSeen = older
+	stale.Connected = false
+	if err := store.SaveSession(ctx, stale); err != nil {
+		t.Fatalf("SaveSession (stale): %v", err)
+	}
+
+	got, ok, err := store.GetAgent(ctx, "agent-1")
+	if err != nil || !ok {
+		t.Fatalf("GetAgent: %v, %v", ok, err)
+	}
+	if !got.Connected {
+		t.Error("Connected = false, want true: the stale SaveSession write must be rejected")
+	}
+}
+
 // TestSaveAgentStaleWriteDoesNotClobberEffectiveConfig covers the gap found
 // while reasoning through a grex1->grex2 reconnect: agent_effective_config
 // has no per-row guard of its own (it's a wholesale delete+insert), so a

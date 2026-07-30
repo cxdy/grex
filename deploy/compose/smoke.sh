@@ -121,6 +121,33 @@ else
     echo "gateway-relayed agents split across replicas: grex=$g1, grex-2=$g2"
 fi
 
+# With persistence wired (deploy/compose/grex.yaml's database: block), each
+# replica's GET /api/agents should show the full fleet via the cross-replica
+# DB merge (MergeAgents), not just the subset it personally holds a live
+# connection to. Retries: the write path is a batched flush
+# (persistenceFlushInterval, 5s in cmd/grex/main.go), not synchronous.
+agents_total_partial() {
+    host="$1"
+    scripts/gxcurl -u alice -s "https://$host/api/agents?limit=10" |
+        python3 -c "import json,sys; d=json.load(sys.stdin); print(d['total'], d['partial'])" 2>/dev/null
+}
+
+for host in 127.0.0.1:8080 127.0.0.1:8081; do
+    ok=
+    for _ in $(seq 1 30); do
+        result=$(agents_total_partial "$host")
+        total=${result%% *}
+        partial=${result##* }
+        if [ "$total" = "3" ] && [ "$partial" = "False" ]; then
+            ok=1
+            break
+        fi
+        sleep 2
+    done
+    [ -n "$ok" ] || fail "$host: GET /api/agents total/partial = ${result:-absent}, want 3/False (cross-replica DB merge)"
+done
+echo "cross-replica DB merge confirmed: both replicas report the full fleet via GET /api/agents"
+
 # Prometheus scrapes both grex replicas as separate targets per job (2 each
 # for grex-server/grex-fleet), the three collectors' internal telemetry,
 # and Envoy's stats endpoint.

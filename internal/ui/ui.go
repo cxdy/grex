@@ -220,7 +220,7 @@ func (h *Handler) fleetData(r *http.Request) (pageData, error) {
 			h.metrics.ListStoreFallbackFailed("ui")
 			partial = true
 		} else {
-			mergedAgents = api.MergeAgents(localAgents, dbAgents)
+			mergedAgents = api.MergeAgents(localAgents, dbAgents, time.Now(), h.registry.HeartbeatInterval())
 		}
 	}
 
@@ -286,6 +286,9 @@ func (h *Handler) agentData(r *http.Request) (pageData, bool) {
 		}
 		if ok && agent.EvictedAt != nil {
 			ok = false
+		}
+		if ok && api.StaleConnected(agent, time.Now(), h.registry.HeartbeatInterval()) {
+			agent.Connected = false
 		}
 	}
 	if !ok {

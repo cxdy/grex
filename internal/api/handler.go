@@ -118,7 +118,7 @@ func (h *Handler) listAgents(w http.ResponseWriter, r *http.Request) {
 			h.metrics.ListStoreFallbackFailed("api")
 			partial = true
 		} else {
-			mergedAgents = MergeAgents(localAgents, dbAgents)
+			mergedAgents = MergeAgents(localAgents, dbAgents, time.Now(), h.registry.HeartbeatInterval())
 		}
 	}
 
@@ -167,6 +167,9 @@ func (h *Handler) getAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		if ok && agent.EvictedAt != nil {
 			ok = false
+		}
+		if ok && StaleConnected(agent, time.Now(), h.registry.HeartbeatInterval()) {
+			agent.Connected = false
 		}
 	}
 	if !ok {
