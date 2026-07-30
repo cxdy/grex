@@ -38,6 +38,14 @@ const shutdownGrace = 10 * time.Second
 // and durability are different concerns.
 const persistenceFlushInterval = 5 * time.Second
 
+// sessionSnapshotInterval is how often every registered agent's session
+// state (agent_session) is wholesale-written, independent of dirty
+// tracking — see persistence.SessionSnapshotter. agent_session's row is
+// small (no JSONB), so this can run at the same cadence as the dirty flush
+// without the write-amplification cost a wholesale agents-table rewrite
+// would have at fleet scale.
+const sessionSnapshotInterval = 5 * time.Second
+
 // drainDelay gives an orchestrator's readiness probe time to observe
 // /readyz turning unready before listeners actually close, so new
 // traffic stops arriving before in-flight connections are cut.
@@ -150,6 +158,9 @@ func run(args []string) error {
 	if dbPool != nil {
 		flusher := persistence.NewFlusher(registry, dirtyTracker, store, persistenceFlushInterval, logger)
 		go flusher.Run(ctx)
+
+		snapshotter := persistence.NewSessionSnapshotter(registry, store, sessionSnapshotInterval, logger)
+		go snapshotter.Run(ctx)
 
 		purgeClient, err = persistence.NewPurgeClient(dbPool, cfg.Fleet.SoftDeleteDuration, events, logger)
 		if err != nil {

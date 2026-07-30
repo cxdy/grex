@@ -7,10 +7,61 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/dennisme/grex/internal/fleet"
 )
+
+// execer is satisfied by both *pgxpool.Pool and pgx.Tx, so
+// saveSessionUpsert can run either inside SaveAgent's transaction or as
+// SaveSession's own standalone statement.
+type execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// saveSessionUpsert is agent_session's write, factored out so it can run
+// independently of the agents table's own guard (see SaveAgent) as well as
+// standalone (see SaveSession). Guarded on agent_session's own updated_at,
+// not the agents table's — the two tables are allowed to disagree about
+// which write is "newest" since they're written by different paths on
+// different cadences (SaveAgent's dirty-triggered writes vs
+// SessionSnapshotter's wholesale ones).
+//
+// The guard allows ties (<=), not just strict advances (<): Registry.Sweep
+// marks a missed-heartbeat agent disconnected without ever advancing
+// LastSeen (see Sweep's own doc comment and SaveAgent's), so a disconnect
+// write's own event time is, by construction, exactly equal to whatever
+// LastSeen already produced the currently-stored row — not older, but not
+// strictly newer either. Rejecting ties would silently drop every
+// disconnect. This stays safe against the actual risk (a genuinely older
+// write, from a stale flush, clobbering newer data written elsewhere): <=
+// still rejects anything strictly older, same as the agents table's guard;
+// it only additionally accepts the disconnect-at-an-unmoved-LastSeen case.
+func saveSessionUpsert(ctx context.Context, q execer, agent fleet.Agent) error {
+	_, err := q.Exec(ctx, `
+		INSERT INTO agent_session (
+			instance_uid, connected, remote_addr, tls_subject, via_gateway,
+			transport, description_reported, sequence_num, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (instance_uid) DO UPDATE SET
+			connected = EXCLUDED.connected,
+			remote_addr = EXCLUDED.remote_addr,
+			tls_subject = EXCLUDED.tls_subject,
+			via_gateway = EXCLUDED.via_gateway,
+			transport = EXCLUDED.transport,
+			description_reported = EXCLUDED.description_reported,
+			sequence_num = EXCLUDED.sequence_num,
+			updated_at = EXCLUDED.updated_at
+		WHERE agent_session.updated_at <= EXCLUDED.updated_at`,
+		agent.InstanceUID, agent.Connected, agent.Conn.RemoteAddr, agent.Conn.TLSSubject, agent.Conn.ViaGateway,
+		agent.Conn.Transport, agent.DescriptionReported, int64(agent.SequenceNum), //nolint:gosec // bit-for-bit storage
+		agent.LastSeen)
+	if err != nil {
+		return fmt.Errorf("upsert agent_session: %w", err)
+	}
+	return nil
+}
 
 // PostgresStore is a StateStore backed by Postgres. Every write is a guarded
 // UPSERT keyed on event time (Agent.LastSeen), never flush wall-clock time,
@@ -30,21 +81,32 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 }
 
 // SaveAgent writes agent across the agents, agent_session, and
-// agent_effective_config tables in one transaction, all guarded by the same
-// event time (agent.LastSeen): if the agents write is rejected as stale (see
-// below), the whole transaction is abandoned before touching agent_session
-// or agent_effective_config, rather than guarding each table separately.
-// This matters most for agent_effective_config, which has no per-row
-// timestamp of its own — it's a wholesale delete-then-insert, so it needs
-// the whole call gated up front rather than guarded row by row.
+// agent_effective_config tables in one transaction. agent_effective_config
+// is gated on the agents-table write actually landing (see below); it has
+// no per-row timestamp of its own, unlike the other two, so it needs the
+// whole call gated up front rather than guarded row by row.
 //
-// A stale flush landing after a newer one is expected: an agent can
-// reconnect to a different grex replica on every connection, and nothing
-// guarantees the replica holding the older data flushes first. Without this
-// gate, that replica's effective_config delete+insert could still commit
-// after the newer replica's, overwriting current files with stale ones —
-// not just temporary staleness (which self-heals on the next flush) but an
-// actual inversion that would persist until the stale replica's next flush.
+// agent_session is NOT gated behind the agents-table write: it has its own
+// guard (saveSessionUpsert, keyed on agent_session's own updated_at) and is
+// always attempted regardless of whether the agents-table write landed.
+// This matters for a real, always-reachable case: Registry.Sweep marks a
+// missed-heartbeat agent disconnected without ever advancing LastSeen (see
+// Sweep's own doc comment), so the dirty-triggered flush that follows
+// carries the exact same LastSeen already stored in agents — the
+// agents-table guard correctly rejects that as "not newer," but
+// agent_session must still record Connected=false. Gating it behind the
+// agents-table's result would silently drop every disconnect that isn't
+// paired with a genuine identity/health change, exactly the stale
+// Connected=true bug this schema exists to avoid.
+//
+// A stale flush landing after a newer one is expected for the agents/
+// agent_effective_config pair: an agent can reconnect to a different grex
+// replica on every connection, and nothing guarantees the replica holding
+// the older data flushes first. Without agent_effective_config's gate, that
+// replica's delete+insert could still commit after the newer replica's,
+// overwriting current files with stale ones — not just temporary staleness
+// (which self-heals on the next flush) but an actual inversion that would
+// persist until the stale replica's next flush.
 func (s *PostgresStore) SaveAgent(ctx context.Context, agent fleet.Agent) error {
 	identifying, err := json.Marshal(nonNilStringMap(agent.Identifying))
 	if err != nil {
@@ -103,47 +165,24 @@ func (s *PostgresStore) SaveAgent(ctx context.Context, agent fleet.Agent) error 
 	if err != nil {
 		return fmt.Errorf("upsert agents: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		// Guard rejected this write as older than what's already stored:
-		// this whole call is stale, so there's nothing left to do. Rolling
-		// back (via the deferred Rollback) rather than committing an empty
-		// transaction is just tidiness, Postgres treats both the same way
-		// for a transaction with no effective changes.
-		return nil
+	agentsUpdated := tag.RowsAffected() > 0
+
+	if err := saveSessionUpsert(ctx, tx, agent); err != nil {
+		return err
 	}
 
-	_, err = tx.Exec(ctx, `
-		INSERT INTO agent_session (
-			instance_uid, connected, remote_addr, tls_subject, via_gateway,
-			transport, description_reported, sequence_num, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		ON CONFLICT (instance_uid) DO UPDATE SET
-			connected = EXCLUDED.connected,
-			remote_addr = EXCLUDED.remote_addr,
-			tls_subject = EXCLUDED.tls_subject,
-			via_gateway = EXCLUDED.via_gateway,
-			transport = EXCLUDED.transport,
-			description_reported = EXCLUDED.description_reported,
-			sequence_num = EXCLUDED.sequence_num,
-			updated_at = EXCLUDED.updated_at
-		WHERE agent_session.updated_at < EXCLUDED.updated_at`,
-		agent.InstanceUID, agent.Connected, agent.Conn.RemoteAddr, agent.Conn.TLSSubject, agent.Conn.ViaGateway,
-		agent.Conn.Transport, agent.DescriptionReported, int64(agent.SequenceNum), //nolint:gosec // bit-for-bit storage
-		agent.LastSeen)
-	if err != nil {
-		return fmt.Errorf("upsert agent_session: %w", err)
-	}
-
-	if _, err := tx.Exec(ctx, `DELETE FROM agent_effective_config WHERE instance_uid = $1`, agent.InstanceUID); err != nil {
-		return fmt.Errorf("clear agent_effective_config: %w", err)
-	}
-	for filename, body := range agent.EffectiveConfig {
-		_, err = tx.Exec(ctx, `
-			INSERT INTO agent_effective_config (instance_uid, filename, body, updated_at)
-			VALUES ($1, $2, $3, $4)`,
-			agent.InstanceUID, filename, body, agent.LastSeen)
-		if err != nil {
-			return fmt.Errorf("insert agent_effective_config: %w", err)
+	if agentsUpdated {
+		if _, err := tx.Exec(ctx, `DELETE FROM agent_effective_config WHERE instance_uid = $1`, agent.InstanceUID); err != nil {
+			return fmt.Errorf("clear agent_effective_config: %w", err)
+		}
+		for filename, body := range agent.EffectiveConfig {
+			_, err = tx.Exec(ctx, `
+				INSERT INTO agent_effective_config (instance_uid, filename, body, updated_at)
+				VALUES ($1, $2, $3, $4)`,
+				agent.InstanceUID, filename, body, agent.LastSeen)
+			if err != nil {
+				return fmt.Errorf("insert agent_effective_config: %w", err)
+			}
 		}
 	}
 
@@ -151,6 +190,14 @@ func (s *PostgresStore) SaveAgent(ctx context.Context, agent fleet.Agent) error 
 		return fmt.Errorf("commit: %w", err)
 	}
 	return nil
+}
+
+// SaveSession writes only agent_session, independent of the agents table
+// (see saveSessionUpsert). Used by SessionSnapshotter's wholesale per-tick
+// pass over every registered agent — see StateStore's doc comment for why
+// this isn't routed through SaveAgent.
+func (s *PostgresStore) SaveSession(ctx context.Context, agent fleet.Agent) error {
+	return saveSessionUpsert(ctx, s.pool, agent)
 }
 
 // GetAgent reads one agent back, joining across all three tables. Includes
@@ -181,7 +228,7 @@ func (s *PostgresStore) queryAgents(ctx context.Context, where string, args ...a
 			a.capabilities, a.identifying, a.non_identifying, a.missing_attributes,
 			a.reserved_attribute_conflicts, a.packages, a.evicted_at,
 			s.connected, s.remote_addr, s.tls_subject, s.via_gateway, s.transport,
-			s.description_reported, s.sequence_num
+			s.description_reported, s.sequence_num, s.updated_at
 		FROM agents a
 		LEFT JOIN agent_session s ON s.instance_uid = a.instance_uid
 		`+where+`
@@ -222,6 +269,7 @@ func scanAgent(rows pgx.Rows) (fleet.Agent, error) {
 		identifying, nonIdentifying, packages []byte
 		connected, viaGateway                 *bool
 		remoteAddr, tlsSubject, transport     *string
+		sessionUpdatedAt                      *time.Time
 	)
 	err := rows.Scan(
 		&a.InstanceUID, &a.FirstSeen, &a.LastSeen, &a.Healthy, &a.HealthError,
@@ -229,7 +277,7 @@ func scanAgent(rows pgx.Rows) (fleet.Agent, error) {
 		&capabilities, &identifying, &nonIdentifying, &a.MissingAttributes,
 		&a.ReservedAttributeConflicts, &packages, &evictedAt,
 		&connected, &remoteAddr, &tlsSubject, &viaGateway, &transport,
-		&a.DescriptionReported, &sequenceNum)
+		&a.DescriptionReported, &sequenceNum, &sessionUpdatedAt)
 	if err != nil {
 		return fleet.Agent{}, err
 	}
@@ -257,6 +305,9 @@ func scanAgent(rows pgx.Rows) (fleet.Agent, error) {
 	}
 	if transport != nil {
 		a.Conn.Transport = *transport
+	}
+	if sessionUpdatedAt != nil {
+		a.SessionUpdatedAt = *sessionUpdatedAt
 	}
 
 	if err := json.Unmarshal(identifying, &a.Identifying); err != nil {

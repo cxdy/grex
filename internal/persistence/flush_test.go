@@ -23,6 +23,10 @@ func (erroringStateStore) SaveAgent(context.Context, fleet.Agent) error {
 	return errors.New("save failed")
 }
 
+func (erroringStateStore) SaveSession(context.Context, fleet.Agent) error {
+	return errors.New("save failed")
+}
+
 func (erroringStateStore) SoftDeleteAgent(context.Context, string, time.Time) error {
 	return errors.New("soft delete failed")
 }

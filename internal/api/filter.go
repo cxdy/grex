@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/dennisme/grex/internal/fleet"
 )
@@ -213,8 +214,11 @@ func ParseFilters(q url.Values) (Filters, error) {
 // it's fresher, since the database write path is intentionally batched. A
 // db agent with EvictedAt set is a soft-deleted row (see
 // docs/developer/persistence.md); it's excluded rather than presented as
-// live.
-func MergeAgents(local, db []fleet.Agent) []fleet.Agent {
+// live. now and disconnectAfter feed StaleConnected: a db-only agent's
+// Connected flag is corrected to false if its session hasn't been
+// refreshed recently enough for any replica to still plausibly hold that
+// connection (see StaleConnected).
+func MergeAgents(local, db []fleet.Agent, now time.Time, disconnectAfter time.Duration) []fleet.Agent {
 	merged := make([]fleet.Agent, len(local), len(local)+len(db))
 	copy(merged, local)
 	seen := make(map[string]bool, len(local))
@@ -225,9 +229,31 @@ func MergeAgents(local, db []fleet.Agent) []fleet.Agent {
 		if seen[a.InstanceUID] || a.EvictedAt != nil {
 			continue
 		}
+		if StaleConnected(a, now, disconnectAfter) {
+			a.Connected = false
+		}
 		merged = append(merged, a)
 	}
 	return merged
+}
+
+// StaleConnected reports whether a's Connected=true is stale: a's owning
+// replica may have crashed without a clean disconnect (no event ever fires,
+// see docs/spec/design.md's Agent sharding scheme), and Registry.Sweep only
+// evaluates locally registered agents, never DB-only rows like a. Without
+// this check a crashed replica's last flush would report Connected=true
+// forever. Checked against a.SessionUpdatedAt, not a.LastSeen: the two are
+// deliberately different columns on different flush cadences (see
+// persistence.SessionSnapshotter) — LastSeen only reflects genuine
+// identity/health changes, so it can go stale in the database for a
+// perfectly healthy, quiet agent long before disconnectAfter, while
+// SessionUpdatedAt is kept fresh independently by the periodic wholesale
+// snapshot as long as the agent keeps checking in at all. Uses the same
+// threshold Sweep applies locally (Registry.HeartbeatInterval), so a
+// DB-only agent and a locally registered one are held to one shared
+// definition of "stale," not two.
+func StaleConnected(a fleet.Agent, now time.Time, disconnectAfter time.Duration) bool {
+	return a.Connected && now.Sub(a.SessionUpdatedAt) > disconnectAfter
 }
 
 // MatchingAgents returns agents satisfying every filter.

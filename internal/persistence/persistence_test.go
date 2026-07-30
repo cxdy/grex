@@ -32,6 +32,25 @@ func (f *fakeStateStore) SaveAgent(_ context.Context, agent fleet.Agent) error {
 	return nil
 }
 
+func (f *fakeStateStore) SaveSession(_ context.Context, agent fleet.Agent) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.agents == nil {
+		f.agents = make(map[string]fleet.Agent)
+	}
+	existing := f.agents[agent.InstanceUID]
+	existing.Connected = agent.Connected
+	existing.Conn = agent.Conn
+	existing.DescriptionReported = agent.DescriptionReported
+	existing.SequenceNum = agent.SequenceNum
+	existing.SessionUpdatedAt = agent.LastSeen
+	if existing.InstanceUID == "" {
+		existing.InstanceUID = agent.InstanceUID
+	}
+	f.agents[agent.InstanceUID] = existing
+	return nil
+}
+
 func (f *fakeStateStore) GetAgent(_ context.Context, instanceUID string) (fleet.Agent, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

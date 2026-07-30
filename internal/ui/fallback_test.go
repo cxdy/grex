@@ -41,6 +41,10 @@ func (*fakeUIStateStore) SaveAgent(context.Context, fleet.Agent) error {
 	panic("not used by agentData")
 }
 
+func (*fakeUIStateStore) SaveSession(context.Context, fleet.Agent) error {
+	panic("not used by agentData")
+}
+
 func (f *fakeUIStateStore) ListAgents(context.Context) ([]fleet.Agent, error) {
 	f.listCalled = true
 	return f.listAgents, f.listErr

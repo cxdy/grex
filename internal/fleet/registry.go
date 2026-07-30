@@ -161,6 +161,15 @@ type Agent struct {
 	// Registry-held agents never set it. A read path presenting "live" fleet
 	// state must treat a non-nil EvictedAt the same as not-found.
 	EvictedAt *time.Time `json:"-"`
+	// SessionUpdatedAt is set only on an Agent read back from
+	// persistence.StateStore: the last time some replica's periodic session
+	// snapshot confirmed this agent's Connected value (see
+	// persistence.SessionSnapshotter), independent of LastSeen — identity/
+	// health data (LastSeen's table) and liveness (this field's table) are
+	// flushed on different cadences on purpose (see docs/spec/design.md's
+	// Agent state schema). Registry-held agents never set it; api.StaleConnected
+	// is the only reader.
+	SessionUpdatedAt time.Time `json:"-"`
 }
 
 // Capabilities is AgentCapabilities decoded into named fields.
@@ -413,6 +422,15 @@ func (r *Registry) SetConnected(id string, connected bool) {
 }
 
 // Get returns a snapshot of one agent.
+// HeartbeatInterval returns the same threshold Sweep uses to mark a locally
+// registered agent disconnected after a missed check-in. Exposed so callers
+// merging in DB-only agent records (see internal/api's MergeAgents) can
+// apply the identical staleness rule instead of trusting a stored Connected
+// value that Sweep never gets a chance to correct.
+func (r *Registry) HeartbeatInterval() time.Duration {
+	return r.cfg.HeartbeatInterval
+}
+
 func (r *Registry) Get(id string) (Agent, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
