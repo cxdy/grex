@@ -197,10 +197,10 @@ services:
         condition: service_healthy
 
   migrate:
-    # One-shot: runs golang-migrate against grex's own tables. Only a
-    # placeholder migration exists today (internal/persistence/migrations);
-    # permission-table and jobs-table shape are still open questions in
-    # docs/spec/design.md.
+    # One-shot: runs golang-migrate against grex's own tables
+    # (internal/persistence/migrations): agent state, role_mapping,
+    # agent_connections, jobs/job_targets. Nothing reads/writes the latter
+    # three yet — schema only, see docs/spec/design.md.
     image: migrate/migrate:v4.19.1
     volumes:
       - ./internal/persistence/migrations:/migrations:ro

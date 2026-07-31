@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS job_targets;
+DROP TABLE IF EXISTS jobs;

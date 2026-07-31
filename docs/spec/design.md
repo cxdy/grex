@@ -648,9 +648,10 @@ package upgrade) needs the same shape underneath: a user (via API first,
 UI second) picks a target set of agents by attribute filter — the same
 filter language `GET /api/agents` already uses — and an action to perform,
 and grex carries that out per matched agent and reports back per-agent
-outcome. This assumes the Supervisor work above has already landed as the
-standard client by the time mutation ships, so `instance_uid` is stable
-across an agent's restarts; job targets don't need to account for an
+outcome. This requires the Supervisor work above to have already landed as
+the standard client by the time mutation ships (see **Hard requirement:
+Supervisor adoption** below — not a soft assumption), so `instance_uid` is
+stable across an agent's restarts; job targets don't need to account for an
 in-flight job's targets churning through eviction/re-registration.
 
 [River](https://github.com/riverqueue/river) is a sound base for the
@@ -695,12 +696,18 @@ infrastructure. Two things it doesn't give for free:
   `job_targets`. For restart specifically: success is the target's next
   health report showing a newer `health_start_time` than the dispatch
   time — no protocol extension needed, `Agent.HealthStartTime` is already
-  tracked. Still open: the timeout before an un-reconnected target is
-  marked `failed` (some multiple of `heartbeat_interval`; exact number
-  not chosen).
+  tracked. The timeout before an un-reconnected target is marked `failed`
+  (some multiple of `heartbeat_interval`) is configurable per job via
+  `action_config` below, not a hardcoded constant; no default chosen yet.
 - **Retry/backoff**: fibonacci, capped, for a `job_targets` dispatch
-  attempt that finds its agent not currently connected. Exact cap not
-  chosen yet.
+  attempt that finds its agent not currently connected. The cap is also a
+  per-job `action_config` value, same mechanism as the reconnect timeout
+  above, not a global constant; no default chosen yet.
+- **`action_config`: a per-job, action-specific config blob** (`jsonb` on
+  the `jobs` row), holding whatever knobs that action type needs —
+  restart's `reconnect_timeout` and `backoff_cap` above, config-push's
+  would hold different fields later. One schema shape shared across
+  action types rather than a new column per action.
 - **Owning-replica crash mid-dispatch: detectable, not self-healing.**
   Retry/backoff above only covers the target not being connected *when a
   worker tries to dispatch* (`send_failed`, retried immediately). A
@@ -722,9 +729,21 @@ infrastructure. Two things it doesn't give for free:
   idea (see Open questions), not something jobs do on their own.
 - **Authorization**: `viewer` can read jobs and their status; `admin` can
   read and create. The first place the `viewer`/`admin` split (see
-  Permission table schema) actually differs in behavior.
+  Permission table schema) actually differs in behavior. For restart,
+  nothing in `action_config` or the result is sensitive, so `viewer` sees
+  the full job. Action types whose `action_config` or result *can* carry
+  secrets (config-push's config body, for one) are the harder case:
+  field-level redaction was considered and rejected — an unredacted field
+  silently added to some future exporter config would leak, with nothing
+  likely to catch it before it ships — in favor of a coarser rule:
+  `viewer` gets a summary only (job type, status, overall error/counts),
+  never the raw `action_config` or per-target detail, for any action type
+  marked potentially-sensitive. Binary per action type, not per field.
+  Rough plan only; the mechanism itself isn't designed yet, revisit once
+  config-push (the first action type that actually needs it) is real.
 - **Surface: API only for now**, `POST /api/jobs`; no UI form yet. Request
-  body shape not yet specified.
+  body: `{filter, action, action_config}` — filter and action required,
+  `action_config` optional and action-specific.
 - **Create and execute are separate calls.** `POST /api/jobs` creates a
   job in `planned` status — filter and action recorded, nothing
   dispatched, matched-target count/list can be previewed before anything
@@ -748,6 +767,32 @@ infrastructure. Two things it doesn't give for free:
   requested, then insert the real per-`job_targets` dispatch jobs";
   cancelling before it fires marks the job `cancelled` and prevents that
   scheduled job from ever doing its work.
+
+**Hard requirement: Supervisor adoption, not a soft assumption.** A job's
+compliance check needs its target's `instance_uid` to survive the action
+it's checking for — restart's `health_start_time > dispatch_at` predicate
+only means anything if the agent that reconnects *is* the same
+`instance_uid` that was dispatched to. The bare OpAMP extension churns
+`instance_uid` across a restart; the Supervisor doesn't (see Post-1.0
+roadmap: why the Supervisor matters). So this isn't "works better with
+Supervisor," it's "cannot report success or failure at all without it" —
+there's no partial-credit fallback, and building one isn't grex's job:
+agents already ship their own otelcol exporter metrics/logs to whatever
+central system operators already watch, so "did N agents come back" stays
+answerable there, outside grex, for anyone not running Supervisor. Job
+creation/arm rejects (or filters, exact behavior open) any matched target
+that isn't `supervisor_managed`.
+
+| Job | Requires Supervisor | Why |
+|-----|---------------------|-----|
+| restart | yes | success predicate (`health_start_time > dispatch_at`) is keyed on `instance_uid` surviving the action |
+
+If every job type ends up requiring it — plausible, since config-push and
+package-upgrade need the same identity continuity to report success — this
+stops being a per-job table and becomes a single fleet-wide deployment
+precondition for using jobs at all. Kept as a table for now in case some
+future action type turns out not to need identity continuity (e.g. a
+fire-and-forget broadcast with no per-agent success tracking).
 
 **Known scope boundary: jobs are point-in-time, not continuous.**
 `job_targets` is materialized exactly once — at freeze time, or at the
@@ -798,11 +843,14 @@ Both migrators run against the same database from the same deploy step;
 this is tooling separation, not the "two pieces of infrastructure" the
 Jobs section above is avoiding (that's about brokers, not migrators). This
 part shipped: `internal/persistence` has real migrations for the agent
-state schema above (not stubs), both migrators are wired into the Compose
+state schema above, the `role_mapping` table, `agent_connections`, and
+`jobs`/`job_targets` (not stubs), both migrators are wired into the Compose
 deploy step, and the write/read paths described in Agent state schema are
-implemented and tested. Still not built: the permission-table and
-jobs/job_targets migrations, since those schemas are still open questions
-above, not decided shapes with nothing to migrate yet.
+implemented and tested. The permission-table and jobs schemas now have real
+migrations and CRUD repository code too, tested against real Postgres —
+still not built: anything that reads or writes through them (role lookup,
+the OpAMP connect/disconnect wiring, the arm/dispatch logic and its River
+workers, the API handlers).
 
 #### Config source of truth: sync and apply
 
@@ -1329,8 +1377,10 @@ agent attributes, metric cardinality cap.
    before `grex` starts, per the migration-tooling decision above:
    `river-migrate` (`cmd/river-migrate`, one-shot) creates River's own
    tables via its own migrator, and `migrate` (`migrate/migrate` image)
-   applies `internal/persistence/migrations`, today only a placeholder —
-   permission-table and jobs-table shape are still open questions.
+   applies `internal/persistence/migrations` — agent state, `role_mapping`,
+   `agent_connections`, and `jobs`/`job_targets` all now have real
+   migrations (see Jobs: schema and execution), though nothing reads or
+   writes through the latter three yet.
 
 The stack currently runs with agents connected straight to grex; inserting the
 OpAMP gateway service happens together with the OpAMP core milestone, since
@@ -1541,17 +1591,68 @@ per package, compose stack as the end-to-end harness).
   Compose) not yet built. See Load balancing: an LB in front of grex is
   required, not optional.
 
+## Benchmarks (future)
+
+Not built. Scoped here so "benchmark at 1M agents" has a plan instead of
+being one vague future ask. Two decoupled tracks, not one benchmark — they
+stress different components and don't need the same tooling:
+
+- **DB/schema scale**: does `agents`, `agent_connections`, `job_targets`
+  still query/insert fast with ~1M rows (index plans, the bulk
+  `INSERT ... unnest` pattern `CreateJobTargets` uses, filter-matching
+  queries). No fake agents needed — bulk-seed rows directly (SQL `COPY` or
+  the same `unnest` bulk-insert trick, not a per-row loop) and run real
+  queries against them. Fully laptop-local, cheap, and the most directly
+  useful of the two: it exercises exactly the schema/queries this work
+  landed. `cmd/seed-agent` today loops one `SaveAgent` call per row (fine
+  for a handful of manual test agents, its actual job) and needs a bulk
+  sibling before it's useful at this scale.
+- **Live-connection/protocol scale**: 1M real (or faked) OpAMP client
+  connections held open, exercising `fleet.Registry`, heartbeats, `Sweep`,
+  and eventually job dispatch. Needs a fake-OpAMP-client load generator
+  (doesn't exist yet) — enough protocol to look like an agent (connect,
+  periodic heartbeat, synthetic `instance_uid`), nothing Supervisor-side,
+  consistent with grex's own non-goal of managing real collector
+  processes. Not laptop-scale: 1M concurrent sockets/goroutines needs OS
+  fd/ulimit tuning and real RAM on whatever runs the fake clients, a
+  multi-VM or cloud environment, not a single machine.
+
+**Publish results for both topologies**, direct-to-grex and
+agents-behind-`opampgateway` (see Scaling topology under Decided above) —
+they're different scaling problems wearing the same "1M agents" number.
+Direct topology puts the full 1M-socket burden on grex itself. Gateway
+topology multiplexes those 1M sockets down to a much smaller upstream pool
+(`server.connections`) into grex, so grex's own bottleneck shifts to
+holding a 1M-entry `fleet.Registry` map and demuxing gateway-relayed
+messages back to the right `instance_uid`, not raw socket count. The
+gateway (plus the fake clients dialing it) is where the socket/fd
+concurrency — and the beefy VM(s) — actually needs to live in that
+topology.
+
+Depends on one still-open design point: whether arm's `recompute` step
+(see Jobs: schema and execution) reads live `fleet.Registry` state, the
+DB-fallback-merged view `GET /api/agents` is gaining (see `GET /api/agents`
+gaps under Agent state schema), or both. If recompute ends up querying the
+same merged view the read API already will, the ingest→arm→`job_targets`
+loop can be validated against DB-seeded rows alone — no live connections
+needed — and the live-connection track becomes a pure
+protocol/network benchmark, decoupled from jobs correctness entirely.
+Decide this when arm is actually built, not here.
+
 ## Open questions
 
 - **Jobs execution engine** (post-1.0, not yet implemented): River for
   per-agent dispatch, grex-owned `jobs`/`job_targets` tables for the
   parent/rollup shape River doesn't provide in OSS, restart as the first
   action, plan/execute split with a 5-minute cancellable arm delay. See
-  Jobs: schema and execution. Assumes the Supervisor's stable
-  `instance_uid` lands first. Still open: restart's reconnect timeout,
-  the backoff cap, and whether jobs require fleet-wide Supervisor
-  adoption or must degrade for bare-extension agents still churning
-  `instance_uid` on restart.
+  Jobs: schema and execution. Requires the Supervisor's stable
+  `instance_uid` fleet-wide (see Hard requirement: Supervisor adoption) —
+  bare-extension agents are excluded from job targets, not degraded-for.
+  Still open: restart's reconnect timeout and backoff cap defaults (both
+  configurable per job via `action_config`, but no default chosen), and
+  the viewer-redaction mechanism for action types with sensitive
+  `action_config`/results (rough plan only, see Authorization in Jobs:
+  schema and execution).
 - **Declarative/policy layer** (post-1.0, future idea, partly designed):
   jobs above are edge-triggered ("do X now to these agents"). The *sync*
   half of "where does desired config come from" is now designed (see
