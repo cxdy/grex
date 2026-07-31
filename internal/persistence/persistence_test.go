@@ -133,40 +133,6 @@ func TestStateStoreShape(t *testing.T) {
 	}
 }
 
-// fakeJobQueue is a minimal in-memory stand-in used only to prove JobQueue's
-// shape is implementable. It is not a real dispatcher.
-type fakeJobQueue struct {
-	targets map[string][]JobTarget
-}
-
-var _ JobQueue = (*fakeJobQueue)(nil)
-
-func (f *fakeJobQueue) InsertJob(_ context.Context, job Job, targets []JobTarget) error {
-	if f.targets == nil {
-		f.targets = make(map[string][]JobTarget)
-	}
-	f.targets[job.ID] = targets
-	return nil
-}
-
-func (f *fakeJobQueue) ListJobTargets(_ context.Context, jobID string) ([]JobTarget, error) {
-	return f.targets[jobID], nil
-}
-
-func TestJobQueueShape(t *testing.T) {
-	ctx := context.Background()
-	queue := &fakeJobQueue{}
-
-	job := Job{ID: "job-1", Filter: "service.name=otelcol-contrib", Action: "restart"}
-	targets := []JobTarget{{JobID: "job-1", InstanceUID: "agent-1", Status: "pending"}}
-	if err := queue.InsertJob(ctx, job, targets); err != nil {
-		t.Fatalf("InsertJob: %v", err)
-	}
-	got, err := queue.ListJobTargets(ctx, "job-1")
-	if err != nil {
-		t.Fatalf("ListJobTargets: %v", err)
-	}
-	if len(got) != 1 || got[0].InstanceUID != "agent-1" {
-		t.Fatalf("ListJobTargets = %+v, want one target for agent-1", got)
-	}
-}
+// JobQueue, PermissionStore, and ConnectionStore are implemented by
+// PostgresStore and tested against real Postgres in jobs_test.go,
+// permissions_test.go, and agent_connections_test.go.
