@@ -24,9 +24,10 @@ helm install grex oci://ghcr.io/dennisme/charts/grex --version 0.1.0 \
   --namespace grex --create-namespace
 ```
 
-Chart `version` / `appVersion` are bumped with grex releases
-(`just release-tag`). Empty `image.tag` defaults to `appVersion`, which
-matches the published `ghcr.io/dennisme/grex` image tag.
+Chart `version` / `appVersion` in the packaged/published chart match each
+grex release tag (set via an explicit override at package time in CI, not
+stored in this file's `Chart.yaml`). Empty `image.tag` defaults to
+`appVersion`, which matches the published `ghcr.io/dennisme/grex` image tag.
 
 ## Install from a local checkout
 

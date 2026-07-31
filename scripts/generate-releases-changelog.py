@@ -102,9 +102,19 @@ def markdownify_github_notes(body: str) -> str:
     return body.strip()
 
 
+# Matches app release tags (v1.2.3). Excludes the chart's own release
+# (helm-release.yaml / cr, named "chart-grex-1.2.3", no leading "v") so it
+# doesn't show up here with an empty body and mis-parsed version string.
+APP_TAG_RE = re.compile(r"^v\d+\.\d+\.\d+")
+
+
 def render(releases: list[dict]) -> str:
     lines = [HEADER.format(repo=REPO)]
-    published = [r for r in releases if not r.get("draft")]
+    published = [
+        r
+        for r in releases
+        if not r.get("draft") and APP_TAG_RE.match(r.get("tag_name") or "")
+    ]
     if not published:
         lines += [
             "No published GitHub Releases yet. After the first tagged release",
@@ -140,7 +150,7 @@ def render(releases: list[dict]) -> str:
         lines += [
             "### Get this release",
             "",
-            f"- [GitHub Release]({url}) (binaries, checksums, chart `.tgz`)",
+            f"- [GitHub Release]({url}) (binaries, checksums)",
             f"- Container: `ghcr.io/dennisme/grex:{ver}`",
             f"- Helm (Pages): `helm upgrade --install grex grex/grex --version {ver}`",
             f"- Helm (OCI): `helm upgrade --install grex oci://ghcr.io/dennisme/charts/grex --version {ver}`",

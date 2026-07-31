@@ -42,7 +42,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Package outside dist/ so goreleaser --clean does not delete the chart.
-      # Chart.yaml version/appVersion are bumped by `just release-tag` before the tag.
+      # Only used for the OCI push below; Chart.yaml's version/appVersion
+      # are a 0.0.0 placeholder, this override is the only real version.
       - name: Package Helm chart
         run: |
           set -euo pipefail

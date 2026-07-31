@@ -30,7 +30,7 @@ collide:
 |------|---------|
 | `/` | MkDocs documentation |
 | `/demo/` | Static fleet UI demo |
-| `/charts/` | Helm repository (`index.yaml` + `.tgz`) |
+| `/charts/` | Helm repository index (`index.yaml`; each `.tgz` downloads from its own GitHub Release asset) |
 
 ```sh
 helm repo add grex https://dennisme.github.io/grex/charts/

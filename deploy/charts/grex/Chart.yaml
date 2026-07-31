@@ -2,8 +2,8 @@ apiVersion: v2
 name: grex
 description: OpAMP control plane for OpenTelemetry Collector fleets
 type: application
-version: 0.2.0
-appVersion: "0.2.0"
+version: 0.0.0
+appVersion: "0.0.0"
 
 keywords:
   - opamp

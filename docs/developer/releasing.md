@@ -63,45 +63,51 @@ svu next      # what the next release tag would be
 
    - Fetches remote tags so `svu` sees the latest release
    - Runs `svu next` (for example `v0.2.0`)
-   - Bumps `deploy/charts/grex/Chart.yaml` `version` and `appVersion` to the
-     SemVer **without** the leading `v` (for example `0.2.0`), and commits
-     `chore(release): bump helm chart to …` when they change
-   - Creates the git tag on that commit
-   - Pushes the commit and the tag to `origin`
+   - Creates the git tag on the current commit
+   - Pushes the tag to `origin`
+
+   It does **not** touch `deploy/charts/grex/Chart.yaml`. That file's
+   `version`/`appVersion` are a fixed `0.0.0` placeholder; every workflow that
+   packages the chart overrides both with an explicit `--version`/
+   `--app-version` flag derived from the tag, so the committed file is never
+   read for a real release. See [Helm chart versioning](#helm-chart-versioning).
 
 4. Watch CI:
 
-   - **GoReleaser** (tag) — binaries, container image, chart `.tgz` on the
-     GitHub Release, chart OCI push to GHCR
-   - **docs** (push to `main`, path-filtered) — rebuilds Pages, including
-     packaging the chart into `https://dennisme.github.io/grex/charts/`
+   - **goreleaser** (tag) — binaries, container image, chart OCI push to GHCR
+   - **helm-release** (tag) — packages the chart, publishes it as its own
+     GitHub Release (`helm-grex-VERSION`), pushes the updated repo index to
+     the `gh-pages` branch
+   - **docs** (runs after **helm-release** completes, plus push-to-`main` and
+     `release: published`) — rebuilds Pages, mirroring the `gh-pages` index
+     into `https://dennisme.github.io/grex/charts/`
 
 Do **not** create release tags by hand unless you are fixing a one-off mistake;
-`just release-tag` keeps app, image, and chart versions aligned.
+`just release-tag` is just a thin wrapper around `svu next` + `git tag` +
+`git push`, but it also checks for a clean tree and refuses to retag.
 
 ### Manual equivalent
 
 ```sh
 git fetch --tags
 TAG=$(svu next)
-VER=${TAG#v}
-# bump deploy/charts/grex/Chart.yaml version + appVersion to $VER and commit
 git tag "$TAG"
-git push origin HEAD "$TAG"
+git push origin "$TAG"
 ```
 
 ## What the release pipeline publishes
 
-Configuration lives in `.goreleaser.yaml` at the repository root. On a
-version tag, GoReleaser (plus the workflow’s Helm steps) publishes:
+Configuration lives in `.goreleaser.yaml` at the repository root, plus
+`.github/workflows/helm-release.yaml` for the chart. On a version tag, these
+publish:
 
 | Artifact | Destination |
 |----------|-------------|
 | Cross-compiled binaries (linux / darwin / windows × amd64 / arm64) | GitHub Release assets (archives + `checksums.txt`) |
 | Container images | GHCR (`ghcr.io/dennisme/grex`) multi-arch (amd64 + arm64) |
-| Helm chart package (`.tgz`) | GitHub Release asset |
+| Helm chart package (`.tgz`) | Its own GitHub Release (`helm-grex-VERSION`), published by `helm-release.yaml` (`cr`) |
 | Helm chart (OCI) | `oci://ghcr.io/dennisme/charts/grex` |
-| Helm chart (Pages index) | `https://dennisme.github.io/grex/charts/` via the **docs** workflow after the chart bump lands on `main` |
+| Helm chart (Pages index) | `https://dennisme.github.io/grex/charts/`, `cr` pushes `index.yaml` to `gh-pages`, the **docs** workflow mirrors it in on the next run |
 | Release notes (changelog) | GitHub Release body |
 
 Image tags include `{{ .Version }}` (no `v`, matches chart `appVersion`),
@@ -118,18 +124,21 @@ local source builds and compose/Helm smoke tests.
 
 | Field | Source | Meaning |
 |-------|--------|---------|
-| Chart `version` | bumped by `just release-tag` | Helm package / repo version |
-| Chart `appVersion` | same SemVer string | Default container image tag |
-| Git tag | `svu next` (with `v` prefix) | Triggers GoReleaser |
+| Chart `version` (in `Chart.yaml`) | fixed `0.0.0` placeholder, never edited | Not read for a real release |
+| Chart `version` (as packaged/published) | explicit `--version "$VER"` at package time, in `goreleaser.yaml` and `helm-release.yaml` | Helm package / repo version |
+| Chart `appVersion` (as packaged/published) | explicit `--app-version "$VER"`, same string | Default container image tag |
+| Git tag | `svu next` (with `v` prefix) | Triggers both `goreleaser.yaml` and `helm-release.yaml` |
 
 For grex 1.0, **chart version and app version stay equal** to the grex release.
 Chart-only fixes still ship as a normal grex patch release (no separate chart
-version stream yet).
+version stream yet). Both workflows derive `$VER` the same way
+(`${GITHUB_REF_NAME#v}`), so they can't drift from each other even though
+they run independently.
 
 **Install after a release:**
 
 ```sh
-# Chart repository on GitHub Pages (updated when main deploys docs)
+# Chart repository on GitHub Pages (index refreshed once helm-release + docs finish)
 helm repo add grex https://dennisme.github.io/grex/charts/
 helm repo update
 helm upgrade --install grex grex/grex --version 0.2.0 -n grex --create-namespace
@@ -139,8 +148,10 @@ helm upgrade --install grex oci://ghcr.io/dennisme/charts/grex --version 0.2.0 \
   -n grex --create-namespace
 ```
 
-Pages always packages the chart version currently on `main`. Historical
-`.tgz` files are kept on each GitHub Release and on GHCR (OCI).
+The Pages index reflects whatever `helm-release.yaml` last pushed to
+`gh-pages`, not whatever's on `main` (there's nothing chart-related to
+package from `main` anymore). Historical `.tgz` files are kept on each
+chart's own GitHub Release and on GHCR (OCI).
 
 ### Pretty release notes (changelog)
 
@@ -185,13 +196,16 @@ gh api repos/dennisme/grex/releases/generate-notes \
 ## After the release
 
 - Confirm the [GitHub Releases](https://github.com/dennisme/grex/releases) page
-  lists the new tag, binary archives, and `grex-<version>.tgz`
+  lists the new app tag with its binary archives
+- Confirm a second GitHub Release `helm-grex-<version>` exists with the
+  chart `.tgz` asset (published by `helm-release.yaml`)
 - Confirm the GHCR image `ghcr.io/dennisme/grex:<version>` exists
 - Confirm the OCI chart `oci://ghcr.io/dennisme/charts/grex` is pullable at
   that version
-- Confirm the docs workflow on `main` finished so
-  [the chart repo](https://dennisme.github.io/grex/charts/) indexes the new
-  chart (path-filtered; needs the chart bump commit on `main`)
+- Confirm `helm-release.yaml` finished (it pushes the updated index to
+  `gh-pages`), then confirm the **docs** workflow's `workflow_run` trigger
+  fired after it so [the chart repo](https://dennisme.github.io/grex/charts/)
+  indexes the new chart
 - Confirm the docs workflow also ran on the **release published** event so
   [Releases → Changelog](../releases/changelog.md) includes the new notes
 
@@ -213,6 +227,14 @@ or a `BREAKING CHANGE:` footer; pure `feat:` commits stay on minor.
 Confirm the tag was pushed to the repo that owns
 `.github/workflows/goreleaser.yaml`, and that the workflow triggers on that
 tag pattern.
+
+**Chart repo on Pages shows the old version**  
+`cr` (in `helm-release.yaml`) publishes the chart's GitHub Release *before*
+it finishes pushing the updated `index.yaml` to `gh-pages`. The docs
+workflow's `workflow_run` trigger waits for `helm-release.yaml` to fully
+complete before mirroring the index, so this should self-correct once that
+run finishes. If `helm-release.yaml` failed outright, re-run it (or push a
+no-op tag fix) rather than editing `gh-pages` by hand.
 
 ## Related
 

@@ -63,9 +63,9 @@ Full operator install paths (Compose, from source, TLS, etc.):
 |----------|--------------|--------|
 | Cross-compiled binaries + checksums | GoReleaser → GitHub Release | linux / darwin / windows × amd64 / arm64 |
 | Multi-arch container image | GoReleaser → GHCR | Tags: `VERSION`, `vVERSION`, major/minor aliases, `latest` |
-| Helm chart `.tgz` | GoReleaser → GitHub Release asset | Same SemVer as `Chart.yaml` |
+| Helm chart `.tgz` | helm-release workflow (`cr`) → its own GitHub Release (`helm-grex-VERSION`) | Version comes from an explicit `--version` override at package time, not from `Chart.yaml` |
 | Helm chart OCI | GoReleaser workflow → GHCR | `oci://ghcr.io/dennisme/charts/grex` |
-| Helm chart on Pages | docs workflow on `main` | Repo index at `/charts/` |
+| Helm chart on Pages | helm-release workflow pushes `index.yaml` to `gh-pages`; docs workflow mirrors it into `/charts/` | Repo index only; the `.tgz` itself downloads from the chart's GitHub Release asset |
 | Release notes body | GoReleaser changelog | Grouped by commit type; PR links from `(#N)` squash subjects |
 
 ## Versioning
@@ -73,7 +73,9 @@ Full operator install paths (Compose, from source, TLS, etc.):
 - **Git tags:** `vMAJOR.MINOR.PATCH` (via [`svu`](https://github.com/caarlos0/svu)
   / `just release-tag`)
 - **Helm `version` / `appVersion` and default image tag:** `MAJOR.MINOR.PATCH`
-  (no `v`)
+  (no `v`), set via an explicit `--version`/`--app-version` override at
+  package time in CI. `deploy/charts/grex/Chart.yaml` itself stays a fixed
+  `0.0.0` placeholder and is never edited as part of a release.
 - **Breaking changes:** conventional `BREAKING CHANGE` / `type!:` → major bump
 
 See the [Changelog](changelog.md) for notes per tag, or the

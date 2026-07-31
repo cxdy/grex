@@ -27,6 +27,14 @@ on:
   # Refresh docs/releases/changelog.md after GoReleaser publishes notes.
   release:
     types: [published]
+  # helm-release.yaml (cr) publishes the chart's GitHub Release *before* it
+  # finishes pushing the updated index.yaml to gh-pages, so the `release`
+  # trigger above can fire while gh-pages is still stale. Wait for
+  # helm-release.yaml to fully complete instead, so the chart index we fetch
+  # below is current.
+  workflow_run:
+    workflows: ["helm-release"]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -65,26 +73,37 @@ jobs:
       # Helm chart repository lives at /charts/ on the same GitHub Pages site
       # as the docs and demo. That keeps a single Pages deployment (one
       # concurrency group) and avoids a second repo or branch for charts.
+      # The actual chart .tgz files are published as GitHub Release assets
+      # by .github/workflows/helm-release.yaml (cr); this job only mirrors
+      # the resulting index.yaml from the gh-pages branch, it never
+      # packages the chart itself.
       - name: Set up Helm
         uses: azure/setup-helm@v4
         with:
           version: v3.16.2
-      - name: Package Helm chart into site/charts
+      - name: Fetch chart index from gh-pages
         run: |
           set -euo pipefail
           mkdir -p site/charts
-          helm package deploy/charts/grex --destination site/charts
-          helm repo index site/charts \
-            --url https://dennisme.github.io/grex/charts
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git fetch --depth 1 origin gh-pages
+            git show origin/gh-pages:index.yaml > site/charts/index.yaml
+          else
+            echo "gh-pages branch not found yet (no chart release published); writing empty index"
+            helm repo index site/charts --url https://dennisme.github.io/grex/charts
+          fi
           # Keep a copy of the chart source README for humans browsing the path.
           cp deploy/charts/grex/README.md site/charts/README.md
       - name: Upload artifact
-        # Deploy from main pushes, published releases (refresh changelog), and manual runs.
+        # Deploy from main pushes, published releases (refresh changelog),
+        # a completed helm-release run (refresh chart index), and manual runs.
         if: >-
           github.event_name != 'pull_request' &&
           (github.ref == 'refs/heads/main' ||
            github.event_name == 'release' ||
-           github.event_name == 'workflow_dispatch')
+           github.event_name == 'workflow_dispatch' ||
+           (github.event_name == 'workflow_run' &&
+            github.event.workflow_run.conclusion == 'success'))
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
@@ -94,7 +113,9 @@ jobs:
       github.event_name != 'pull_request' &&
       (github.ref == 'refs/heads/main' ||
        github.event_name == 'release' ||
-       github.event_name == 'workflow_dispatch')
+       github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success'))
     needs: build
     runs-on: ubuntu-latest
     environment:
