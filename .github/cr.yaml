@@ -1,0 +1,7 @@
+# Config for helm/chart-releaser-action (cr) in
+# .github/workflows/helm-release.yaml.
+#
+# Custom release name so the chart's GitHub Release is unmistakably
+# separate from the app's own `vX.Y.Z` release that goreleaser.yaml
+# creates on the same tag.
+release-name-template: "helm-{{ .Name }}-{{ .Version }}"

@@ -62,9 +62,8 @@ changelog:
 
 release:
   name_template: "v{{ .Version }}"
-  # Packaged by the goreleaser workflow (outside dist/ so --clean is safe).
-  extra_files:
-    - glob: ./.chart-release/*.tgz
+  # The chart .tgz is not attached here: it ships on its own GitHub Release
+  # (helm-grex-VERSION), published by .github/workflows/helm-release.yaml (cr).
   # Appended after the generated changelog on the GitHub Release.
   footer: |
     ---

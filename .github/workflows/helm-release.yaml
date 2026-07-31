@@ -1,0 +1,56 @@
+name: helm-release
+
+# Publishes the Helm chart as its own GitHub Release + chart-repo index
+# entry on every app version tag. Runs independently of goreleaser.yaml
+# (which builds binaries/images/OCI chart push from the same tag) so a
+# failure in one doesn't block the other.
+#
+# Chart.yaml's version/appVersion are placeholders (0.0.0) — the real
+# version is always this explicit tag-derived override, never read from
+# the committed file. See docs/developer/releasing.md.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  chart-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: Configure Git
+        run: |
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+
+      # cr expects pre-packaged charts in .cr-release-packages when
+      # skip_packaging is set; package here with an explicit version
+      # override so Chart.yaml's committed placeholder is never read.
+      - name: Package chart
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          mkdir -p .cr-release-packages
+          helm package deploy/charts/grex \
+            --version "$VER" \
+            --app-version "$VER" \
+            --destination .cr-release-packages
+
+      - name: Run chart-releaser
+        uses: helm/chart-releaser-action@v1.6.0
+        with:
+          config: .github/cr.yaml
+          skip_packaging: true
+          pages_branch: gh-pages
+        env:
+          CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
