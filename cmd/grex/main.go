@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
@@ -135,8 +136,10 @@ func run(args []string) error {
 	var dbPool *pgxpool.Pool
 	var dirtyTracker *persistence.DirtyTracker
 	var store persistence.StateStore
+	var connStore persistence.ConnectionStore
 	var maxConcurrentWrites int
 	var purgeClient *river.Client[pgx.Tx]
+	var replicaID, replicaLabel string
 	if cfg.Database.Host != "" {
 		dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 			cfg.Database.Host, cfg.Database.Port, cfg.Database.User, cfg.Database.Password,
@@ -147,7 +150,9 @@ func run(args []string) error {
 		}
 		dbPool = pool
 		defer dbPool.Close()
-		store = persistence.NewPostgresStore(pool)
+		pgStore := persistence.NewPostgresStore(pool)
+		store = pgStore
+		connStore = pgStore
 		dirtyTracker = persistence.NewDirtyTracker()
 		registryEvents = fleet.MultiEvents(events, dirtyTracker)
 		fleetMetrics.MustRegister(persistence.NewPoolCollector(pool))
@@ -158,12 +163,23 @@ func run(args []string) error {
 		// grex process's own CPU count, not the database's actual capacity).
 		maxConcurrentWrites = int(pool.Config().MaxConns)
 
+		// replicaID identifies this process for agent_connections (see
+		// docs/spec/design.md's Dispatch routing section) and doubles as
+		// River's own Config.ID. A random UUID generated once here, in
+		// memory only — not the pod name or hostname: those churn on
+		// restart and aren't guaranteed unique across clusters that could
+		// share one Postgres. replicaLabel is the pod name/hostname anyway,
+		// but only as a human-readable debug label, never for routing or
+		// uniqueness.
+		replicaID = uuid.NewString()
+		replicaLabel, _ = os.Hostname()
+
 		// Constructed here (not deferred to the goroutine-launching block
 		// below) so mountRiverUI can mount its handler on uiMux before
 		// srv.Start() begins serving it — registering a new route on a mux
 		// already being served concurrently is a race. Only Start(ctx),
 		// which needs the shutdown context, waits until after srv.Start().
-		purgeClient, err = persistence.NewPurgeClient(pool, cfg.Fleet.SoftDeleteDuration, events, logger)
+		purgeClient, err = persistence.NewPurgeClient(pool, cfg.Fleet.SoftDeleteDuration, events, logger, replicaID)
 		if err != nil {
 			return fmt.Errorf("purge client: %w", err)
 		}
@@ -211,7 +227,7 @@ func run(args []string) error {
 	defer stop()
 	go registry.Run(ctx)
 	if dbPool != nil {
-		flusher := persistence.NewFlusher(registry, dirtyTracker, store, persistenceFlushInterval, logger, maxConcurrentWrites, events)
+		flusher := persistence.NewFlusher(registry, dirtyTracker, store, persistenceFlushInterval, logger, maxConcurrentWrites, events, connStore, replicaID, replicaLabel)
 		go flusher.Run(ctx)
 
 		snapshotter := persistence.NewSessionSnapshotter(registry, store, sessionSnapshotInterval, logger, maxConcurrentWrites, events)

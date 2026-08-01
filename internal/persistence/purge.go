@@ -63,8 +63,12 @@ func (w *PurgeWorker) Work(ctx context.Context, job *river.Job[PurgeEvictedAgent
 // pool with the rest of persistence, no separate connection needed.
 // metrics may be nil. log is River's own logger (routed through grex's
 // configured logger rather than River's stdout default) so its output
-// matches the rest of grex's log format.
-func NewPurgeClient(pool *pgxpool.Pool, softDeleteDuration time.Duration, metrics PurgeMetrics, log *slog.Logger) (*river.Client[pgx.Tx], error) {
+// matches the rest of grex's log format. replicaID becomes river.Config.ID
+// — the same process identity NewFlusher uses for agent_connections,
+// rather than River's own hostname+timestamp default (see
+// docs/spec/design.md's Dispatch routing section on why hostname/pod name
+// is the wrong identity to key on).
+func NewPurgeClient(pool *pgxpool.Pool, softDeleteDuration time.Duration, metrics PurgeMetrics, log *slog.Logger, replicaID string) (*river.Client[pgx.Tx], error) {
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &PurgeWorker{pool: pool, metrics: metrics})
 
@@ -80,6 +84,7 @@ func NewPurgeClient(pool *pgxpool.Pool, softDeleteDuration time.Duration, metric
 	)
 
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
+		ID:           replicaID,
 		Queues:       map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 1}},
 		Workers:      workers,
 		PeriodicJobs: []*river.PeriodicJob{periodicJob},

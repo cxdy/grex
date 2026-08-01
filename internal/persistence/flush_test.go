@@ -60,6 +60,29 @@ func (erroringStateStore) DeleteAgent(context.Context, string) error {
 
 var _ StateStore = erroringStateStore{}
 
+// erroringConnectionStore fails every UpsertAgentConnection call, to
+// exercise flushOnce's connection-upsert error-logging branch.
+// Get/List/Delete are unused by Flusher and just panic if ever called.
+type erroringConnectionStore struct{}
+
+func (erroringConnectionStore) UpsertAgentConnection(context.Context, AgentConnection) error {
+	return errors.New("upsert failed")
+}
+
+func (erroringConnectionStore) GetAgentConnection(context.Context, string) (AgentConnection, bool, error) {
+	panic("not used by Flusher")
+}
+
+func (erroringConnectionStore) ListAgentConnections(context.Context) ([]AgentConnection, error) {
+	panic("not used by Flusher")
+}
+
+func (erroringConnectionStore) DeleteAgentConnection(context.Context, string) error {
+	panic("not used by Flusher")
+}
+
+var _ ConnectionStore = erroringConnectionStore{}
+
 func TestDirtyTrackerDrain(t *testing.T) {
 	d := NewDirtyTracker()
 	if got := d.Drain(); got != nil {
@@ -100,7 +123,7 @@ func TestFlusherSavesDirtyAgents(t *testing.T) {
 	uid := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
 	registry.Report(&protobufs.AgentToServer{InstanceUid: uid}, fleet.ConnMeta{})
 
-	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger(), 4, nil)
+	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger(), 4, nil, &fakeConnectionStore{}, "replica-1", "")
 	flusher.flushOnce(context.Background())
 
 	id, err := fleet.InstanceUID(uid)
@@ -112,13 +135,91 @@ func TestFlusherSavesDirtyAgents(t *testing.T) {
 	}
 }
 
+// TestFlusherUpsertsAgentConnectionForConnectedAgent covers the
+// agent_connections side of flushOnce: a dirty agent still in the registry
+// and Connected gets upserted under this Flusher's own replicaID/label, per
+// docs/spec/design.md's Dispatch routing section.
+func TestFlusherUpsertsAgentConnectionForConnectedAgent(t *testing.T) {
+	dirty := NewDirtyTracker()
+	store := &fakeStateStore{}
+	conns := &fakeConnectionStore{}
+	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), dirty)
+
+	uid := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	registry.Report(&protobufs.AgentToServer{InstanceUid: uid}, fleet.ConnMeta{})
+	id, err := fleet.InstanceUID(uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger(), 4, nil, conns, "replica-1", "grex-pod-a")
+	flusher.flushOnce(context.Background())
+
+	got, ok, err := conns.GetAgentConnection(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatalf("flush did not upsert agent_connections for %s", id)
+	}
+	if got.ReplicaID != "replica-1" || got.ReplicaLabel != "grex-pod-a" {
+		t.Errorf("upserted connection = %+v, want ReplicaID=replica-1 ReplicaLabel=grex-pod-a", got)
+	}
+}
+
+// TestFlusherSkipsAgentConnectionForDisconnectedAgent covers the
+// upsert-only decision: a dirty agent still in the registry but
+// Connected == false must not touch agent_connections at all (no delete,
+// no upsert) — deleting here would race a different replica's fresher
+// upsert for the same instance_uid after it reconnects elsewhere.
+func TestFlusherSkipsAgentConnectionForDisconnectedAgent(t *testing.T) {
+	dirty := NewDirtyTracker()
+	store := &fakeStateStore{}
+	conns := &fakeConnectionStore{}
+	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), dirty)
+
+	uid := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	registry.Report(&protobufs.AgentToServer{InstanceUid: uid}, fleet.ConnMeta{})
+	id, err := fleet.InstanceUID(uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.SetConnected(id, false)
+
+	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger(), 4, nil, conns, "replica-1", "grex-pod-a")
+	flusher.flushOnce(context.Background())
+
+	if conns.hasConnection(id) {
+		t.Fatalf("flush upserted agent_connections for a disconnected agent: %+v", conns.conns[id])
+	}
+}
+
+// TestFlusherSkipsAgentConnectionForEvictedAgent covers the soft-delete
+// branch (agent no longer in the registry): it must not touch
+// agent_connections either, same upsert-only reasoning as the disconnected
+// case above.
+func TestFlusherSkipsAgentConnectionForEvictedAgent(t *testing.T) {
+	dirty := NewDirtyTracker()
+	store := &fakeStateStore{}
+	conns := &fakeConnectionStore{}
+	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), nil)
+
+	dirty.AgentEvicted("gone")
+	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger(), 4, nil, conns, "replica-1", "grex-pod-a")
+	flusher.flushOnce(context.Background())
+
+	if conns.hasConnection("gone") {
+		t.Fatal("flush upserted agent_connections for an evicted agent")
+	}
+}
+
 func TestFlusherSoftDeletesAgentNoLongerInRegistry(t *testing.T) {
 	dirty := NewDirtyTracker()
 	store := &fakeStateStore{}
 	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), nil)
 
 	dirty.AgentEvicted("gone")
-	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger(), 4, nil)
+	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger(), 4, nil, &fakeConnectionStore{}, "replica-1", "")
 	flusher.flushOnce(context.Background())
 
 	if len(store.agents) != 0 {
@@ -148,7 +249,7 @@ func TestFlusherSoftDeletesEvictedAgentAgainstRealPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger(), 4, nil)
+	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger(), 4, nil, store, "replica-1", "grex-test-pod")
 	flusher.flushOnce(ctx) // agent exists, saved for real before eviction
 
 	if _, ok, err := store.GetAgent(ctx, id); err != nil || !ok {
@@ -194,7 +295,7 @@ func TestFlusherRunFlushesOnTick(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	flusher := NewFlusher(registry, dirty, store, 20*time.Millisecond, discardLogger(), 4, nil)
+	flusher := NewFlusher(registry, dirty, store, 20*time.Millisecond, discardLogger(), 4, nil, &fakeConnectionStore{}, "replica-1", "")
 	done := make(chan struct{})
 	go func() {
 		flusher.Run(ctx)
@@ -218,8 +319,9 @@ func TestFlusherRunFlushesOnTick(t *testing.T) {
 }
 
 // TestFlusherLogsStoreErrors covers flushOnce's error-logging branches for
-// both SaveAgent and SoftDeleteAgent failures: it must log and continue,
-// never panic or stop processing the rest of the dirty set.
+// SaveAgent, SoftDeleteAgent, and UpsertAgentConnection failures: it must
+// log and continue, never panic or stop processing the rest of the dirty
+// set.
 func TestFlusherLogsStoreErrors(t *testing.T) {
 	dirty := NewDirtyTracker()
 	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), dirty)
@@ -230,7 +332,7 @@ func TestFlusherLogsStoreErrors(t *testing.T) {
 
 	var buf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&buf, nil))
-	flusher := NewFlusher(registry, dirty, erroringStateStore{}, time.Hour, log, 4, nil)
+	flusher := NewFlusher(registry, dirty, erroringStateStore{}, time.Hour, log, 4, nil, erroringConnectionStore{}, "replica-1", "")
 	flusher.flushOnce(context.Background()) // must not panic
 
 	out := buf.String()
@@ -239,6 +341,9 @@ func TestFlusherLogsStoreErrors(t *testing.T) {
 	}
 	if !strings.Contains(out, "persistence soft-delete failed") || !strings.Contains(out, "soft delete failed") {
 		t.Errorf("log missing SoftDeleteAgent failure: %s", out)
+	}
+	if !strings.Contains(out, "persistence agent_connections upsert failed") || !strings.Contains(out, "upsert failed") {
+		t.Errorf("log missing UpsertAgentConnection failure: %s", out)
 	}
 }
 
@@ -308,7 +413,7 @@ func TestFlusherStuckAgentDoesNotBlockOthers(t *testing.T) {
 
 	store := newBlockingFlusherStore(stuckID)
 	timeout := 200 * time.Millisecond
-	flusher := NewFlusher(registry, dirty, store, timeout, discardLogger(), 4, nil)
+	flusher := NewFlusher(registry, dirty, store, timeout, discardLogger(), 4, nil, &fakeConnectionStore{}, "replica-1", "")
 
 	start := time.Now()
 	flusher.flushOnce(context.Background())
@@ -342,7 +447,7 @@ func TestFlusherRecordsWriteMetricsForBothOps(t *testing.T) {
 	dirty.AgentEvicted("gone")
 
 	metrics := newFakeWriteMetrics()
-	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger(), 4, metrics)
+	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger(), 4, metrics, &fakeConnectionStore{}, "replica-1", "")
 	flusher.flushOnce(context.Background())
 
 	if got := metrics.durationCount("save_agent"); got != 1 {
@@ -350,6 +455,9 @@ func TestFlusherRecordsWriteMetricsForBothOps(t *testing.T) {
 	}
 	if got := metrics.durationCount("soft_delete_agent"); got != 1 {
 		t.Errorf("durationCount(soft_delete_agent) = %d, want 1", got)
+	}
+	if got := metrics.durationCount("upsert_agent_connection"); got != 1 {
+		t.Errorf("durationCount(upsert_agent_connection) = %d, want 1", got)
 	}
 }
 
@@ -359,12 +467,15 @@ func TestFlusherRecordsWriteMetricsForBothOps(t *testing.T) {
 func TestNewFlusherSetsWriteTimeoutOnce(t *testing.T) {
 	metrics := newFakeWriteMetrics()
 	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), nil)
-	NewFlusher(registry, NewDirtyTracker(), &fakeStateStore{}, 7*time.Second, discardLogger(), 4, metrics)
+	NewFlusher(registry, NewDirtyTracker(), &fakeStateStore{}, 7*time.Second, discardLogger(), 4, metrics, &fakeConnectionStore{}, "replica-1", "")
 
 	if got := metrics.timeouts["save_agent"]; got != 7*time.Second {
 		t.Errorf("timeouts[save_agent] = %v, want 7s", got)
 	}
 	if got := metrics.timeouts["soft_delete_agent"]; got != 7*time.Second {
 		t.Errorf("timeouts[soft_delete_agent] = %v, want 7s", got)
+	}
+	if got := metrics.timeouts["upsert_agent_connection"]; got != 7*time.Second {
+		t.Errorf("timeouts[upsert_agent_connection] = %v, want 7s", got)
 	}
 }

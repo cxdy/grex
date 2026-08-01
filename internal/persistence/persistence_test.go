@@ -133,6 +133,61 @@ func TestStateStoreShape(t *testing.T) {
 	}
 }
 
-// JobQueue, PermissionStore, and ConnectionStore are implemented by
-// PostgresStore and tested against real Postgres in jobs_test.go,
-// permissions_test.go, and agent_connections_test.go.
+// fakeConnectionStore is a minimal in-memory stand-in for ConnectionStore,
+// used by Flusher's tests to assert which instance_uid/replica_id pairs it
+// upserted without hitting real Postgres.
+type fakeConnectionStore struct {
+	mu    sync.Mutex
+	conns map[string]AgentConnection
+}
+
+var _ ConnectionStore = (*fakeConnectionStore)(nil)
+
+func (f *fakeConnectionStore) UpsertAgentConnection(_ context.Context, conn AgentConnection) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.conns == nil {
+		f.conns = make(map[string]AgentConnection)
+	}
+	f.conns[conn.InstanceUID] = conn
+	return nil
+}
+
+func (f *fakeConnectionStore) GetAgentConnection(_ context.Context, instanceUID string) (AgentConnection, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	conn, ok := f.conns[instanceUID]
+	return conn, ok, nil
+}
+
+func (f *fakeConnectionStore) ListAgentConnections(_ context.Context) ([]AgentConnection, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	list := make([]AgentConnection, 0, len(f.conns))
+	for _, conn := range f.conns {
+		list = append(list, conn)
+	}
+	return list, nil
+}
+
+func (f *fakeConnectionStore) DeleteAgentConnection(_ context.Context, instanceUID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.conns, instanceUID)
+	return nil
+}
+
+// hasConnection reports whether instanceUID has been upserted, safe for
+// concurrent use (mirrors fakeStateStore.hasAgent).
+func (f *fakeConnectionStore) hasConnection(instanceUID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.conns[instanceUID]
+	return ok
+}
+
+// JobQueue and PermissionStore are implemented by PostgresStore and tested
+// against real Postgres in jobs_test.go and permissions_test.go.
+// ConnectionStore is tested the same way in agent_connections_test.go, and
+// its Flusher-side caller is tested against fakeConnectionStore in
+// flush_test.go.

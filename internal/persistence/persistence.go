@@ -84,8 +84,12 @@ type PermissionStore interface {
 type AgentConnection struct {
 	InstanceUID string
 	ReplicaID   string
-	ConnectedAt time.Time
-	LastSeen    time.Time
+	// ReplicaLabel is a human-readable identity (pod name/hostname) for
+	// debugging only. It is never used for routing or uniqueness — see
+	// ReplicaID for why pod/host names are the wrong key for that.
+	ReplicaLabel string
+	ConnectedAt  time.Time
+	LastSeen     time.Time
 }
 
 // ConnectionStore is the CRUD surface a future job dispatcher uses to find
