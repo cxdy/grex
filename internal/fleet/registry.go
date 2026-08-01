@@ -30,12 +30,12 @@ type ConnMeta struct {
 
 // ReservedAttributeKeys are AgentDescription attribute keys that collide
 // with the read API's well-known top-level agent filter fields
-// (internal/api's ?healthy=/?connected=/?via_gateway=). An agent that
-// reports one of these as an identifying or non-identifying attribute has
-// that attribute permanently shadowed: the API filter always resolves the
-// key against the top-level field, never the attribute map, for the caller
-// there is no way to filter on the attribute's value.
-var ReservedAttributeKeys = []string{"healthy", "connected", "via_gateway"}
+// (internal/api's ?healthy=/?connected=/?via_gateway=/?supervisor_managed=).
+// An agent that reports one of these as an identifying or non-identifying
+// attribute has that attribute permanently shadowed: the API filter always
+// resolves the key against the top-level field, never the attribute map,
+// for the caller there is no way to filter on the attribute's value.
+var ReservedAttributeKeys = []string{"healthy", "connected", "via_gateway", "supervisor_managed"}
 
 // Events receives fleet lifecycle notifications, e.g. for metrics and
 // persistence dirty-tracking. All methods are called with the registry lock

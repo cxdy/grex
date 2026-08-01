@@ -134,6 +134,7 @@ sustain concurrent writes for).
 | `grex_agent_last_seen_timestamp_seconds` | Gauge | `instance_uid` | Unix time of last check-in |
 | `grex_agents_awaiting_full_state` | Gauge | — | Registered without description yet |
 | `grex_agents_noncompliant` | Gauge | — | Missing ≥1 required attribute |
+| `grex_agents_supervisor_managed` | Gauge | — | Declared the OpAMP Supervisor's `opamp.managed_by` attribute — reliable when true, not when false (see `fleet.SupervisorManaged`) |
 | `grex_agent_missing_attributes_total` | Counter | `attribute` | Required attribute missing (on compliance change) |
 | `grex_agent_reserved_attribute_conflicts_total` | Counter | `attribute` | Collision with reserved filter keys |
 

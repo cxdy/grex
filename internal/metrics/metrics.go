@@ -227,6 +227,10 @@ var (
 		"grex_agents_noncompliant",
 		"Agents missing at least one required attribute.",
 		nil, nil)
+	descAgentsSupervisorManaged = prometheus.NewDesc(
+		"grex_agents_supervisor_managed",
+		"Agents that declared the OpAMP Supervisor's opamp.managed_by attribute.",
+		nil, nil)
 	descAgentsAwaitingFullState = prometheus.NewDesc(
 		"grex_agents_awaiting_full_state",
 		"Agents that have not yet reported their description.",
@@ -267,6 +271,7 @@ func (c *FleetCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- descAgentsConnected
 	ch <- descAgentsDisconnected
 	ch <- descAgentsNoncompliant
+	ch <- descAgentsSupervisorManaged
 	ch <- descAgentsAwaitingFullState
 	ch <- descFleetSize
 	ch <- descAgentSeriesCapped
@@ -279,7 +284,7 @@ func (c *FleetCollector) Collect(ch chan<- prometheus.Metric) {
 	agents := c.registry.List()
 
 	connected := make(map[[2]string]float64)
-	var disconnected, noncompliant, awaiting float64
+	var disconnected, noncompliant, supervisorManaged, awaiting float64
 	for _, agent := range agents {
 		if agent.Connected {
 			via := "direct"
@@ -293,6 +298,9 @@ func (c *FleetCollector) Collect(ch chan<- prometheus.Metric) {
 		if len(agent.MissingAttributes) > 0 {
 			noncompliant++
 		}
+		if fleet.SupervisorManaged(agent) {
+			supervisorManaged++
+		}
 		if !agent.DescriptionReported {
 			awaiting++
 		}
@@ -305,6 +313,8 @@ func (c *FleetCollector) Collect(ch chan<- prometheus.Metric) {
 		prometheus.GaugeValue, disconnected)
 	ch <- prometheus.MustNewConstMetric(descAgentsNoncompliant,
 		prometheus.GaugeValue, noncompliant)
+	ch <- prometheus.MustNewConstMetric(descAgentsSupervisorManaged,
+		prometheus.GaugeValue, supervisorManaged)
 	ch <- prometheus.MustNewConstMetric(descAgentsAwaitingFullState,
 		prometheus.GaugeValue, awaiting)
 	ch <- prometheus.MustNewConstMetric(descFleetSize,

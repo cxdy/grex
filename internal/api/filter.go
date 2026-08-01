@@ -32,9 +32,10 @@ var reservedParams = map[string]bool{
 // what the registry uses to warn and count when an agent's own attributes
 // collide with these names.
 var boolFields = map[string]func(fleet.Agent) bool{
-	"healthy":     func(a fleet.Agent) bool { return a.Healthy },
-	"connected":   func(a fleet.Agent) bool { return a.Connected },
-	"via_gateway": func(a fleet.Agent) bool { return a.Conn.ViaGateway },
+	"healthy":            func(a fleet.Agent) bool { return a.Healthy },
+	"connected":          func(a fleet.Agent) bool { return a.Connected },
+	"via_gateway":        func(a fleet.Agent) bool { return a.Conn.ViaGateway },
+	"supervisor_managed": fleet.SupervisorManaged,
 }
 
 // Matcher operators mirror Prometheus label matchers.
@@ -151,7 +152,8 @@ func compileMatcherRE(pattern string) (*regexp.Regexp, error) {
 
 // ParseFilters turns query params into filters.
 //
-//   - Well-known bools: healthy, connected, via_gateway (true/false).
+//   - Well-known bools: healthy, connected, via_gateway, supervisor_managed
+//     (true/false).
 //   - Bare attribute params: ?service.name=foo → exact match (back-compat).
 //   - match= (repeatable): Prometheus-style key=value | key!=value |
 //     key=~regex | key!~regex. Spaces around the operator are allowed.

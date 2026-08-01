@@ -43,6 +43,38 @@ func TestRoleOf(t *testing.T) {
 	}
 }
 
+func TestSupervisorManaged(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		a    Agent
+		want bool
+	}{
+		{
+			name: "declared attribute present",
+			a:    Agent{NonIdentifying: map[string]string{"opamp.managed_by": "opentelemetry-opampsupervisor"}},
+			want: true,
+		},
+		{
+			name: "attribute absent (bare opamp extension)",
+			a:    Agent{},
+			want: false,
+		},
+		{
+			name: "unrelated value doesn't count",
+			a:    Agent{NonIdentifying: map[string]string{"opamp.managed_by": "something-else"}},
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SupervisorManaged(tc.a); got != tc.want {
+				t.Errorf("SupervisorManaged = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDisplayNameOf(t *testing.T) {
 	t.Parallel()
 	a := Agent{

@@ -205,27 +205,39 @@ func TestFleetCollectorAggregates(t *testing.T) {
 	direct := uuid.New()
 	relayed := uuid.New()
 	gone := uuid.New()
+	supervised := uuid.New()
 
 	report(registry, direct, fleet.ConnMeta{Transport: "ws"}, true)
 	report(registry, relayed, fleet.ConnMeta{Transport: "ws", ViaGateway: true}, true)
 	report(registry, gone, fleet.ConnMeta{Transport: "http"}, false)
 	registry.SetConnected(gone.String(), false)
+	registry.Report(&protobufs.AgentToServer{
+		InstanceUid: supervised[:],
+		AgentDescription: &protobufs.AgentDescription{
+			NonIdentifyingAttributes: []*protobufs.KeyValue{
+				strAttr("opamp.managed_by", "opentelemetry-opampsupervisor"),
+			},
+		},
+	}, fleet.ConnMeta{Transport: "ws"})
 
 	collector := NewFleetCollector(registry, 1000)
 	expected := `
 # HELP grex_agents_connected Agents currently connected.
 # TYPE grex_agents_connected gauge
-grex_agents_connected{transport="ws",via="direct"} 1
+grex_agents_connected{transport="ws",via="direct"} 2
 grex_agents_connected{transport="ws",via="gateway"} 1
 # HELP grex_agents_disconnected Agents retained but not currently connected.
 # TYPE grex_agents_disconnected gauge
 grex_agents_disconnected 1
 # HELP grex_agents_noncompliant Agents missing at least one required attribute.
 # TYPE grex_agents_noncompliant gauge
-grex_agents_noncompliant 3
+grex_agents_noncompliant 4
+# HELP grex_agents_supervisor_managed Agents that declared the OpAMP Supervisor's opamp.managed_by attribute.
+# TYPE grex_agents_supervisor_managed gauge
+grex_agents_supervisor_managed 1
 `
 	err := testutil.CollectAndCompare(collector, strings.NewReader(expected),
-		"grex_agents_connected", "grex_agents_disconnected", "grex_agents_noncompliant")
+		"grex_agents_connected", "grex_agents_disconnected", "grex_agents_noncompliant", "grex_agents_supervisor_managed")
 	if err != nil {
 		t.Error(err)
 	}

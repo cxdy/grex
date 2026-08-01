@@ -799,9 +799,25 @@ Supervisor," it's "cannot report success or failure at all without it" —
 there's no partial-credit fallback, and building one isn't grex's job:
 agents already ship their own otelcol exporter metrics/logs to whatever
 central system operators already watch, so "did N agents come back" stays
-answerable there, outside grex, for anyone not running Supervisor. Job
-creation/arm rejects (or filters, exact behavior open) any matched target
-that isn't `supervisor_managed`.
+answerable there, outside grex, for anyone not running Supervisor.
+
+**Decided: per-target rejection with a reason, not a whole-job reject and
+not a silent filter.** A matched target that isn't `supervisor_managed`
+(`fleet.SupervisorManaged`, `GET /api/agents?supervisor_managed=`) is
+recorded as a rejected `job_targets` row with a reason at arm time, not
+silently dropped (an operator expecting N restarts seeing fewer with no
+explanation) and not a hard failure for the rest of the job's targets (one
+non-compliant agent in a filter shouldn't block dispatch to the rest of the
+matched fleet). The armed job's response/detail view surfaces the rejected
+list — instance_uid plus reason — alongside the real dispatch targets, so
+what got excluded and why is visible up front, before anything dispatches.
+
+Deliberately the first entry in an extensible reason set, not a one-off
+special case for Supervisor adoption: a future blast-radius rule (e.g. a
+cap on how many agents one job can target) is expected to reuse this same
+rejected-with-reason shape rather than invent its own rejection path.
+Not yet built: needs a `job_targets.status = 'rejected'` value plus a
+reason column, neither in the schema yet (see Jobs: schema and execution).
 
 | Job | Requires Supervisor | Why |
 |-----|---------------------|-----|
