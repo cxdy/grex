@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/dennisme/grex/internal/persistence"
 )
@@ -17,6 +18,32 @@ type createJobRequest struct {
 	Action       string          `json:"action"`
 	ActionConfig json.RawMessage `json:"action_config,omitempty"`
 	SubmittedBy  string          `json:"submitted_by"`
+}
+
+// jobResponse is persistence.Job's snake_case view, matching every other
+// response in this package (listResponse, statusResponse) — persistence.Job
+// has no json tags of its own, so encoding it directly would leak its bare
+// Go field names instead.
+type jobResponse struct {
+	ID           string          `json:"id"`
+	Filter       string          `json:"filter"`
+	Action       string          `json:"action"`
+	ActionConfig json.RawMessage `json:"action_config"`
+	Status       string          `json:"status"`
+	TargetMode   *string         `json:"target_mode"`
+	SubmittedBy  string          `json:"submitted_by"`
+	CreatedAt    time.Time       `json:"created_at"`
+	ArmedAt      *time.Time      `json:"armed_at"`
+	DispatchAt   *time.Time      `json:"dispatch_at"`
+	CancelledAt  *time.Time      `json:"cancelled_at"`
+}
+
+func newJobResponse(j persistence.Job) jobResponse {
+	return jobResponse{
+		ID: j.ID, Filter: j.Filter, Action: j.Action, ActionConfig: j.ActionConfig,
+		Status: j.Status, TargetMode: j.TargetMode, SubmittedBy: j.SubmittedBy,
+		CreatedAt: j.CreatedAt, ArmedAt: j.ArmedAt, DispatchAt: j.DispatchAt, CancelledAt: j.CancelledAt,
+	}
 }
 
 func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
@@ -56,5 +83,5 @@ func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(created)
+	_ = json.NewEncoder(w).Encode(newJobResponse(created))
 }

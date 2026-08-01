@@ -86,7 +86,7 @@ func TestCreateJobHappyPath(t *testing.T) {
 		t.Fatalf("status = %d, want %d (body=%s)", code, http.StatusCreated, raw)
 	}
 
-	var got persistence.Job
+	var got jobResponse
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("decode response: %v (body=%s)", err, raw)
 	}
@@ -96,6 +96,24 @@ func TestCreateJobHappyPath(t *testing.T) {
 
 	if queue.gotJob.Filter != "service.name=otelcol-contrib" || queue.gotJob.Action != "restart" || queue.gotJob.SubmittedBy != "alice" {
 		t.Errorf("CreateJob called with %+v, want filter/action/submitted_by from the request", queue.gotJob)
+	}
+
+	// Response keys must be snake_case, matching every other endpoint in
+	// this API (listResponse, statusResponse) — not persistence.Job's bare
+	// Go field names.
+	var rawFields map[string]any
+	if err := json.Unmarshal(raw, &rawFields); err != nil {
+		t.Fatalf("decode response as map: %v (body=%s)", err, raw)
+	}
+	for _, key := range []string{"id", "filter", "action", "status", "submitted_by", "created_at"} {
+		if _, ok := rawFields[key]; !ok {
+			t.Errorf("response missing snake_case key %q; got keys %v", key, rawFields)
+		}
+	}
+	for _, key := range []string{"ID", "SubmittedBy", "CreatedAt"} {
+		if _, ok := rawFields[key]; ok {
+			t.Errorf("response has PascalCase key %q, want snake_case only", key)
+		}
 	}
 }
 
