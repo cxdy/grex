@@ -421,16 +421,19 @@ func (r *Registry) SetConnected(id string, connected bool) {
 	agent.Connected = connected
 }
 
-// Get returns a snapshot of one agent.
-// HeartbeatInterval returns the same threshold Sweep uses to mark a locally
-// registered agent disconnected after a missed check-in. Exposed so callers
-// merging in DB-only agent records (see internal/api's MergeAgents) can
-// apply the identical staleness rule instead of trusting a stored Connected
-// value that Sweep never gets a chance to correct.
-func (r *Registry) HeartbeatInterval() time.Duration {
-	return r.cfg.HeartbeatInterval
+// DisconnectThreshold is the same threshold Sweep uses to mark a locally
+// registered agent disconnected after a missed check-in: HeartbeatInterval
+// plus 50% grace, so a single heartbeat delayed by ordinary jitter (gateway
+// relay hops, network latency) doesn't flip Connected before the next
+// check-in has a chance to land. Exposed so callers merging in DB-only
+// agent records (see internal/api's MergeAgents) can apply the identical
+// staleness rule instead of trusting a stored Connected value that Sweep
+// never gets a chance to correct.
+func (r *Registry) DisconnectThreshold() time.Duration {
+	return r.cfg.HeartbeatInterval + r.cfg.HeartbeatInterval/2
 }
 
+// Get returns a snapshot of one agent.
 func (r *Registry) Get(id string) (Agent, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -467,7 +470,7 @@ func (r *Registry) List() []Agent {
 // Same LastSeen caveat as SetConnected: this never touches it, only
 // Connected. See SetConnected's doc comment for why.
 func (r *Registry) Sweep(now time.Time) []string {
-	disconnectAfter := r.cfg.HeartbeatInterval
+	disconnectAfter := r.DisconnectThreshold()
 	evictAfter := r.cfg.HeartbeatInterval * time.Duration(r.cfg.StaleMissedHeartbeats)
 	r.mu.Lock()
 	defer r.mu.Unlock()

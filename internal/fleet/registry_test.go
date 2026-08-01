@@ -386,17 +386,19 @@ func TestSweepMarksLapsedAgentsDisconnected(t *testing.T) {
 		Health:      &protobufs.ComponentHealth{Healthy: true},
 	}, ConnMeta{})
 
-	// Still within one heartbeat: connected.
-	if evicted := r.Sweep(base.Add(29 * time.Second)); len(evicted) != 0 {
+	// Past one heartbeat but still inside the disconnect grace (1.5x
+	// HeartbeatInterval = 45s): stays connected. A single heartbeat delayed
+	// by ordinary jitter must not flip this before the next check-in lands.
+	if evicted := r.Sweep(base.Add(40 * time.Second)); len(evicted) != 0 {
 		t.Fatalf("evicted early: %v", evicted)
 	}
 	agent, _ := r.Get(uid.String())
 	if !agent.Connected {
-		t.Error("agent disconnected before missing a full heartbeat interval")
+		t.Error("agent disconnected within the disconnect grace period")
 	}
 
-	// Past one heartbeat, before eviction window: disconnected, still listed.
-	if evicted := r.Sweep(base.Add(31 * time.Second)); len(evicted) != 0 {
+	// Past the grace period, before eviction window: disconnected, still listed.
+	if evicted := r.Sweep(base.Add(46 * time.Second)); len(evicted) != 0 {
 		t.Fatalf("evicted at disconnect stage: %v", evicted)
 	}
 	agent, ok := r.Get(uid.String())
@@ -404,7 +406,7 @@ func TestSweepMarksLapsedAgentsDisconnected(t *testing.T) {
 		t.Fatal("agent missing after lapse; should be retained until stale eviction")
 	}
 	if agent.Connected {
-		t.Error("Connected = true after missing a check-in interval")
+		t.Error("Connected = true after missing the disconnect grace period")
 	}
 	if !agent.Healthy || !agent.HealthReported {
 		t.Error("last health report should be retained when marking disconnected")
@@ -414,7 +416,7 @@ func TestSweepMarksLapsedAgentsDisconnected(t *testing.T) {
 	}
 
 	// Second sweep while still lapsed must not double-count disconnect.
-	r.Sweep(base.Add(45 * time.Second))
+	r.Sweep(base.Add(60 * time.Second))
 }
 
 func TestReconnectAfterEvictionReRegisters(t *testing.T) {
