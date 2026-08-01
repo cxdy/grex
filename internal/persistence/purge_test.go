@@ -117,9 +117,17 @@ func TestNewPurgeClientRunsAndPurgesViaInsert(t *testing.T) {
 	metrics := &countingMetrics{}
 	var logBuf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&logBuf, nil))
-	client, err := NewPurgeClient(store.pool, 7*24*time.Hour, metrics, log)
+	client, err := NewPurgeClient(store.pool, 7*24*time.Hour, metrics, log, "test-replica-id")
 	if err != nil {
 		t.Fatalf("NewPurgeClient: %v", err)
+	}
+	// river.Config.ID must be this grex process's own replica identity, not
+	// River's hostname+timestamp default — see docs/spec/design.md's
+	// Dispatch routing section on why a stable, collision-free identity
+	// matters (and NewFlusher's replicaID param, which reuses the same
+	// value for agent_connections).
+	if got := client.ID(); got != "test-replica-id" {
+		t.Errorf("client.ID() = %q, want test-replica-id", got)
 	}
 	if err := client.Start(ctx); err != nil {
 		t.Fatalf("client.Start: %v", err)

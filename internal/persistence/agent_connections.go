@@ -13,15 +13,23 @@ var _ ConnectionStore = (*PostgresStore)(nil)
 // the HA handoff case needs (see docs/spec/design.md's Dispatch routing
 // section): an agent reconnecting to a different replica is a normal event,
 // not a conflict.
+//
+// connected_at only moves when replica_id actually changes (a real
+// handoff). A caller (Flusher) re-upserting the same replica_id on every
+// refresh tick to keep last_seen fresh must not reset connected_at to "now"
+// each time — that would make it indistinguishable from last_seen and lose
+// when the connection actually started.
 func (s *PostgresStore) UpsertAgentConnection(ctx context.Context, conn AgentConnection) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO agent_connections (instance_uid, replica_id, connected_at, last_seen)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO agent_connections (instance_uid, replica_id, replica_label, connected_at, last_seen)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (instance_uid) DO UPDATE SET
 			replica_id = EXCLUDED.replica_id,
-			connected_at = EXCLUDED.connected_at,
+			replica_label = EXCLUDED.replica_label,
+			connected_at = CASE WHEN agent_connections.replica_id = EXCLUDED.replica_id
+				THEN agent_connections.connected_at ELSE EXCLUDED.connected_at END,
 			last_seen = EXCLUDED.last_seen`,
-		conn.InstanceUID, conn.ReplicaID, conn.ConnectedAt, conn.LastSeen)
+		conn.InstanceUID, conn.ReplicaID, conn.ReplicaLabel, conn.ConnectedAt, conn.LastSeen)
 	if err != nil {
 		return fmt.Errorf("upsert agent_connections: %w", err)
 	}
@@ -48,7 +56,7 @@ func (s *PostgresStore) ListAgentConnections(ctx context.Context) ([]AgentConnec
 
 func (s *PostgresStore) queryAgentConnections(ctx context.Context, where string, args ...any) ([]AgentConnection, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT instance_uid, replica_id, connected_at, last_seen
+		SELECT instance_uid, replica_id, replica_label, connected_at, last_seen
 		FROM agent_connections `+where+` ORDER BY instance_uid`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query agent_connections: %w", err)
@@ -58,7 +66,7 @@ func (s *PostgresStore) queryAgentConnections(ctx context.Context, where string,
 	var conns []AgentConnection
 	for rows.Next() {
 		var c AgentConnection
-		if err := rows.Scan(&c.InstanceUID, &c.ReplicaID, &c.ConnectedAt, &c.LastSeen); err != nil {
+		if err := rows.Scan(&c.InstanceUID, &c.ReplicaID, &c.ReplicaLabel, &c.ConnectedAt, &c.LastSeen); err != nil {
 			return nil, fmt.Errorf("scan agent_connections: %w", err)
 		}
 		conns = append(conns, c)

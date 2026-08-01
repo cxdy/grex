@@ -6,6 +6,89 @@ import (
 	"time"
 )
 
+func TestUpsertAgentConnectionStoresReplicaLabel(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	err := store.UpsertAgentConnection(ctx, AgentConnection{
+		InstanceUID:  "agent-1",
+		ReplicaID:    "3f9e2b1a-uuid",
+		ReplicaLabel: "grex-7d9f8c6b5-xk2pl",
+		ConnectedAt:  now,
+		LastSeen:     now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertAgentConnection: %v", err)
+	}
+
+	got, ok, err := store.GetAgentConnection(ctx, "agent-1")
+	if err != nil {
+		t.Fatalf("GetAgentConnection: %v", err)
+	}
+	if !ok {
+		t.Fatal("GetAgentConnection: want ok = true")
+	}
+	if got.ReplicaLabel != "grex-7d9f8c6b5-xk2pl" {
+		t.Errorf("ReplicaLabel = %q, want grex-7d9f8c6b5-xk2pl", got.ReplicaLabel)
+	}
+
+	// ReplicaLabel is debug-only: it must not affect routing/uniqueness, so
+	// a second upsert for the same instance_uid still overwrites in place
+	// (same as replica_id moving owners).
+	if err := store.UpsertAgentConnection(ctx, AgentConnection{
+		InstanceUID: "agent-1", ReplicaID: "3f9e2b1a-uuid", ReplicaLabel: "", ConnectedAt: now, LastSeen: now,
+	}); err != nil {
+		t.Fatalf("UpsertAgentConnection (empty label): %v", err)
+	}
+	got, _, err = store.GetAgentConnection(ctx, "agent-1")
+	if err != nil {
+		t.Fatalf("GetAgentConnection: %v", err)
+	}
+	if got.ReplicaLabel != "" {
+		t.Errorf("ReplicaLabel = %q, want empty after overwrite", got.ReplicaLabel)
+	}
+}
+
+// TestUpsertAgentConnectionPreservesConnectedAtForSameReplica covers a
+// repeat upsert from the same owning replica (a Flusher refreshing
+// last_seen on every flush tick while an agent stays connected): connected_
+// at must stay the original value, not reset to "now" on every refresh —
+// only an actual ownership change (a different ReplicaID) should move it.
+func TestUpsertAgentConnectionPreservesConnectedAtForSameReplica(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	t0 := time.Now().UTC().Truncate(time.Microsecond)
+	t1 := t0.Add(time.Minute)
+
+	if err := store.UpsertAgentConnection(ctx, AgentConnection{
+		InstanceUID: "agent-1", ReplicaID: "grex-1", ConnectedAt: t0, LastSeen: t0,
+	}); err != nil {
+		t.Fatalf("UpsertAgentConnection: %v", err)
+	}
+	// Same replica upserts again later (a refresh tick), passing "now" as
+	// ConnectedAt just like a Flusher would — connected_at must not move.
+	if err := store.UpsertAgentConnection(ctx, AgentConnection{
+		InstanceUID: "agent-1", ReplicaID: "grex-1", ConnectedAt: t1, LastSeen: t1,
+	}); err != nil {
+		t.Fatalf("UpsertAgentConnection (refresh): %v", err)
+	}
+
+	got, ok, err := store.GetAgentConnection(ctx, "agent-1")
+	if err != nil {
+		t.Fatalf("GetAgentConnection: %v", err)
+	}
+	if !ok {
+		t.Fatal("GetAgentConnection: want ok = true")
+	}
+	if !got.ConnectedAt.Equal(t0) {
+		t.Errorf("ConnectedAt = %v, want %v (unchanged, same replica)", got.ConnectedAt, t0)
+	}
+	if !got.LastSeen.Equal(t1) {
+		t.Errorf("LastSeen = %v, want %v (refreshed)", got.LastSeen, t1)
+	}
+}
+
 func TestUpsertAndGetAgentConnection(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

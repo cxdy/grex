@@ -80,6 +80,9 @@ type Flusher struct {
 	log           *slog.Logger
 	maxConcurrent int
 	metrics       WriteMetrics
+	connStore     ConnectionStore
+	replicaID     string
+	replicaLabel  string
 }
 
 // NewFlusher builds a Flusher. registry is read via Get, never written.
@@ -88,14 +91,23 @@ type Flusher struct {
 // occupies one slot instead of blocking every agent queued after it.
 // interval doubles as each write's timeout (see writeWithTimeout): a write
 // can't outlive its own next retry opportunity. metrics may be nil.
-func NewFlusher(registry *fleet.Registry, dirty *DirtyTracker, store StateStore, interval time.Duration, log *slog.Logger, maxConcurrent int, metrics WriteMetrics) *Flusher {
+//
+// replicaID identifies this grex process for agent_connections (see
+// docs/spec/design.md's Dispatch routing section) — a UUID generated once
+// at startup, not a pod name or hostname (those churn on restart and aren't
+// guaranteed unique across clusters sharing one Postgres). replicaLabel is
+// a human-readable pod name/hostname for debugging only, never used for
+// routing or uniqueness.
+func NewFlusher(registry *fleet.Registry, dirty *DirtyTracker, store StateStore, interval time.Duration, log *slog.Logger, maxConcurrent int, metrics WriteMetrics, connStore ConnectionStore, replicaID, replicaLabel string) *Flusher {
 	if metrics != nil {
 		metrics.SetWriteTimeout("save_agent", interval)
 		metrics.SetWriteTimeout("soft_delete_agent", interval)
+		metrics.SetWriteTimeout("upsert_agent_connection", interval)
 	}
 	return &Flusher{
 		registry: registry, dirty: dirty, store: store, interval: interval, log: log,
 		maxConcurrent: maxConcurrent, metrics: metrics,
+		connStore: connStore, replicaID: replicaID, replicaLabel: replicaLabel,
 	}
 }
 
@@ -147,6 +159,32 @@ func (f *Flusher) flushOnce(ctx context.Context) {
 			})
 			if err != nil {
 				f.log.Error("persistence flush failed", "instance_uid", id, "error", err)
+			}
+			// Upsert-only, deliberately: only ever refresh agent_connections
+			// while this replica still holds a live connection for id. Never
+			// delete on disconnect here — this replica's own flush tick can
+			// run after the agent has already reconnected to a different
+			// replica, and a delete at that point would erase the other
+			// replica's fresher ownership row instead of this replica's own
+			// stale one. A row for an agent that's gone dark everywhere is
+			// left to age out via last_seen, per docs/spec/design.md's
+			// Dispatch routing section ("or lets a lease expire") — the
+			// lease-expiry sweep that reads last_seen is separate, not yet
+			// built, follow-up work.
+			if agent.Connected {
+				connErr := writeWithTimeout(ctx, f.interval, f.metrics, "upsert_agent_connection", func(ctx context.Context) error {
+					now := time.Now()
+					return f.connStore.UpsertAgentConnection(ctx, AgentConnection{
+						InstanceUID:  id,
+						ReplicaID:    f.replicaID,
+						ReplicaLabel: f.replicaLabel,
+						ConnectedAt:  now,
+						LastSeen:     now,
+					})
+				})
+				if connErr != nil {
+					f.log.Error("persistence agent_connections upsert failed", "instance_uid", id, "error", connErr)
+				}
 			}
 		})
 	}
