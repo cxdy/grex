@@ -40,6 +40,7 @@ type Handler struct {
 	startedAt time.Time
 	store     persistence.StateStore
 	metrics   Metrics
+	jobs      persistence.JobQueue
 }
 
 // New builds a Handler over the given registry. startedAt is used for uptime
@@ -59,14 +60,17 @@ type Handler struct {
 // than losing known-good local data over the database being unavailable —
 // the response's "partial" field reflects that degraded state. metrics is
 // optional (nil records nothing).
-func New(registry *fleet.Registry, startedAt time.Time, store persistence.StateStore, metrics Metrics) *Handler {
+// jobs is nil under the same opt-in-persistence rule as store: jobs cannot
+// exist without a database, so POST /api/jobs returns 503 rather than a
+// nil-pointer panic when unset.
+func New(registry *fleet.Registry, startedAt time.Time, store persistence.StateStore, metrics Metrics, jobs persistence.JobQueue) *Handler {
 	if startedAt.IsZero() {
 		startedAt = time.Now()
 	}
 	if metrics == nil {
 		metrics = noopMetrics{}
 	}
-	return &Handler{registry: registry, startedAt: startedAt, store: store, metrics: metrics}
+	return &Handler{registry: registry, startedAt: startedAt, store: store, metrics: metrics, jobs: jobs}
 }
 
 // Mount registers API routes on mux. Paths use Go 1.22+ method patterns.
@@ -81,6 +85,7 @@ func (h *Handler) Mount(mux *http.ServeMux, wrap func(route string, next http.Ha
 	mux.Handle("GET /api/status", wrap("/api/status", http.HandlerFunc(h.status)))
 	mux.Handle("GET /api/attributes", wrap("/api/attributes", http.HandlerFunc(h.listAttributeKeys)))
 	mux.Handle("GET /api/attributes/values", wrap("/api/attributes/values", http.HandlerFunc(h.listAttributeValues)))
+	mux.Handle("POST /api/jobs", wrap("/api/jobs", http.HandlerFunc(h.createJob)))
 }
 
 type listResponse struct {

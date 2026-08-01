@@ -744,6 +744,26 @@ infrastructure. Two things it doesn't give for free:
 - **Surface: API only for now**, `POST /api/jobs`; no UI form yet. Request
   body: `{filter, action, action_config}` — filter and action required,
   `action_config` optional and action-specific.
+- **`POST /api/jobs` has no pool-sizing or backpressure story yet, known
+  gap.** Built (`internal/api/jobs.go`), but not load-tested past unit
+  scale. Three specific things, not yet addressed: the DSN built in
+  `cmd/grex/main.go` sets no `pool_max_conns`, so pgxpool falls back to its
+  own default (`max(4, NumCPU())`) with no config knob to raise it; the
+  handler's `CreateJob` call carries no explicit write timeout of its own
+  (unlike every DB write on the Flusher path, which goes through
+  `writeWithTimeout`), so a request queuing on pool exhaustion just holds
+  its goroutine rather than failing fast with `503`/`429`; and the request
+  body has no `http.MaxBytesReader` cap. None of this deadlocks or
+  corrupts anything — the query itself is a single-row `INSERT` with a
+  random UUID PK, no lock contention on the Postgres side — but a
+  sustained high-volume burst (tested against: ~3300 req/s, i.e. 1M jobs
+  in a 5-minute window) would queue rather than shed load, trending toward
+  unbounded goroutine/memory growth instead of graceful degradation.
+  Fix, if this rate becomes a real target: expose `pool_max_conns` through
+  config, bound `CreateJob` with the same `writeWithTimeout` pattern
+  (returning `503` on timeout), cap request body size. Deliberately not
+  done here — evaluate for its own PR once real throughput needs are
+  known, rather than tuning against a number nobody's asked for yet.
 - **Create and execute are separate calls.** `POST /api/jobs` creates a
   job in `planned` status — filter and action recorded, nothing
   dispatched, matched-target count/list can be previewed before anything

@@ -1,7 +1,9 @@
 # Read API
 
 Base URL: **UI listener** (default `:8080`). Content-Type:
-`application/json`. **Read-only** — no write endpoints in 1.0.
+`application/json`. Mostly read-only: the one exception is `POST
+/api/jobs` below, the first piece of the not-yet-finished jobs/mutation
+feature (see [design doc](../spec/design.md#jobs-schema-and-execution)).
 
 !!! note "Auth"
     mTLS with SPIFFE IDs is shipped (see
@@ -146,6 +148,59 @@ Missing `key` → **400**.
 
 ---
 
+## `POST /api/jobs`
+
+Creates a job in `planned` status. Nothing is dispatched: matching agents
+against `filter` and sending anything to them are both separate,
+not-yet-built steps (arming, then dispatch — see [design
+doc](../spec/design.md#jobs-schema-and-execution)). This is the only
+mutating endpoint today.
+
+### Request body
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `filter` | Yes | Same filter language as `GET /api/agents`. Stored as-is; not evaluated until the job is armed |
+| `action` | Yes | e.g. `restart`. No fixed enum — new action types are additive |
+| `submitted_by` | Yes | No identity/auth wiring yet — this is whatever the caller sends, unverified |
+| `action_config` | No | Action-specific knobs (`jsonb`), e.g. restart's `reconnect_timeout`/`backoff_cap`. Opaque to this endpoint, stored verbatim |
+
+```json
+{
+  "filter": "service.name=otelcol-contrib",
+  "action": "restart",
+  "action_config": { "reconnect_timeout": "5m" },
+  "submitted_by": "alice"
+}
+```
+
+`201` with the created job:
+
+```json
+{
+  "id": "3fa4c1e2-...",
+  "filter": "service.name=otelcol-contrib",
+  "action": "restart",
+  "action_config": { "reconnect_timeout": "5m" },
+  "status": "planned",
+  "target_mode": null,
+  "submitted_by": "alice",
+  "created_at": "2026-08-01T15:33:41Z",
+  "armed_at": null,
+  "dispatch_at": null,
+  "cancelled_at": null
+}
+```
+
+| Status | When |
+|--------|------|
+| 201 | Created |
+| 400 | Missing `filter`/`action`/`submitted_by`, or malformed JSON body |
+| 503 | `database.host` unset — jobs have no in-memory fallback, unlike agent reads |
+| 500 | Backend error |
+
+---
+
 ## Agent JSON shape (detail)
 
 See `fleet.AgentView` for field names. Notable points:
@@ -178,6 +233,10 @@ scripts/gxcurl -u admin "https://localhost:8080/api/agents/${INSTANCE_UID}" | jq
 scripts/gxcurl -u admin 'https://localhost:8080/api/status' | jq
 
 scripts/gxcurl -u admin 'https://localhost:8080/api/attributes?prefix=service' | jq
+
+scripts/gxcurl -u admin -X POST 'https://localhost:8080/api/jobs' \
+  -H 'Content-Type: application/json' \
+  -d '{"filter":"service.name=otelcol-contrib","action":"restart","submitted_by":"alice"}' | jq
 ```
 
 If `ui_tls.client_ca_file` isn't set (mTLS off), the same requests work

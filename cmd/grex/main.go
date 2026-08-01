@@ -137,6 +137,7 @@ func run(args []string) error {
 	var dirtyTracker *persistence.DirtyTracker
 	var store persistence.StateStore
 	var connStore persistence.ConnectionStore
+	var jobQueue persistence.JobQueue
 	var maxConcurrentWrites int
 	var purgeClient *river.Client[pgx.Tx]
 	var replicaID, replicaLabel string
@@ -153,6 +154,7 @@ func run(args []string) error {
 		pgStore := persistence.NewPostgresStore(pool)
 		store = pgStore
 		connStore = pgStore
+		jobQueue = pgStore
 		dirtyTracker = persistence.NewDirtyTracker()
 		registryEvents = fleet.MultiEvents(events, dirtyTracker)
 		fleetMetrics.MustRegister(persistence.NewPoolCollector(pool))
@@ -199,7 +201,7 @@ func run(args []string) error {
 	startedAt := time.Now()
 	httpMetrics := metrics.NewHTTPMetrics(serverMetrics)
 	uiMux := http.NewServeMux()
-	api.New(registry, startedAt, store, events).Mount(uiMux, httpMetrics.Instrument)
+	api.New(registry, startedAt, store, events, jobQueue).Mount(uiMux, httpMetrics.Instrument)
 	uiHandler, err := ui.New(registry, ui.Config{PollInterval: cfg.UI.PollInterval}, startedAt, store, events)
 	if err != nil {
 		return fmt.Errorf("ui: %w", err)

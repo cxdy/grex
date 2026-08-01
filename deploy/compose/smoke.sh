@@ -158,6 +158,18 @@ code=$(scripts/gxcurl -u alice -s -o /dev/null -w '%{http_code}' https://127.0.0
 code=$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:8080/riverui/)
 [ "$code" = "403" ] || fail "grex /riverui/ with no cert: want 403, got $code"
 
+# POST /api/jobs: the one mutating endpoint today (docs/developer/read-api.md).
+# No role enforcement exists yet — any identity can create a job — so this
+# only proves the endpoint round-trips through a real Postgres, not an auth
+# check. Created in "planned" status; nothing dispatched (arm/dispatch
+# aren't built yet), so no otelcol-agent-* container is actually restarted.
+job_status=$(scripts/gxcurl -u admin -s -X POST https://127.0.0.1:8080/api/jobs \
+    -H 'Content-Type: application/json' \
+    -d '{"filter":"service.name=otelcol-contrib","action":"restart","submitted_by":"smoke-test"}' |
+    python3 -c "import json,sys; print(json.load(sys.stdin)['status'])" 2>/dev/null)
+[ "$job_status" = "planned" ] || fail "POST /api/jobs: want status=planned, got ${job_status:-absent}"
+echo "POST /api/jobs confirmed: job created in planned status"
+
 # grex-browser (deploy/compose/grex-browser.yaml) has no ui_tls at all:
 # plain HTTP, no client cert needed, not even -k for a self-signed cert.
 # Not part of the Envoy/gateway pool, but shares the same Postgres, so it
