@@ -116,7 +116,7 @@ func newMuxWithStore(t *testing.T, r *fleet.Registry, store persistence.StateSto
 
 func newMuxWithStoreAndMetrics(t *testing.T, r *fleet.Registry, store persistence.StateStore, m Metrics) http.Handler {
 	t.Helper()
-	h := New(r, time.Now(), store, m)
+	h := New(r, time.Now(), store, m, nil)
 	mux := http.NewServeMux()
 	h.Mount(mux, nil)
 	return mux
@@ -653,7 +653,7 @@ func TestGetAgentAndStatus(t *testing.T) {
 }
 
 func TestNewZeroStartedAt(t *testing.T) {
-	h := New(newRegistry(t), time.Time{}, nil, nil)
+	h := New(newRegistry(t), time.Time{}, nil, nil, nil)
 	if h.startedAt.IsZero() {
 		t.Fatal("startedAt should default when zero")
 	}
