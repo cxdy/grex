@@ -37,6 +37,10 @@ type AgentView struct {
 	HostName string `json:"host_name,omitempty"`
 	// Version is service.version when reported.
 	Version string `json:"version,omitempty"`
+	// SupervisorManaged is reliable when true (a declared attribute, see
+	// SupervisorManaged) but not when false: a bare opamp extension and a
+	// Supervisor predating this attribute both read as false too.
+	SupervisorManaged bool `json:"supervisor_managed"`
 }
 
 // SummaryView returns a compact view for list endpoints (no config/packages).
@@ -78,7 +82,24 @@ func fullView(a Agent) AgentView {
 		DisplayName:         DisplayNameOf(a),
 		HostName:            Attr(a, "host.name"),
 		Version:             Attr(a, "service.version"),
+		SupervisorManaged:   SupervisorManaged(a),
 	}
+}
+
+// supervisorManagedByValue is the fixed value the OpAMP Supervisor's
+// reference implementation injects for the opamp.managed_by non-identifying
+// attribute (see docs/spec/design.md's supervisor_managed known-gap note).
+// A declared, server-injected signal, unlike the capability-bit heuristic
+// it replaces: not something an operator's own collector config can set.
+const supervisorManagedByValue = "opentelemetry-opampsupervisor"
+
+// SupervisorManaged reports whether an agent declared the opamp.managed_by
+// attribute the OpAMP Supervisor injects. False for an agent running the
+// bare opamp extension directly, and false for a Supervisor version that
+// predates this attribute — absence isn't distinguishable between those two
+// cases from the server side, so both simply read as false, not unknown.
+func SupervisorManaged(a Agent) bool {
+	return Attr(a, "opamp.managed_by") == supervisorManagedByValue
 }
 
 // Attr returns an identifying or non-identifying attribute value.

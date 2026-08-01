@@ -148,6 +148,35 @@ for host in 127.0.0.1:8080 127.0.0.1:8081; do
 done
 echo "cross-replica DB merge confirmed: both replicas report the full fleet via GET /api/agents"
 
+# supervisor_managed (docs/spec/design.md's known-gap fix, see
+# deploy/compose/opamp-supervisor-build/Dockerfile's temporary fork build)
+# depends on the OpAMP Supervisor's opamp.managed_by non-identifying
+# attribute surviving relay through opamp-gateway: otelcol-agent-2 (the one
+# Supervisor-managed agent) connects via the gateway same as agent-1 and
+# otelcol-gateway (compose.yaml), not directly to grex. want=1: only
+# agent-2 runs the Supervisor; agent-1/otelcol-gateway run the bare opamp
+# extension and must not match. A gateway that silently dropped the
+# attribute would show 0 here, not 1.
+supervisor_managed_total() {
+    host="$1"
+    scripts/gxcurl -u alice -s "https://$host/api/agents?supervisor_managed=true&limit=10" |
+        python3 -c "import json,sys; print(json.load(sys.stdin)['total'])" 2>/dev/null
+}
+
+for host in 127.0.0.1:8080 127.0.0.1:8081; do
+    ok=
+    for _ in $(seq 1 30); do
+        total=$(supervisor_managed_total "$host")
+        if [ "$total" = "1" ]; then
+            ok=1
+            break
+        fi
+        sleep 2
+    done
+    [ -n "$ok" ] || fail "$host: GET /api/agents?supervisor_managed=true total = ${total:-absent}, want 1 (opamp.managed_by survived the gateway relay)"
+done
+echo "supervisor_managed confirmed: opamp.managed_by survives relay through opamp-gateway"
+
 # River UI is mounted only when database.host is set (deploy/compose/
 # grex.yaml sets it) — reuses the purge job's own River client. Same
 # mTLS-gated UI listener as everything else (server.go wraps the whole
