@@ -33,8 +33,16 @@ Configuration:
 | Stage | Condition | Effect |
 |-------|-----------|--------|
 | Connected | Check-in within interval (or direct conn still open) | `connected=true` |
-| Disconnected | Missed ≥ 1 interval without check-in | `connected=false`; **retain** last health; still in UI |
+| Disconnected | No check-in for `DisconnectThreshold` (1.5× interval, e.g. 45s at the 30s default) | `connected=false`; **retain** last health; still in UI |
 | Evicted (stale) | Missed `stale_missed_heartbeats` consecutive intervals | Removed from registry; `grex_agents_evicted_total++` |
+
+The 1.5× grace on the disconnect stage (not the eviction stage, which already
+had margin) exists so ordinary jitter — a gateway relay hop, network
+latency — doesn't flip `connected` false right as `Sweep` fires, only to
+flip back moments later when the in-flight heartbeat lands. Without it, an
+agent whose check-ins consistently land close to the interval boundary
+flaps `connected` every `Sweep` cycle even though it never actually missed
+a check-in.
 
 Any `AgentToServer` message counts as a check-in, not only explicit
 heartbeats.
