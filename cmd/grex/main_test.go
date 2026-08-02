@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -17,8 +18,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivermigrate"
 
 	"github.com/dennisme/grex/internal/config"
+	"github.com/dennisme/grex/internal/persistence/testdb"
 	"github.com/dennisme/grex/internal/server"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -173,6 +176,117 @@ func TestRunSignalShutdown(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("run did not shut down after SIGTERM")
+	}
+}
+
+// TestRunWithDatabaseConfigured covers run()'s entire database.host-enabled
+// branch — pgxpool wiring, replicaID generation, the purge client, riverui
+// mounting, Flusher/SessionSnapshotter, and the deferred purge-client
+// shutdown — none of which any other test here exercises (they all leave
+// database.host unset, the opt-out path). Not just plumbing: this is the
+// same wiring the compose dev stack runs for real.
+func TestRunWithDatabaseConfigured(t *testing.T) {
+	inst := testdb.New(t) // applies grex's own migrations
+
+	// River's own schema (river_job, river_leader, etc.) isn't part of
+	// grex's migrations (see cmd/river-migrate) — purgeClient.Start and
+	// riverUIHandler.Start both need it present, same as
+	// internal/persistence/purge_test.go's TestNewPurgeClientRunsAndPurgesViaInsert.
+	pool, err := pgxpool.New(context.Background(), inst.DSN())
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	migrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
+	if err != nil {
+		t.Fatalf("rivermigrate.New: %v", err)
+	}
+	if _, err := migrator.Migrate(context.Background(), rivermigrate.DirectionUp, nil); err != nil {
+		t.Fatalf("migrate river schema: %v", err)
+	}
+	pool.Close()
+
+	prevDelay := drainDelay
+	drainDelay = 0
+	t.Cleanup(func() { drainDelay = prevDelay })
+
+	path := writeTestConfig(t, fmt.Sprintf(`
+database:
+  host: %s
+  port: %d
+  user: %s
+  password: %s
+  dbname: %s
+  sslmode: %s
+`, inst.Host, inst.Port, inst.User, inst.Password, inst.DBName, inst.SSLMode))
+
+	// run() builds its own logger from cfg.Log, writing to os.Stderr — swap
+	// it for a pipe so the known River shutdown race below (same one
+	// internal/persistence/purge_test.go documents) can be asserted on
+	// instead of leaking to real stderr unchecked, per the
+	// pristine-test-output rule. Safe to reassign the package-level
+	// os.Stderr var here: this package's tests run sequentially (none call
+	// t.Parallel()), and it's restored before this test does anything else
+	// with it.
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origStderr := os.Stderr
+	os.Stderr = stderrW
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run([]string{"-config", path})
+	}()
+
+	// Let run() finish constructing and starting everything (pool, purge
+	// client, riverui, Flusher/SessionSnapshotter goroutines) before
+	// signaling shutdown.
+	time.Sleep(500 * time.Millisecond)
+	select {
+	case err := <-done:
+		os.Stderr = origStderr
+		t.Fatalf("run exited early: %v", err)
+	default:
+	}
+
+	p, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-done:
+		os.Stderr = origStderr
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		os.Stderr = origStderr
+		t.Fatal("run did not shut down after SIGTERM")
+	}
+
+	if err := stderrW.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stderrBuf strings.Builder
+	if _, err := io.Copy(&stderrBuf, stderrR); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(stderrBuf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		if !strings.Contains(line, "level=ERROR") {
+			continue
+		}
+		if strings.Contains(line, "PeriodicJobEnqueuer") && strings.Contains(line, "context canceled") {
+			continue
+		}
+		t.Errorf("unexpected stderr line: %s", line)
 	}
 }
 
