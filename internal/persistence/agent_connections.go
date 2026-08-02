@@ -3,9 +3,12 @@ package persistence
 import (
 	"context"
 	"fmt"
+
+	"github.com/jackc/pgx/v5"
 )
 
 var _ ConnectionStore = (*PostgresStore)(nil)
+var _ BatchConnectionStore = (*PostgresStore)(nil)
 
 // UpsertAgentConnection registers (or moves) which replica currently holds
 // an agent's socket. A second call for the same InstanceUID overwrites the
@@ -20,7 +23,16 @@ var _ ConnectionStore = (*PostgresStore)(nil)
 // each time — that would make it indistinguishable from last_seen and lose
 // when the connection actually started.
 func (s *PostgresStore) UpsertAgentConnection(ctx context.Context, conn AgentConnection) error {
-	_, err := s.pool.Exec(ctx, `
+	sql, args := upsertAgentConnectionSQL(conn)
+	_, err := s.pool.Exec(ctx, sql, args...)
+	if err != nil {
+		return fmt.Errorf("upsert agent_connections: %w", err)
+	}
+	return nil
+}
+
+func upsertAgentConnectionSQL(conn AgentConnection) (string, []any) {
+	return `
 		INSERT INTO agent_connections (instance_uid, replica_id, replica_label, connected_at, last_seen)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (instance_uid) DO UPDATE SET
@@ -29,11 +41,15 @@ func (s *PostgresStore) UpsertAgentConnection(ctx context.Context, conn AgentCon
 			connected_at = CASE WHEN agent_connections.replica_id = EXCLUDED.replica_id
 				THEN agent_connections.connected_at ELSE EXCLUDED.connected_at END,
 			last_seen = EXCLUDED.last_seen`,
-		conn.InstanceUID, conn.ReplicaID, conn.ReplicaLabel, conn.ConnectedAt, conn.LastSeen)
-	if err != nil {
-		return fmt.Errorf("upsert agent_connections: %w", err)
-	}
-	return nil
+		[]any{conn.InstanceUID, conn.ReplicaID, conn.ReplicaLabel, conn.ConnectedAt, conn.LastSeen}
+}
+
+// QueueUpsertAgentConnection appends an UpsertAgentConnection-equivalent
+// statement to batch instead of executing it immediately. See
+// PostgresStore.QueueSaveSession.
+func (s *PostgresStore) QueueUpsertAgentConnection(batch *pgx.Batch, conn AgentConnection) {
+	sql, args := upsertAgentConnectionSQL(conn)
+	batch.Queue(sql, args...)
 }
 
 // GetAgentConnection reads which replica currently owns instanceUID's

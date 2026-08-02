@@ -65,3 +65,33 @@ func runConcurrent(tasks []func(), maxConcurrent int) {
 	}
 	wg.Wait()
 }
+
+// defaultBatchSize is how many statements Flusher/SessionSnapshotter queue
+// onto one pgx.Batch round trip when their store supports it (see
+// BatchStateStore/BatchConnectionStore, docs/spec/design.md's Scaling gaps
+// items 3-4). A starting point, not tuned against real load yet — a stuck
+// row inside one chunk's batch only delays that chunk's own results, so
+// this is also the upper bound on that blast radius.
+const defaultBatchSize = 500
+
+// chunk splits ids into groups of at most size, preserving order; the last
+// group may be smaller. Used to turn a one-round-trip-per-agent write into
+// one pgx.Batch round trip per chunk (see Flusher/SessionSnapshotter),
+// bounding a chunk's own blast radius: a stuck row inside a chunk's batch
+// only delays that chunk's remaining results, not any other chunk's — a
+// smaller-radius version of runConcurrent's per-task isolation, not the
+// same guarantee. size <= 0 degrades to one id per chunk (today's
+// per-agent behavior) rather than panicking or looping forever.
+func chunk(ids []string, size int) [][]string {
+	if len(ids) == 0 {
+		return nil
+	}
+	if size <= 0 {
+		size = 1
+	}
+	chunks := make([][]string, 0, (len(ids)+size-1)/size)
+	for i := 0; i < len(ids); i += size {
+		chunks = append(chunks, ids[i:min(i+size, len(ids))])
+	}
+	return chunks
+}

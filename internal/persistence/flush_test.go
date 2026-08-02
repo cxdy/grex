@@ -230,6 +230,91 @@ func TestFlusherSoftDeletesAgentNoLongerInRegistry(t *testing.T) {
 	}
 }
 
+// TestFlusherBatchesSoftDeletes covers docs/spec/design.md's Scaling gaps
+// items 3-4: when the store supports BatchStateStore, several evicted
+// agents' soft-deletes go through one chunked pgx.Batch round trip instead
+// of one SoftDeleteAgent call per agent. fakeBatchStore.SoftDeleteAgent
+// panics — if flushOnce ever fell back to the per-row path here, this test
+// would panic instead of just failing an assertion, a stronger signal that
+// the batched path is genuinely what ran.
+func TestFlusherBatchesSoftDeletes(t *testing.T) {
+	dirty := NewDirtyTracker()
+	store := &fakeBatchStore{}
+	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), nil)
+
+	dirty.AgentEvicted("agent-1")
+	dirty.AgentEvicted("agent-2")
+	dirty.AgentEvicted("agent-3")
+
+	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger(), 4, nil, store, "replica-1", "")
+	flusher.flushOnce(context.Background())
+
+	for _, id := range []string{"agent-1", "agent-2", "agent-3"} {
+		if !store.wasEvicted(id) {
+			t.Errorf("%s was not soft-deleted", id)
+		}
+	}
+	if got := store.sendBatchCalls(); got != 1 {
+		t.Errorf("sendBatchCalls = %d, want 1 (all three fit in one chunk)", got)
+	}
+}
+
+// TestFlusherBatchesAgentConnectionUpserts is TestFlusherBatchesSoftDeletes'
+// counterpart for the other batchable write: UpsertAgentConnection for
+// connected agents.
+func TestFlusherBatchesAgentConnectionUpserts(t *testing.T) {
+	dirty := NewDirtyTracker()
+	batchStore := &fakeBatchStore{}
+	saveStore := &fakeStateStore{} // SaveAgent stays per-row regardless — not batched, see flush.go
+	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), dirty)
+
+	for n := byte(1); n <= 3; n++ {
+		id, raw := testInstanceUID(t, n)
+		registry.Report(&protobufs.AgentToServer{InstanceUid: raw}, fleet.ConnMeta{})
+		_ = id
+	}
+
+	flusher := NewFlusher(registry, dirty, saveStore, time.Hour, discardLogger(), 4, nil, batchStore, "replica-1", "grex-pod-a")
+	flusher.flushOnce(context.Background())
+
+	for n := byte(1); n <= 3; n++ {
+		id, _ := testInstanceUID(t, n)
+		if !batchStore.wasConnectionUpserted(id) {
+			t.Errorf("%s: agent_connections was not upserted", id)
+		}
+	}
+	if got := batchStore.sendBatchCalls(); got != 1 {
+		t.Errorf("sendBatchCalls = %d, want 1 (all three fit in one chunk)", got)
+	}
+}
+
+// TestFlusherBatchChunkErrorDoesNotStopRestOfChunk is the concrete proof
+// behind the goal's core claim: one bad row's error, surfaced when its
+// batch result is read, must not prevent the rest of that same chunk's
+// results from being read and applied.
+func TestFlusherBatchChunkErrorDoesNotStopRestOfChunk(t *testing.T) {
+	dirty := NewDirtyTracker()
+	store := &fakeBatchStore{errFor: map[string]error{"agent-2": errors.New("constraint violation")}}
+	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), nil)
+
+	dirty.AgentEvicted("agent-1")
+	dirty.AgentEvicted("agent-2")
+	dirty.AgentEvicted("agent-3")
+
+	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger(), 4, nil, store, "replica-1", "")
+	flusher.flushOnce(context.Background())
+
+	if !store.wasEvicted("agent-1") {
+		t.Error("agent-1 (before the failing row) was not soft-deleted")
+	}
+	if store.wasEvicted("agent-2") {
+		t.Error("agent-2 should have failed, not been recorded as evicted")
+	}
+	if !store.wasEvicted("agent-3") {
+		t.Error("agent-3 (after the failing row) was not soft-deleted — one bad row must not stop the rest of its chunk")
+	}
+}
+
 // TestFlusherSoftDeletesEvictedAgentAgainstRealPostgres covers the whole
 // real path end to end: fleet.Registry evicts an agent via Sweep, the
 // DirtyTracker (as the registry's Events) marks it dirty, and Flusher

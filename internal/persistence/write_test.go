@@ -157,3 +157,53 @@ func TestRunConcurrentBoundsMaxInFlight(t *testing.T) {
 func TestRunConcurrentEmpty(t *testing.T) {
 	runConcurrent(nil, 4) // must not panic or hang
 }
+
+func TestChunkEvenlyDivides(t *testing.T) {
+	got := chunk([]string{"a", "b", "c", "d"}, 2)
+	want := [][]string{{"a", "b"}, {"c", "d"}}
+	assertChunksEqual(t, got, want)
+}
+
+func TestChunkLastGroupSmaller(t *testing.T) {
+	got := chunk([]string{"a", "b", "c", "d", "e"}, 2)
+	want := [][]string{{"a", "b"}, {"c", "d"}, {"e"}}
+	assertChunksEqual(t, got, want)
+}
+
+func TestChunkSizeLargerThanInput(t *testing.T) {
+	got := chunk([]string{"a", "b"}, 10)
+	want := [][]string{{"a", "b"}}
+	assertChunksEqual(t, got, want)
+}
+
+func TestChunkEmptyInput(t *testing.T) {
+	if got := chunk(nil, 5); got != nil {
+		t.Errorf("chunk(nil, 5) = %v, want nil", got)
+	}
+}
+
+// TestChunkNonPositiveSizeDegradesToOnePerChunk covers size <= 0: rather
+// than panicking or looping forever, it falls back to one id per chunk —
+// today's per-agent behavior, not a crash.
+func TestChunkNonPositiveSizeDegradesToOnePerChunk(t *testing.T) {
+	got := chunk([]string{"a", "b", "c"}, 0)
+	want := [][]string{{"a"}, {"b"}, {"c"}}
+	assertChunksEqual(t, got, want)
+}
+
+func assertChunksEqual(t *testing.T, got, want [][]string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if len(got[i]) != len(want[i]) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+		for j := range want[i] {
+			if got[i][j] != want[i][j] { //nolint:gosec // t.Fatalf above already halts on a length mismatch; gosec's static analysis doesn't see that
+				t.Fatalf("got %v, want %v", got, want)
+			}
+		}
+	}
+}

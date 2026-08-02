@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
-	"slices"
 	"strconv"
 	"time"
 
@@ -128,20 +127,11 @@ func (h *Handler) listAgents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	agents := MatchingAgents(mergedAgents, filters)
-	slices.SortFunc(agents, func(a, b fleet.Agent) int {
-		if a.InstanceUID < b.InstanceUID {
-			return -1
-		}
-		if a.InstanceUID > b.InstanceUID {
-			return 1
-		}
-		return 0
-	})
 
 	total := len(agents)
 	start := min(offset, total)
 	end := min(start+limit, total)
-	page := agents[start:end]
+	page := pageByInstanceUID(agents, start, end)
 	views := make([]fleet.AgentView, len(page))
 	for i, a := range page {
 		views[i] = fleet.SummaryView(a)

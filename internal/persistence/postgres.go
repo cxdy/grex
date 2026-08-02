@@ -39,7 +39,20 @@ type execer interface {
 // still rejects anything strictly older, same as the agents table's guard;
 // it only additionally accepts the disconnect-at-an-unmoved-LastSeen case.
 func saveSessionUpsert(ctx context.Context, q execer, agent fleet.Agent) error {
-	_, err := q.Exec(ctx, `
+	sql, args := saveSessionSQL(agent)
+	_, err := q.Exec(ctx, sql, args...)
+	if err != nil {
+		return fmt.Errorf("upsert agent_session: %w", err)
+	}
+	return nil
+}
+
+// saveSessionSQL builds saveSessionUpsert's statement and args, shared with
+// QueueSaveSession so the two never drift apart: one runs it immediately,
+// the other queues the identical statement onto a pgx.Batch for a chunked
+// round trip (see docs/spec/design.md's Scaling gaps items 3-4).
+func saveSessionSQL(agent fleet.Agent) (string, []any) {
+	return `
 		INSERT INTO agent_session (
 			instance_uid, connected, remote_addr, tls_subject, via_gateway,
 			transport, description_reported, sequence_num, updated_at
@@ -54,13 +67,24 @@ func saveSessionUpsert(ctx context.Context, q execer, agent fleet.Agent) error {
 			sequence_num = EXCLUDED.sequence_num,
 			updated_at = EXCLUDED.updated_at
 		WHERE agent_session.updated_at <= EXCLUDED.updated_at`,
-		agent.InstanceUID, agent.Connected, agent.Conn.RemoteAddr, agent.Conn.TLSSubject, agent.Conn.ViaGateway,
-		agent.Conn.Transport, agent.DescriptionReported, int64(agent.SequenceNum), //nolint:gosec // bit-for-bit storage
-		agent.LastSeen)
-	if err != nil {
-		return fmt.Errorf("upsert agent_session: %w", err)
-	}
-	return nil
+		[]any{
+			agent.InstanceUID, agent.Connected, agent.Conn.RemoteAddr, agent.Conn.TLSSubject, agent.Conn.ViaGateway,
+			agent.Conn.Transport, agent.DescriptionReported, int64(agent.SequenceNum), //nolint:gosec // bit-for-bit storage
+			agent.LastSeen,
+		}
+}
+
+// QueueSaveSession appends a SaveSession-equivalent statement to batch
+// instead of executing it immediately. The caller sends batch (SendBatch)
+// and must read exactly one result per queued statement, in order.
+func (s *PostgresStore) QueueSaveSession(batch *pgx.Batch, agent fleet.Agent) {
+	sql, args := saveSessionSQL(agent)
+	batch.Queue(sql, args...)
+}
+
+// SendBatch sends batch in one round trip. Implements BatchStateStore.
+func (s *PostgresStore) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
+	return s.pool.SendBatch(ctx, batch)
 }
 
 // PostgresStore is a StateStore backed by Postgres. Every write is a guarded
@@ -73,6 +97,7 @@ type PostgresStore struct {
 }
 
 var _ StateStore = (*PostgresStore)(nil)
+var _ BatchStateStore = (*PostgresStore)(nil)
 
 // NewPostgresStore wraps an existing pgx pool. The caller owns the pool's
 // lifecycle (including Close).
@@ -379,13 +404,24 @@ func (s *PostgresStore) DeleteAgent(ctx context.Context, instanceUID string) err
 // idempotent: once evicted_at is set, a later call (e.g. a retried flush)
 // leaves it untouched rather than moving it forward.
 func (s *PostgresStore) SoftDeleteAgent(ctx context.Context, instanceUID string, evictedAt time.Time) error {
-	_, err := s.pool.Exec(ctx,
-		`UPDATE agents SET evicted_at = $2 WHERE instance_uid = $1 AND evicted_at IS NULL`,
-		instanceUID, evictedAt)
+	sql, args := softDeleteAgentSQL(instanceUID, evictedAt)
+	_, err := s.pool.Exec(ctx, sql, args...)
 	if err != nil {
 		return fmt.Errorf("soft delete agent: %w", err)
 	}
 	return nil
+}
+
+func softDeleteAgentSQL(instanceUID string, evictedAt time.Time) (string, []any) {
+	return `UPDATE agents SET evicted_at = $2 WHERE instance_uid = $1 AND evicted_at IS NULL`,
+		[]any{instanceUID, evictedAt}
+}
+
+// QueueSoftDeleteAgent appends a SoftDeleteAgent-equivalent statement to
+// batch instead of executing it immediately. See QueueSaveSession.
+func (s *PostgresStore) QueueSoftDeleteAgent(batch *pgx.Batch, instanceUID string, evictedAt time.Time) {
+	sql, args := softDeleteAgentSQL(instanceUID, evictedAt)
+	batch.Queue(sql, args...)
 }
 
 func nonNilStringMap(m map[string]string) map[string]string {

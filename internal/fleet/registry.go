@@ -5,6 +5,7 @@ package fleet
 
 import (
 	"context"
+	"hash/fnv"
 	"log/slog"
 	"maps"
 	"slices"
@@ -38,11 +39,14 @@ type ConnMeta struct {
 var ReservedAttributeKeys = []string{"healthy", "connected", "via_gateway", "supervisor_managed"}
 
 // Events receives fleet lifecycle notifications, e.g. for metrics and
-// persistence dirty-tracking. All methods are called with the registry lock
-// held; implementations must not call back into the registry. instanceUID
-// identifies which agent changed, so a listener that needs to act per-agent
-// (e.g. marking it dirty for a durability flush) doesn't need its own
-// tracking inside Registry.
+// persistence dirty-tracking. All methods are called with the relevant
+// shard's lock held (see Registry's sharding, docs/spec/design.md's Scaling
+// gaps section); implementations must not call back into the registry —
+// List and Sweep still touch every shard, so a callback landing on the same
+// shard, or calling either of those, deadlocks. instanceUID identifies
+// which agent changed, so a listener that needs to act per-agent (e.g.
+// marking it dirty for a durability flush) doesn't need its own tracking
+// inside Registry.
 type Events interface {
 	AgentConnected(instanceUID string)
 	AgentDisconnected(instanceUID string)
@@ -237,6 +241,24 @@ type Config struct {
 	// RequiredAttributes lists AgentDescription attribute keys every agent
 	// must report. Empty means no enforcement.
 	RequiredAttributes []string
+	// ShardCount is how many independently locked shards Registry's agent
+	// map is split across (see docs/spec/design.md's Scaling gaps section,
+	// item 1). Report/Get/SetConnected for agents landing on different
+	// shards proceed without contending on the same lock, and Sweep only
+	// blocks the one shard it's currently walking, not the whole registry.
+	// Zero (the default) uses defaultShardCount.
+	ShardCount int
+}
+
+// defaultShardCount is used when Config.ShardCount is unset. Large enough
+// that a single shard's share of a very large fleet (see Scaling gaps) is
+// small, small enough that Sweep/List iterating every shard stays cheap.
+const defaultShardCount = 256
+
+// shard is one independently locked slice of Registry's agent map.
+type shard struct {
+	mu     sync.RWMutex
+	agents map[string]*Agent
 }
 
 // Registry is the concurrency-safe fleet state.
@@ -246,8 +268,7 @@ type Registry struct {
 	now    func() time.Time
 	events Events
 
-	mu     sync.RWMutex
-	agents map[string]*Agent
+	shards []*shard
 }
 
 // New builds an empty registry. A nil events receives no notifications.
@@ -255,13 +276,31 @@ func New(cfg Config, logger *slog.Logger, events Events) *Registry {
 	if events == nil {
 		events = noopEvents{}
 	}
+	shardCount := cfg.ShardCount
+	if shardCount <= 0 {
+		shardCount = defaultShardCount
+	}
+	shards := make([]*shard, shardCount)
+	for i := range shards {
+		shards[i] = &shard{agents: make(map[string]*Agent)}
+	}
 	return &Registry{
 		cfg:    cfg,
 		log:    logger,
 		now:    time.Now,
 		events: events,
-		agents: make(map[string]*Agent),
+		shards: shards,
 	}
+}
+
+// shardFor picks which shard owns id. instance_uid is already a string key
+// everywhere in this package — hashed with fnv32a rather than parsed as a
+// UUID, so shard routing doesn't depend on an ID format detail this
+// package otherwise has no reason to assume.
+func (r *Registry) shardFor(id string) *shard {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(id))                       // fnv32a's Write never returns an error
+	return r.shards[h.Sum32()%uint32(len(r.shards))] //nolint:gosec // len(r.shards) is a small, non-negative config value (New guards ShardCount <= 0), not user input
 }
 
 // InstanceUID renders the 16-byte OpAMP instance uid as a UUID string.
@@ -284,13 +323,14 @@ func (r *Registry) Report(msg *protobufs.AgentToServer, meta ConnMeta) {
 	}
 	now := r.now()
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	s := r.shardFor(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	agent, ok := r.agents[id]
+	agent, ok := s.agents[id]
 	if !ok {
 		agent = &Agent{InstanceUID: id, FirstSeen: now}
-		r.agents[id] = agent
+		s.agents[id] = agent
 		r.log.Debug("agent registered",
 			"instance_uid", id,
 			"remote_addr", meta.RemoteAddr,
@@ -407,9 +447,10 @@ func (r *Registry) checkReservedAttributeConflicts(agent *Agent) {
 // that stale write is correctly rejected rather than clobbering the newer
 // one. If this ever changes, that guarantee breaks.
 func (r *Registry) SetConnected(id string, connected bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	agent, ok := r.agents[id]
+	s := r.shardFor(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	agent, ok := s.agents[id]
 	if !ok {
 		return
 	}
@@ -435,22 +476,31 @@ func (r *Registry) DisconnectThreshold() time.Duration {
 
 // Get returns a snapshot of one agent.
 func (r *Registry) Get(id string) (Agent, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	agent, ok := r.agents[id]
+	s := r.shardFor(id)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	agent, ok := s.agents[id]
 	if !ok {
 		return Agent{}, false
 	}
 	return snapshot(agent), true
 }
 
-// List returns a snapshot of every registered agent.
+// List returns a snapshot of every registered agent. Not atomic across the
+// whole registry — each shard is locked and read independently, so two
+// shards can contribute agents from slightly different instants if a
+// Report lands concurrently. Accepted per docs/spec/design.md's Scaling
+// gaps section: this system already tolerates seconds of staleness
+// everywhere (heartbeat-based), a sub-request skew across shards is the
+// same kind of imprecision, not a new class of problem.
 func (r *Registry) List() []Agent {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	list := make([]Agent, 0, len(r.agents))
-	for _, agent := range r.agents {
-		list = append(list, snapshot(agent))
+	var list []Agent
+	for _, s := range r.shards {
+		s.mu.RLock()
+		for _, agent := range s.agents {
+			list = append(list, snapshot(agent))
+		}
+		s.mu.RUnlock()
 	}
 	return list
 }
@@ -472,24 +522,35 @@ func (r *Registry) List() []Agent {
 func (r *Registry) Sweep(now time.Time) []string {
 	disconnectAfter := r.DisconnectThreshold()
 	evictAfter := r.cfg.HeartbeatInterval * time.Duration(r.cfg.StaleMissedHeartbeats)
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	var evicted []string
-	for id, agent := range r.agents {
-		age := now.Sub(agent.LastSeen)
-		if agent.Connected && age > disconnectAfter {
-			agent.Connected = false
-			r.events.AgentDisconnected(id)
-			r.log.Info("agent disconnected (missed check-in)",
-				"instance_uid", id, "last_seen", agent.LastSeen, "age", age)
+	for _, s := range r.shards {
+		s.mu.Lock()
+		for id, agent := range s.agents {
+			age := now.Sub(agent.LastSeen)
+			if agent.Connected && age > disconnectAfter {
+				agent.Connected = false
+				r.events.AgentDisconnected(id)
+				// Debug, not Info: per-agent, inside this shard's write
+				// lock — at large fleet sizes a mass-disconnect event (a
+				// gateway crash, an AZ blip) would otherwise mean a burst
+				// of synchronous log writes while every other operation on
+				// this shard is blocked on the same lock (see
+				// docs/spec/design.md's Scaling gaps section).
+				// grex_agents_disconnected already surfaces the aggregate
+				// at any log level.
+				r.log.Debug("agent disconnected (missed check-in)",
+					"instance_uid", id, "last_seen", agent.LastSeen, "age", age)
+			}
+			if age > evictAfter {
+				delete(s.agents, id)
+				evicted = append(evicted, id)
+				r.events.AgentEvicted(id)
+				// Debug for the same reason as the disconnect log above.
+				r.log.Debug("agent evicted",
+					"instance_uid", id, "last_seen", agent.LastSeen)
+			}
 		}
-		if age > evictAfter {
-			delete(r.agents, id)
-			evicted = append(evicted, id)
-			r.events.AgentEvicted(id)
-			r.log.Info("agent evicted",
-				"instance_uid", id, "last_seen", agent.LastSeen)
-		}
+		s.mu.Unlock()
 	}
 	return evicted
 }

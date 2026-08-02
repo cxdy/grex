@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/dennisme/grex/internal/fleet"
 	"github.com/dennisme/grex/internal/persistence/testdb"
 )
@@ -281,6 +283,97 @@ func TestSaveSessionRejectsStaleWrite(t *testing.T) {
 	}
 	if !got.Connected {
 		t.Error("Connected = false, want true: the stale SaveSession write must be rejected")
+	}
+}
+
+// TestQueueSaveSessionBatchedWritesLandCorrectly covers the chunked-batch
+// path SessionSnapshotter uses at scale (docs/spec/design.md's Scaling gaps
+// items 3-4): several agents' SaveSession-equivalent writes queued onto one
+// pgx.Batch, sent in a single round trip, each result read in order — must
+// land identically to calling SaveSession once per agent.
+func TestQueueSaveSessionBatchedWritesLandCorrectly(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	agents := []fleet.Agent{
+		testAgent("agent-1", now),
+		testAgent("agent-2", now),
+		testAgent("agent-3", now),
+	}
+	for _, a := range agents {
+		if err := store.SaveAgent(ctx, a); err != nil {
+			t.Fatalf("SaveAgent %s: %v", a.InstanceUID, err)
+		}
+	}
+
+	batch := &pgx.Batch{}
+	for i := range agents {
+		agents[i].Connected = true
+		agents[i].LastSeen = now.Add(time.Minute)
+		store.QueueSaveSession(batch, agents[i])
+	}
+	results := store.SendBatch(ctx, batch)
+	for i, a := range agents {
+		if _, err := results.Exec(); err != nil {
+			t.Errorf("batch result %d (%s): %v", i, a.InstanceUID, err)
+		}
+	}
+	if err := results.Close(); err != nil {
+		t.Fatalf("results.Close: %v", err)
+	}
+
+	for _, a := range agents {
+		got, ok, err := store.GetAgent(ctx, a.InstanceUID)
+		if err != nil || !ok {
+			t.Fatalf("GetAgent %s: %v, %v", a.InstanceUID, err, ok)
+		}
+		if !got.Connected {
+			t.Errorf("%s: Connected = false, want true after batched SaveSession", a.InstanceUID)
+		}
+		if !got.SessionUpdatedAt.Equal(now.Add(time.Minute)) {
+			t.Errorf("%s: SessionUpdatedAt = %v, want %v", a.InstanceUID, got.SessionUpdatedAt, now.Add(time.Minute))
+		}
+	}
+}
+
+// TestQueueSoftDeleteAgentBatchedWritesLandCorrectly is
+// TestQueueSaveSessionBatchedWritesLandCorrectly's counterpart for
+// Flusher's other batched write.
+func TestQueueSoftDeleteAgentBatchedWritesLandCorrectly(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	ids := []string{"agent-1", "agent-2", "agent-3"}
+	for _, id := range ids {
+		if err := store.SaveAgent(ctx, testAgent(id, now)); err != nil {
+			t.Fatalf("SaveAgent %s: %v", id, err)
+		}
+	}
+
+	batch := &pgx.Batch{}
+	for _, id := range ids {
+		store.QueueSoftDeleteAgent(batch, id, now)
+	}
+	results := store.SendBatch(ctx, batch)
+	for i, id := range ids {
+		if _, err := results.Exec(); err != nil {
+			t.Errorf("batch result %d (%s): %v", i, id, err)
+		}
+	}
+	if err := results.Close(); err != nil {
+		t.Fatalf("results.Close: %v", err)
+	}
+
+	for _, id := range ids {
+		got, ok, err := store.GetAgent(ctx, id)
+		if err != nil || !ok {
+			t.Fatalf("GetAgent %s: %v, %v", id, err, ok)
+		}
+		if got.EvictedAt == nil {
+			t.Errorf("%s: EvictedAt = nil, want set after batched SoftDeleteAgent", id)
+		}
 	}
 }
 
