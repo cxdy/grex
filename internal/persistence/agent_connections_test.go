@@ -4,7 +4,52 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
+
+// TestQueueUpsertAgentConnectionBatchedWritesLandCorrectly is
+// TestUpsertAgentConnectionStoresReplicaLabel's counterpart for the
+// chunked-batch path Flusher uses at scale (docs/spec/design.md's Scaling
+// gaps items 3-4).
+func TestQueueUpsertAgentConnectionBatchedWritesLandCorrectly(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	conns := []AgentConnection{
+		{InstanceUID: "agent-1", ReplicaID: "replica-a", ConnectedAt: now, LastSeen: now},
+		{InstanceUID: "agent-2", ReplicaID: "replica-a", ConnectedAt: now, LastSeen: now},
+		{InstanceUID: "agent-3", ReplicaID: "replica-a", ConnectedAt: now, LastSeen: now},
+	}
+
+	batch := &pgx.Batch{}
+	for _, c := range conns {
+		store.QueueUpsertAgentConnection(batch, c)
+	}
+	results := store.SendBatch(ctx, batch)
+	for i, c := range conns {
+		if _, err := results.Exec(); err != nil {
+			t.Errorf("batch result %d (%s): %v", i, c.InstanceUID, err)
+		}
+	}
+	if err := results.Close(); err != nil {
+		t.Fatalf("results.Close: %v", err)
+	}
+
+	for _, c := range conns {
+		got, ok, err := store.GetAgentConnection(ctx, c.InstanceUID)
+		if err != nil {
+			t.Fatalf("GetAgentConnection %s: %v", c.InstanceUID, err)
+		}
+		if !ok {
+			t.Fatalf("GetAgentConnection %s: want ok = true", c.InstanceUID)
+		}
+		if got.ReplicaID != "replica-a" {
+			t.Errorf("%s: ReplicaID = %q, want replica-a", c.InstanceUID, got.ReplicaID)
+		}
+	}
+}
 
 func TestUpsertAgentConnectionStoresReplicaLabel(t *testing.T) {
 	store := newTestStore(t)

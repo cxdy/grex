@@ -171,6 +171,49 @@ func TestRegistrationSilentAtInfoLevel(t *testing.T) {
 	}
 }
 
+// TestSweepDisconnectSilentAtInfoLevel and TestSweepEvictionSilentAtInfoLevel
+// cover the same rule as TestRegistrationSilentAtInfoLevel, for Sweep's two
+// per-agent log lines: at 1M agents a mass-disconnect event (a gateway
+// crash, an AZ blip) would otherwise mean hundreds of thousands of
+// synchronous log writes inside Sweep's write lock (see docs/spec/design.md's
+// Scaling gaps section), on every production fleet running at the default
+// info level.
+func TestSweepDisconnectSilentAtInfoLevel(t *testing.T) {
+	var logBuf bytes.Buffer
+	r := New(Config{
+		HeartbeatInterval:     30 * time.Second,
+		StaleMissedHeartbeats: 3,
+	}, slog.New(slog.NewTextHandler(&logBuf, nil)), nil)
+	base := time.Now()
+	r.now = func() time.Time { return base }
+	uid := testUID()
+	r.Report(statusMsg(uid), ConnMeta{})
+	logBuf.Reset() // drop the registration report itself
+
+	r.Sweep(base.Add(46 * time.Second)) // past the 45s disconnect grace
+	if strings.Contains(logBuf.String(), "missed check-in") {
+		t.Errorf("disconnect logged at info level: %q", logBuf.String())
+	}
+}
+
+func TestSweepEvictionSilentAtInfoLevel(t *testing.T) {
+	var logBuf bytes.Buffer
+	r := New(Config{
+		HeartbeatInterval:     30 * time.Second,
+		StaleMissedHeartbeats: 3,
+	}, slog.New(slog.NewTextHandler(&logBuf, nil)), nil)
+	base := time.Now()
+	r.now = func() time.Time { return base }
+	uid := testUID()
+	r.Report(statusMsg(uid), ConnMeta{})
+	logBuf.Reset()
+
+	r.Sweep(base.Add(91 * time.Second)) // past the 90s eviction window
+	if strings.Contains(logBuf.String(), "evicted") {
+		t.Errorf("eviction logged at info level: %q", logBuf.String())
+	}
+}
+
 func TestReportUpdatesHealthAndEffectiveConfig(t *testing.T) {
 	r, _ := testRegistry()
 	uid := testUID()
@@ -764,5 +807,68 @@ func TestMultiEventsFansOutToEveryListener(t *testing.T) {
 			t.Errorf("%s: reports=%v missingAttributes=%v reservedConflicts=%v",
 				name, e.reports, e.missingAttributes, e.reservedConflicts)
 		}
+	}
+}
+
+// TestNewDefaultShardCount and TestNewExplicitShardCount cover
+// docs/spec/design.md's Scaling gaps item 1: Registry.agents is sharded so
+// Report/Get/SetConnected for different agents don't contend on one lock,
+// and Sweep only blocks the one shard it's currently walking.
+func TestNewDefaultShardCount(t *testing.T) {
+	r := New(Config{HeartbeatInterval: 30 * time.Second, StaleMissedHeartbeats: 3}, discardLog(), nil)
+	if len(r.shards) != defaultShardCount {
+		t.Errorf("len(shards) = %d, want default %d", len(r.shards), defaultShardCount)
+	}
+}
+
+func TestNewExplicitShardCount(t *testing.T) {
+	r := New(Config{HeartbeatInterval: 30 * time.Second, StaleMissedHeartbeats: 3, ShardCount: 4}, discardLog(), nil)
+	if len(r.shards) != 4 {
+		t.Errorf("len(shards) = %d, want 4", len(r.shards))
+	}
+}
+
+func discardLog() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// distinctShardIDs returns two instance_uid strings that r.shardFor routes
+// to different shards, needed to prove one shard's lock doesn't block
+// another's.
+func distinctShardIDs(t *testing.T, r *Registry) (uuid.UUID, uuid.UUID) {
+	t.Helper()
+	first := testUID()
+	firstShard := r.shardFor(first.String())
+	for range 10000 {
+		candidate := testUID()
+		if r.shardFor(candidate.String()) != firstShard {
+			return first, candidate
+		}
+	}
+	t.Fatal("could not find two instance_uids on different shards")
+	return uuid.UUID{}, uuid.UUID{}
+}
+
+// TestReportOnDifferentShardsDoesNotBlock is the concrete version of the
+// claim sharding exists to make true: a long-held lock on one agent's
+// shard must not delay a Report for an agent on a different shard.
+func TestReportOnDifferentShardsDoesNotBlock(t *testing.T) {
+	r := New(Config{HeartbeatInterval: 30 * time.Second, StaleMissedHeartbeats: 3, ShardCount: 4}, discardLog(), nil)
+	idA, idB := distinctShardIDs(t, r)
+
+	shardA := r.shardFor(idA.String())
+	shardA.mu.Lock()
+	defer shardA.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		r.Report(statusMsg(idB), ConnMeta{})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Report for a different shard's agent blocked on an unrelated shard's held lock")
 	}
 }

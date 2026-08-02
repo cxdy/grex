@@ -1677,6 +1677,143 @@ needed — and the live-connection track becomes a pure
 protocol/network benchmark, decoupled from jobs correctness entirely.
 Decide this when arm is actually built, not here.
 
+## Scaling gaps at 1M agents
+
+Found by code review, not the live-connection benchmark above (that's not
+built yet) — so these are concrete, source-grounded gaps, not speculation,
+but not measured under real load either. Listed most severe first,
+specifically so each can become its own PR rather than one big rewrite. No
+`O(N²)` or worse found anywhere agents are iterated (checked every
+`for range agents`-shaped loop in the tree) — every gap below is O(N) work
+running against a fixed period, which still fails at large enough N.
+
+1. **Fixed: `fleet.Registry`'s single `sync.RWMutex` was the one that broke
+   first, now sharded.** `Registry.agents` is now `Registry.shards`, a
+   `Config.ShardCount`-sized (default 256, configurable) slice of
+   independently locked shards; `instance_uid` routes to a shard via
+   `fnv32a` (not parsed as a UUID — shard routing doesn't depend on an ID
+   format detail this package otherwise has no reason to assume). `Report`,
+   `Get`, and `SetConnected` for an agent now lock only that agent's shard.
+   This fixes two contention sources, not just the one originally flagged:
+   `Sweep` (`registry.go`) walking one shard at a time no longer blocks
+   `Report` calls landing on other shards, *and* — the one the original
+   framing missed — concurrent `Report` calls for *different* agents no
+   longer serialize through one shared lock even with no `Sweep` involved
+   at all. `List` and `Sweep` still touch every shard, locking one at a
+   time, never all at once.
+
+   **Real tradeoff taken, not a free lunch:** `List()` was atomic (one
+   lock, one instant-in-time snapshot of every agent); now it's only
+   atomic per shard, since two shards can be mid-update at slightly
+   different instants when `List` assembles its result across all of
+   them. Accepted: this system already tolerates staleness everywhere
+   (heartbeat-based, seconds of imprecision is the existing norm), and a
+   sub-request skew across shards is the same kind of imprecision, not a
+   new class of problem.
+
+   `Events` implementations must still not call back into the registry —
+   now specifically because `List`/`Sweep` touch every shard, so a
+   callback landing on the same shard (or calling either of those methods)
+   deadlocks, not because of one global lock anymore.
+2. **Fixed: per-agent logging inside `Sweep`'s locked loop was `Info`,
+   now `Debug`.** Still one line per disconnected/evicted agent, still
+   inside the write lock every other `Registry` operation blocks on — that
+   part of the shape is unchanged, moving the log call doesn't shrink the
+   lock's critical section. What changed: at the default `info` log level
+   (every production fleet, unless explicitly turned up for debugging), a
+   mass-disconnect event now costs zero log I/O instead of a burst of
+   blocking writes inside the lock — `slog` short-circuits a disabled
+   level before formatting or writing anything. `grex_agents_disconnected`
+   /`grex_agents_evicted_total` already carry the aggregate signal at any
+   log level, so nothing observability-relevant was lost. Aggregating into
+   one summary line per `Sweep`, or moving the call outside the lock
+   entirely, are still open if per-agent detail is ever needed back at
+   `info` — not done here, this was the cheap fix.
+3. **Partially fixed: `SessionSnapshotter`'s `SaveSession` writes are now
+   chunked-batched, but it's still unconditional every tick.** Round-trip
+   count is real progress — `defaultBatchSize` (500, `write.go`) agents per
+   `pgx.Batch` send instead of one round trip each, when the store supports
+   `BatchStateStore` (`PostgresStore` does; a store that doesn't, e.g. a
+   test fake, falls back to the original one-row-per-agent path unchanged).
+   What's *not* fixed: it still writes every registered agent's session
+   state every `sessionSnapshotInterval` regardless of whether anything
+   changed (`session_snapshot.go`'s own doc comment). Batching cuts
+   round-trip overhead, not total write volume — at 1M agents Postgres
+   still needs to absorb 1M row-writes every 5s, batched or not. Real
+   dirty-tracked cadence for session data (accepting the staleness
+   tradeoff Agent state schema already discusses) is separate, undecided
+   future work.
+4. **Fixed: `Flusher`'s `SoftDeleteAgent` and `agent_connections`'s
+   `UpsertAgentConnection` are chunked-batched, same mechanism as #3.**
+   `SaveAgent` itself is deliberately *not* batched — it's not a single
+   statement, it's a whole per-agent transaction (the `agents` row plus a
+   variable-count rewrite of `agent_effective_config` rows), and folding
+   that into a shared `pgx.Batch` across agents would need a bigger
+   restructure of how effective_config is stored, not just a batching
+   pass. It stays one round trip per dirty agent, same as before this fix.
+   A stuck row inside one chunk's batch delays reading the rest of that
+   chunk's results (`pgx.Batch` results are read in send order) but no
+   longer any other chunk's — a smaller blast radius than before, not the
+   same full per-agent independence `runConcurrent` gives `SaveAgent`'s
+   own path. Proven with `TestFlusherBatchChunkErrorDoesNotStopRestOfChunk`
+   /`TestSessionSnapshotterBatchChunkErrorDoesNotStopRestOfChunk`: one bad
+   row's error, read from its batch result, doesn't stop the rest of its
+   chunk from landing.
+5. **Fixed: `GET /api/agents` no longer sorts the entire matched set
+   before paginating.** Was O(N log N) per request regardless of how much
+   of it was actually returned (`limit` capped at `maxLimit`). Now
+   `api.pageByInstanceUID` (`internal/api/paginate.go`): a bounded max-heap
+   keeps the `end` (`offset+limit`) smallest elements seen in one O(N log
+   end) pass, only those get sorted, falling back to a plain full sort when
+   `end` isn't meaningfully smaller than the matched set anyway. Same
+   output for every input — verified with 50 randomized trials against a
+   reference full-sort-then-slice implementation
+   (`TestPageByInstanceUIDMatchesFullSort`), not just hand-picked cases.
+6. **No splay for the case that actually matters, and grex structurally
+   cannot add it alone.** Checked `opamp-go` v0.23.0 directly
+   (`client/wsclient.go:291-334`, same shape in
+   `client/internal/httpsender.go:229-238`; the Supervisor depends on the
+   same version, so it's identical there too) rather than assuming:
+     - `ensureConnected`'s retry loop uses `cenkalti/backoff/v4`'s
+       exponential backoff with `MaxElapsedTime = 0` (retries forever) and
+       default `RandomizationFactor: 0.5` (±50% jitter) — but only from the
+       *second* attempt onward. `interval := time.Duration(0)` means the
+       first connect/reconnect attempt in every cycle fires immediately,
+       no delay, no jitter, and `runUntilStopped` resets `interval` back to
+       0 on every new cycle. So jitter only helps while the server or
+       network is still down and clients are repeatedly failing to get in
+       — genuinely useful for that case, nothing to build there.
+     - It does **not** help the more common shape of "mass restart": grex
+       (or the network) comes back up, and every client's *first* reconnect
+       attempt fires at the same instant with zero splay, because attempt
+       #1 never goes through the backoff timer at all. That's a real
+       thundering-herd moment upstream doesn't address.
+     - Steady-state check-in sync (a mass rolling deploy connects the whole
+       fleet at once, then every agent's heartbeat ticks in lockstep
+       forever after) is a third, separate case, also uncovered: once
+       connected, the ongoing report interval is not something backoff
+       touches at all.
+   All three converge on the same lock: OpAMP is agent-initiated push — the
+   agent decides when it sends `AgentToServer`, grex only ever receives —
+   so any of the three hits `Registry.Report`'s single lock (#1) at the
+   same instant across the fleet, worst case exactly when a `Sweep` might
+   also be mid-traversal. Grex has no mechanism to move an agent's timer in
+   1.0: that needs remote config push (`AcceptsRemoteConfig`), an explicit
+   non-goal requiring the Supervisor (see Post-1.0 roadmap: why the
+   Supervisor matters). Fix direction: once config-push exists (tracked
+   there, not a new mechanism), add per-agent jitter to the pushed
+   `report_interval` as
+       one of its config knobs. Until then, this is a deployment-layer
+       concern, not grex's code — rolling-update pacing
+       (`maxUnavailable`/PDB) or a random startup delay in the
+       collector/Supervisor's own entrypoint before its first report.
+
+Not yet a gap, checked and ruled out: `MergeAgents`
+(`internal/api/filter.go:223`) uses a map for the overlap check, O(N+M) not
+O(N·M). `Registry.List()` returning `[]Agent` by value is a shallow copy
+(map fields are references, not deep-copied per call) — real but bounded
+GC pressure, not a correctness or throughput failure on its own.
+
 ## Open questions
 
 - **Jobs execution engine** (post-1.0, not yet implemented): River for

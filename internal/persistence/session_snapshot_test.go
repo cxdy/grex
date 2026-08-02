@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -152,6 +153,70 @@ func TestSessionSnapshotterStuckAgentDoesNotBlockOthers(t *testing.T) {
 			t.Errorf("agent %s completed at +%v after start, want well before the stuck agent's %v timeout",
 				id, completedAt.Sub(start), timeout)
 		}
+	}
+}
+
+// TestSessionSnapshotterBatchesSaveSession covers docs/spec/design.md's
+// Scaling gaps items 3-4: when the store supports BatchStateStore, every
+// registered agent's session write goes through one chunked pgx.Batch
+// round trip instead of one SaveSession call per agent.
+// fakeBatchStore.SaveSession panics — if snapshotOnce ever fell back to the
+// per-row path here, this test would panic instead of just failing an
+// assertion.
+func TestSessionSnapshotterBatchesSaveSession(t *testing.T) {
+	store := &fakeBatchStore{}
+	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), nil)
+
+	var ids []string
+	for n := byte(1); n <= 3; n++ {
+		id, raw := testInstanceUID(t, n)
+		registry.Report(&protobufs.AgentToServer{InstanceUid: raw}, fleet.ConnMeta{})
+		ids = append(ids, id)
+	}
+
+	snapshotter := NewSessionSnapshotter(registry, store, time.Hour, discardLogger(), 4, nil)
+	snapshotter.snapshotOnce(context.Background())
+
+	for _, id := range ids {
+		if !store.savedSession(id) {
+			t.Errorf("%s was not snapshotted", id)
+		}
+	}
+	if got := store.sendBatchCalls(); got != 1 {
+		t.Errorf("sendBatchCalls = %d, want 1 (all three fit in one chunk)", got)
+	}
+}
+
+// TestSessionSnapshotterBatchChunkErrorDoesNotStopRestOfChunk is
+// SessionSnapshotter's version of Flusher's identical proof: one bad row's
+// error must not prevent the rest of that chunk's results from being read
+// and applied.
+func TestSessionSnapshotterBatchChunkErrorDoesNotStopRestOfChunk(t *testing.T) {
+	failingID, failingRaw := testInstanceUID(t, 2)
+	store := &fakeBatchStore{errFor: map[string]error{failingID: errors.New("constraint violation")}}
+	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), nil)
+
+	var okIDs []string
+	for n := byte(1); n <= 3; n++ {
+		id, raw := testInstanceUID(t, n)
+		if n == 2 {
+			registry.Report(&protobufs.AgentToServer{InstanceUid: failingRaw}, fleet.ConnMeta{})
+			continue
+		}
+		registry.Report(&protobufs.AgentToServer{InstanceUid: raw}, fleet.ConnMeta{})
+		okIDs = append(okIDs, id)
+	}
+
+	snapshotter := NewSessionSnapshotter(registry, store, time.Hour, discardLogger(), 4, nil)
+	snapshotter.snapshotOnce(context.Background())
+
+	for _, id := range okIDs {
+		if !store.savedSession(id) {
+			t.Errorf("%s was not snapshotted despite a different row in its chunk failing", id)
+		}
+	}
+	if store.savedSession(failingID) {
+		t.Errorf("%s should have failed, not been recorded as saved", failingID)
 	}
 }
 

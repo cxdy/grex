@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/dennisme/grex/internal/fleet"
 )
 
@@ -58,21 +60,63 @@ func (s *SessionSnapshotter) Run(ctx context.Context) {
 }
 
 // snapshotOnce writes every registered agent's session state, regardless of
-// dirty status, up to maxConcurrent at once (see runConcurrent) — a single
-// stuck SaveSession call only occupies one slot rather than blocking every
-// other agent in this tick.
+// dirty status. When s.store supports BatchStateStore (see
+// docs/spec/design.md's Scaling gaps items 3-4), agents are chunked at
+// defaultBatchSize and each chunk goes through one pgx.Batch round trip;
+// otherwise falls back to one SaveSession round trip per agent (test
+// fakes, chiefly — no behavior change for those). Either way, up to
+// maxConcurrent chunks/agents run at once (see runConcurrent) — a single
+// stuck write only occupies one slot, and with batching, only delays the
+// rest of its own chunk's results, not any other chunk's.
 func (s *SessionSnapshotter) snapshotOnce(ctx context.Context) {
 	agents := s.registry.List()
-	tasks := make([]func(), 0, len(agents))
-	for _, agent := range agents {
-		agent := agent
-		tasks = append(tasks, func() {
-			err := writeWithTimeout(ctx, s.interval, s.metrics, "save_session", func(ctx context.Context) error {
-				return s.store.SaveSession(ctx, agent)
+	if len(agents) == 0 {
+		return
+	}
+
+	batchStore, ok := s.store.(BatchStateStore)
+	if !ok {
+		tasks := make([]func(), 0, len(agents))
+		for _, agent := range agents {
+			agent := agent
+			tasks = append(tasks, func() {
+				err := writeWithTimeout(ctx, s.interval, s.metrics, "save_session", func(ctx context.Context) error {
+					return s.store.SaveSession(ctx, agent)
+				})
+				if err != nil {
+					s.log.Error("persistence session snapshot failed", "instance_uid", agent.InstanceUID, "error", err)
+				}
 			})
-			if err != nil {
-				s.log.Error("persistence session snapshot failed", "instance_uid", agent.InstanceUID, "error", err)
+		}
+		runConcurrent(tasks, s.maxConcurrent)
+		return
+	}
+
+	byID := make(map[string]fleet.Agent, len(agents))
+	ids := make([]string, len(agents))
+	for i, agent := range agents {
+		byID[agent.InstanceUID] = agent
+		ids[i] = agent.InstanceUID
+	}
+	chunks := chunk(ids, defaultBatchSize)
+	tasks := make([]func(), 0, len(chunks))
+	for _, ids := range chunks {
+		ids := ids
+		tasks = append(tasks, func() {
+			batch := &pgx.Batch{}
+			for _, id := range ids {
+				batchStore.QueueSaveSession(batch, byID[id])
 			}
+			_ = writeWithTimeout(ctx, s.interval, s.metrics, "save_session", func(ctx context.Context) error {
+				results := batchStore.SendBatch(ctx, batch)
+				defer func() { _ = results.Close() }()
+				for _, id := range ids {
+					if _, err := results.Exec(); err != nil {
+						s.log.Error("persistence session snapshot failed", "instance_uid", id, "error", err)
+					}
+				}
+				return nil
+			})
 		})
 	}
 	runConcurrent(tasks, s.maxConcurrent)

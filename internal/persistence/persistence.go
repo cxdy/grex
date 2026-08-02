@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/dennisme/grex/internal/fleet"
 )
 
@@ -48,6 +50,24 @@ type StateStore interface {
 	// it again for an already-soft-deleted agent leaves its evictedAt
 	// unchanged.
 	SoftDeleteAgent(ctx context.Context, instanceUID string, evictedAt time.Time) error
+}
+
+// BatchStateStore is an optional capability: a StateStore that can queue
+// several SaveSession/SoftDeleteAgent-equivalent writes onto one pgx.Batch
+// round trip instead of one round trip per agent (see docs/spec/design.md's
+// Scaling gaps items 3-4). PostgresStore satisfies it. Flusher and
+// SessionSnapshotter type-assert their configured store against this and
+// use the chunked-batch path only when it succeeds — a store that doesn't
+// implement it (test fakes, chiefly) just means those callers fall back to
+// their original one-write-per-agent path, unchanged.
+//
+// Deliberately not folded into StateStore itself: StateStore is also used
+// by internal/api and internal/ui as a storage-agnostic read fallback, and
+// those packages have no reason to depend on pgx.
+type BatchStateStore interface {
+	QueueSaveSession(batch *pgx.Batch, agent fleet.Agent)
+	QueueSoftDeleteAgent(batch *pgx.Batch, instanceUID string, evictedAt time.Time)
+	SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults
 }
 
 // RoleMapping is one row of the flat identity-to-role table, per
@@ -99,6 +119,17 @@ type ConnectionStore interface {
 	GetAgentConnection(ctx context.Context, instanceUID string) (AgentConnection, bool, error)
 	ListAgentConnections(ctx context.Context) ([]AgentConnection, error)
 	DeleteAgentConnection(ctx context.Context, instanceUID string) error
+}
+
+// BatchConnectionStore is ConnectionStore's equivalent of BatchStateStore:
+// an optional capability for queueing UpsertAgentConnection onto a shared
+// pgx.Batch. See BatchStateStore's doc comment. Carries its own SendBatch
+// (duplicated from BatchStateStore's) rather than assuming a caller's store
+// and connStore share one underlying connection pool — true of every
+// PostgresStore today, but not a coupling this interface should bake in.
+type BatchConnectionStore interface {
+	QueueUpsertAgentConnection(batch *pgx.Batch, conn AgentConnection)
+	SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults
 }
 
 // Job is one user-submitted mutation intent, per docs/spec/design.md's
