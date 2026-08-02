@@ -324,6 +324,37 @@ func TestDrainRefusesNewConnections(t *testing.T) {
 	}
 }
 
+// A read error is per-connection: a mass disconnect (AZ blip, gateway crash)
+// at fleet scale fires one for every dropped connection. It logs at Debug so
+// that burst costs zero log I/O at the default info level — the aggregate
+// signal lives in grex_opamp_message_errors_total. Same reasoning as Sweep's
+// per-agent logging (docs/spec/design.md's Scaling gaps, gap 2).
+func TestReadMessageErrorLogsAtDebug(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	registry := fleet.New(fleet.Config{
+		HeartbeatInterval:     30 * time.Second,
+		StaleMissedHeartbeats: 3,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	rec := &recordingMetrics{}
+	h := New(logger, registry, rec)
+
+	h.onReadMessageError(nil, 0, nil, io.ErrUnexpectedEOF)
+
+	var entry struct {
+		Level string `json:"level"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &entry); err != nil {
+		t.Fatalf("decode log line %q: %v", buf.String(), err)
+	}
+	if entry.Level != "DEBUG" {
+		t.Errorf("read error logged at %q, want DEBUG", entry.Level)
+	}
+	if rec.messageErrors != 1 {
+		t.Errorf("messageErrors = %d, want 1", rec.messageErrors)
+	}
+}
+
 func TestConnectionCloseMarksDisconnected(t *testing.T) {
 	h, registry := testHandler()
 	conn := newFakeConn(t)

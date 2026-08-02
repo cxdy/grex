@@ -108,6 +108,10 @@ type Fleet struct {
 	// RequiredAttributes lists AgentDescription attribute keys every agent
 	// must report. Empty means no enforcement.
 	RequiredAttributes []string `yaml:"required_attributes"`
+	// ShardCount is how many independently locked shards the in-memory agent
+	// registry is split across (see fleet.Config.ShardCount). Zero (the
+	// default) lets the registry pick its own default.
+	ShardCount int `yaml:"shard_count"`
 	// SoftDeleteDuration is how long a soft-deleted agent's durable row is
 	// kept (evicted_at set, not removed) before a periodic purge job
 	// deletes it outright. Unused by any runtime path until persistence is
@@ -203,6 +207,7 @@ func (c *Config) envOverrides() []struct {
 		{"GREX_FLEET_HEARTBEAT_INTERVAL", setDuration(&c.Fleet.HeartbeatInterval)},
 		{"GREX_FLEET_STALE_MISSED_HEARTBEATS", setInt(&c.Fleet.StaleMissedHeartbeats)},
 		{"GREX_FLEET_REQUIRED_ATTRIBUTES", setStringList(&c.Fleet.RequiredAttributes)},
+		{"GREX_FLEET_SHARD_COUNT", setInt(&c.Fleet.ShardCount)},
 		{"GREX_FLEET_SOFT_DELETE_DURATION", setDuration(&c.Fleet.SoftDeleteDuration)},
 		{"GREX_METRICS_PER_AGENT_SERIES_LIMIT", setInt(&c.Metrics.PerAgentSeriesLimit)},
 		{"GREX_UI_POLL_INTERVAL", setDuration(&c.UI.PollInterval)},
@@ -304,6 +309,9 @@ func (c *Config) validate() error {
 	}
 	if c.Fleet.SoftDeleteDuration <= 0 {
 		return fmt.Errorf("fleet.soft_delete_duration: must be positive, got %v", c.Fleet.SoftDeleteDuration)
+	}
+	if c.Fleet.ShardCount < 0 {
+		return fmt.Errorf("fleet.shard_count: must be non-negative, got %d", c.Fleet.ShardCount)
 	}
 	if c.Metrics.PerAgentSeriesLimit < 0 {
 		return fmt.Errorf("metrics.per_agent_series_limit: must be non-negative, got %d", c.Metrics.PerAgentSeriesLimit)

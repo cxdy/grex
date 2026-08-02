@@ -1835,9 +1835,15 @@ running against a fixed period, which still fails at large enough N.
 
 Not yet a gap, checked and ruled out: `MergeAgents`
 (`internal/api/filter.go:223`) uses a map for the overlap check, O(N+M) not
-O(N·M). `Registry.List()` returning `[]Agent` by value is a shallow copy
-(map fields are references, not deep-copied per call) — real but bounded
-GC pressure, not a correctness or throughput failure on its own.
+O(N·M). `Registry.List()` deep-copies each agent per call: `snapshot()`
+(`internal/fleet/registry.go`) `maps.Clone`s the four per-agent maps
+(`Identifying`, `NonIdentifying`, `EffectiveConfig`, `Packages`) and copies
+two slices for every agent returned. Real, O(N)-per-call GC pressure — not a
+correctness or throughput failure on its own, but every caller that only
+needs aggregates (the metrics `FleetCollector` counting connected/healthy at
+scrape time) pays a full-fleet clone to produce a handful of numbers. A
+non-cloning aggregate walk over the shards is the fix, tracked as its own
+scaling item, not done here.
 
 ## Open questions
 

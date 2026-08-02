@@ -192,6 +192,7 @@ func run(args []string) error {
 		HeartbeatInterval:     cfg.Fleet.HeartbeatInterval,
 		StaleMissedHeartbeats: cfg.Fleet.StaleMissedHeartbeats,
 		RequiredAttributes:    cfg.Fleet.RequiredAttributes,
+		ShardCount:            cfg.Fleet.ShardCount,
 	}, logger, registryEvents)
 	fleetMetrics.MustRegister(metrics.NewFleetCollector(registry, cfg.Metrics.PerAgentSeriesLimit))
 	opampHandler := opamp.New(logger, registry, events)
