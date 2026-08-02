@@ -4,8 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/dennisme/grex/internal/persistence/testdb"
 )
 
 // TestPoolCollectorReportsPoolStats covers real pool utilization visibility:
@@ -14,12 +15,7 @@ import (
 // static value.
 func TestPoolCollectorReportsPoolStats(t *testing.T) {
 	ctx := context.Background()
-	dsn := startTestPostgres(t)
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("pgxpool.New: %v", err)
-	}
-	t.Cleanup(pool.Close)
+	pool := testdb.Pool(t)
 
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
