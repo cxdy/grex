@@ -42,7 +42,7 @@ func (f *fakeJobQueue) ListJobs(context.Context) ([]persistence.Job, error) {
 	panic("not used by createJob")
 }
 
-func (f *fakeJobQueue) CreateJobTargets(context.Context, string, []string) ([]persistence.JobTarget, error) {
+func (f *fakeJobQueue) CreateJobTargets(context.Context, string, []persistence.NewJobTarget) ([]persistence.JobTarget, error) {
 	panic("not used by createJob")
 }
 

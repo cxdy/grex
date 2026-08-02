@@ -80,47 +80,59 @@ func scanJob(row rowScanner) (Job, error) {
 	return j, nil
 }
 
-// CreateJobTargets inserts one job_targets row per instanceUID, all
-// JobTargetStatusPending, as one bulk INSERT rather than one round trip per
-// row: this is a single materialization event (see docs/spec/design.md's
+// CreateJobTargets inserts one job_targets row per target — each already
+// carrying whichever Status/Reason the caller decided (JobTargetStatusPending
+// for a real dispatch target, JobTargetStatusRejected plus a reason for one
+// an arm-time gate excluded, see docs/spec/design.md's "Decided: per-target
+// rejection with a reason") — as one bulk INSERT rather than one round trip
+// per row: this is a single materialization event (see docs/spec/design.md's
 // "Known scope boundary") that can be sized to a large fraction of a fleet
 // — a per-row round trip would mean a transaction held open for as many
 // network round trips as there are targets. One statement is atomic on its
 // own (constraint violations roll back the whole INSERT), no explicit
 // transaction needed. Called once per arm (recompute or freeze), not at job
 // creation.
-func (s *PostgresStore) CreateJobTargets(ctx context.Context, jobID string, instanceUIDs []string) ([]JobTarget, error) {
-	if len(instanceUIDs) == 0 {
+func (s *PostgresStore) CreateJobTargets(ctx context.Context, jobID string, targets []NewJobTarget) ([]JobTarget, error) {
+	if len(targets) == 0 {
 		return nil, nil
 	}
+	instanceUIDs := make([]string, len(targets))
+	statuses := make([]string, len(targets))
+	reasons := make([]*string, len(targets))
+	for i, t := range targets {
+		instanceUIDs[i] = t.InstanceUID
+		statuses[i] = t.Status
+		reasons[i] = t.Reason
+	}
 	rows, err := s.pool.Query(ctx, `
-		INSERT INTO job_targets (job_id, instance_uid)
-		SELECT $1, unnest($2::text[])
-		RETURNING id, job_id, instance_uid, status, dispatched_at, completed_at`,
-		jobID, instanceUIDs)
+		INSERT INTO job_targets (job_id, instance_uid, status, reason)
+		SELECT $1, t.instance_uid, t.status, t.reason
+		FROM unnest($2::text[], $3::text[], $4::text[]) AS t(instance_uid, status, reason)
+		RETURNING id, job_id, instance_uid, status, reason, dispatched_at, completed_at`,
+		jobID, instanceUIDs, statuses, reasons)
 	if err != nil {
 		return nil, fmt.Errorf("insert job_targets: %w", err)
 	}
 	defer rows.Close()
 
-	targets := make([]JobTarget, 0, len(instanceUIDs))
+	created := make([]JobTarget, 0, len(targets))
 	for rows.Next() {
 		var t JobTarget
-		if err := rows.Scan(&t.ID, &t.JobID, &t.InstanceUID, &t.Status, &t.DispatchedAt, &t.CompletedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.JobID, &t.InstanceUID, &t.Status, &t.Reason, &t.DispatchedAt, &t.CompletedAt); err != nil {
 			return nil, fmt.Errorf("scan job_targets: %w", err)
 		}
-		targets = append(targets, t)
+		created = append(created, t)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate job_targets: %w", err)
 	}
-	return targets, nil
+	return created, nil
 }
 
 // ListJobTargets reads every job_targets row for one job.
 func (s *PostgresStore) ListJobTargets(ctx context.Context, jobID string) ([]JobTarget, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, job_id, instance_uid, status, dispatched_at, completed_at
+		SELECT id, job_id, instance_uid, status, reason, dispatched_at, completed_at
 		FROM job_targets WHERE job_id = $1 ORDER BY id`, jobID)
 	if err != nil {
 		return nil, fmt.Errorf("query job_targets: %w", err)
@@ -130,7 +142,7 @@ func (s *PostgresStore) ListJobTargets(ctx context.Context, jobID string) ([]Job
 	var targets []JobTarget
 	for rows.Next() {
 		var t JobTarget
-		if err := rows.Scan(&t.ID, &t.JobID, &t.InstanceUID, &t.Status, &t.DispatchedAt, &t.CompletedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.JobID, &t.InstanceUID, &t.Status, &t.Reason, &t.DispatchedAt, &t.CompletedAt); err != nil {
 			return nil, fmt.Errorf("scan job_targets: %w", err)
 		}
 		targets = append(targets, t)
