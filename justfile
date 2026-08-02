@@ -32,13 +32,19 @@ test:
 # Profile without -race for cobertura (race + cover is slower / noisier in CI).
 # cmd/seed-agent is a manual dev tool (see docs/developer/testing.md), not
 # product code — excluded from the cobertura report only; its own tests
-# still run under `just test` like everything else.
+# still run under `just test` like everything else. internal/persistence/
+# testdb is test infrastructure with no _test.go of its own (go test reports
+# it "no test files") — every line in it is already exercised indirectly by
+# every test that calls testdb.New/testdb.Pool across internal/persistence
+# and cmd/grex, so it's excluded from the report rather than given a
+# dedicated test that would just be testing test infrastructure with more
+# test infrastructure.
 coverage:
     env -u GOROOT GOTOOLCHAIN=auto go test -count=1 ./... \
         -coverprofile coverage.out -covermode count
     env -u GOROOT GOTOOLCHAIN=auto go tool cover -html=coverage.out -o coverage.html
     env -u GOROOT GOTOOLCHAIN=auto go run github.com/boumenot/gocover-cobertura@v1.4.0 \
-        --by-files -ignore-gen-files -ignore-dirs 'cmd/seed-agent' < coverage.out > coverage.xml
+        --by-files -ignore-gen-files -ignore-dirs 'cmd/seed-agent|internal/persistence/testdb' < coverage.out > coverage.xml
 
 # Run golangci-lint.
 lint:
