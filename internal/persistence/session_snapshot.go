@@ -45,13 +45,20 @@ func NewSessionSnapshotter(registry *fleet.Registry, store StateStore, interval 
 	}
 }
 
-// Run snapshots on every interval tick until ctx is done.
+// Run snapshots on every interval tick until ctx is done, then does one
+// more snapshot before returning — see Flusher.Run's identical reasoning:
+// whatever changed just before a shutdown's drain window ends still gets
+// persisted. ctx is already cancelled by then, so a fresh, independently
+// bounded context replaces it for that one last attempt.
 func (s *SessionSnapshotter) Run(ctx context.Context) {
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
+			finalCtx, cancel := context.WithTimeout(context.Background(), s.interval)
+			s.snapshotOnce(finalCtx)
+			cancel()
 			return
 		case <-ticker.C:
 			s.snapshotOnce(ctx)

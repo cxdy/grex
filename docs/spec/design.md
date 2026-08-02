@@ -989,6 +989,31 @@ auth boundary:
   Compose healthchecks intentionally probe `/healthz`, not `/readyz`, so
   `docker compose` does not report the container unhealthy during that
   drain window.
+- **Fixed: persistence used to die the instant the signal arrived, before
+  the drain window even started — now it survives the drain window and
+  does one final flush.** `Registry.Run`/`Flusher.Run`/
+  `SessionSnapshotter.Run` used to share the exact same signal-cancelled
+  context the drain sequence gates on, so they stopped at the same instant
+  `BeginDraining` fired — the entire `drainDelay` window (agents still
+  connected, still sending messages) ran with zero persistence alive to
+  catch any of it, a correctness gap independent of fleet size, not a
+  scaling one. Now `main.go` gives them their own `persistCtx`, cancelled
+  explicitly only after `drainDelay`'s sleep completes; `Flusher.Run`/
+  `SessionSnapshotter.Run` each do one bounded final flush/snapshot on
+  their own cancellation before returning (a fresh context, since a child
+  of an already-cancelled one is instantly done too); `run()` waits
+  (`sync.WaitGroup`) for that final flush to actually finish before
+  proceeding to `shutdown(srv)`, so the process can't exit mid-flush.
+- **New: `opamp.Handler.Drain()` actively refuses new agent connections
+  the instant the shutdown signal arrives**, called from the same site as
+  `BeginDraining`. Previously nothing in grex itself stopped new OpAMP
+  connections during the drain window — only an orchestrator honoring
+  `/readyz` kept new agents away, on its own probe cadence. A refused
+  client's own connect attempt fails immediately; its existing
+  exponential-backoff-with-jitter reconnect (`opamp-go`, not grex code)
+  retries and lands on a different, still-ready replica behind the load
+  balancer. Already-open connections are untouched — only new attempts are
+  refused.
 
 ### Debug endpoints
 

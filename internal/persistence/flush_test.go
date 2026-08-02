@@ -407,6 +407,46 @@ func TestFlusherRunFlushesOnTick(t *testing.T) {
 // SaveAgent, SoftDeleteAgent, and UpsertAgentConnection failures: it must
 // log and continue, never panic or stop processing the rest of the dirty
 // set.
+// TestFlusherRunDoesFinalFlushOnCancel covers the shutdown-drain fix
+// (docs/spec/design.md): Run must persist whatever's dirty at the moment
+// its context is cancelled, not just abandon it — main.go gives Flusher a
+// context that outlives the signal-driven shutdown ctx specifically so
+// this final flush can happen before the process actually exits. The
+// interval here is deliberately far longer than the test's own timeout, so
+// anything saved can only have come from the final flush, not a regular
+// tick.
+func TestFlusherRunDoesFinalFlushOnCancel(t *testing.T) {
+	dirty := NewDirtyTracker()
+	store := &fakeStateStore{}
+	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), dirty)
+
+	uid := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	registry.Report(&protobufs.AgentToServer{InstanceUid: uid}, fleet.ConnMeta{})
+	id, err := fleet.InstanceUID(uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	flusher := NewFlusher(registry, dirty, store, time.Hour, discardLogger(), 4, nil, &fakeConnectionStore{}, "replica-1", "")
+	done := make(chan struct{})
+	go func() {
+		flusher.Run(ctx)
+		close(done)
+	}()
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after context cancellation")
+	}
+
+	if !store.hasAgent(id) {
+		t.Fatal("Run did not do a final flush of the dirty agent on cancellation")
+	}
+}
+
 func TestFlusherLogsStoreErrors(t *testing.T) {
 	dirty := NewDirtyTracker()
 	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), dirty)

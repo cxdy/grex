@@ -296,6 +296,34 @@ func TestTransportDetection(t *testing.T) {
 	}
 }
 
+// TestOnConnectingAcceptsBeforeDrain and TestDrainRefusesNewConnections
+// cover the shutdown-drain fix (docs/spec/design.md): once Drain is
+// called, new connection attempts are refused with 503 so their own
+// exponential-backoff-with-jitter reconnect (opamp-go) lands them on a
+// different, still-ready replica — existing already-open connections are
+// untouched, only new ones are refused.
+func TestOnConnectingAcceptsBeforeDrain(t *testing.T) {
+	h, _ := testHandler()
+	req := httptest.NewRequest(http.MethodGet, "/v1/opamp", nil)
+	resp := h.onConnecting(req)
+	if !resp.Accept {
+		t.Errorf("Accept = false before Drain, want true")
+	}
+}
+
+func TestDrainRefusesNewConnections(t *testing.T) {
+	h, _ := testHandler()
+	h.Drain()
+	req := httptest.NewRequest(http.MethodGet, "/v1/opamp", nil)
+	resp := h.onConnecting(req)
+	if resp.Accept {
+		t.Error("Accept = true after Drain, want false")
+	}
+	if resp.HTTPStatusCode != http.StatusServiceUnavailable {
+		t.Errorf("HTTPStatusCode = %d, want %d", resp.HTTPStatusCode, http.StatusServiceUnavailable)
+	}
+}
+
 func TestConnectionCloseMarksDisconnected(t *testing.T) {
 	h, registry := testHandler()
 	conn := newFakeConn(t)
