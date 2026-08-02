@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"runtime"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -193,7 +194,8 @@ func run(args []string) error {
 		RequiredAttributes:    cfg.Fleet.RequiredAttributes,
 	}, logger, registryEvents)
 	fleetMetrics.MustRegister(metrics.NewFleetCollector(registry, cfg.Metrics.PerAgentSeriesLimit))
-	handler, connCtx, err := opamp.New(logger, registry, events).Attach()
+	opampHandler := opamp.New(logger, registry, events)
+	handler, connCtx, err := opampHandler.Attach()
 	if err != nil {
 		return err
 	}
@@ -227,13 +229,27 @@ func run(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	go registry.Run(ctx)
+
+	// persistCtx outlives ctx through the drain window below: Registry.Run/
+	// Flusher/SessionSnapshotter must keep working while agents still
+	// connected finish sending messages during BeginDraining's drain delay,
+	// not die the instant the signal arrives. Cancelled explicitly, only
+	// after that drain window ends, so their final flush (see Flusher.Run/
+	// SessionSnapshotter.Run) actually has something worth catching.
+	persistCtx, cancelPersist := context.WithCancel(context.Background())
+	defer cancelPersist()
+	var persistWG sync.WaitGroup
+
+	persistWG.Add(1)
+	go func() { defer persistWG.Done(); registry.Run(persistCtx) }()
 	if dbPool != nil {
 		flusher := persistence.NewFlusher(registry, dirtyTracker, store, persistenceFlushInterval, logger, maxConcurrentWrites, events, connStore, replicaID, replicaLabel)
-		go flusher.Run(ctx)
+		persistWG.Add(1)
+		go func() { defer persistWG.Done(); flusher.Run(persistCtx) }()
 
 		snapshotter := persistence.NewSessionSnapshotter(registry, store, sessionSnapshotInterval, logger, maxConcurrentWrites, events)
-		go snapshotter.Run(ctx)
+		persistWG.Add(1)
+		go func() { defer persistWG.Done(); snapshotter.Run(persistCtx) }()
 
 		if err := purgeClient.Start(ctx); err != nil {
 			return fmt.Errorf("start purge client: %w", err)
@@ -253,17 +269,31 @@ func run(args []string) error {
 	select {
 	case <-ctx.Done():
 		logger.Info("shutting down", "reason", "signal")
+		// Refuse new agent connections immediately — a rejected client's
+		// own exponential-backoff-with-jitter reconnect (opamp-go) lands it
+		// on a different, still-ready replica behind the load balancer.
+		// Existing connections are untouched; BeginDraining flips /readyz
+		// for the same reason at the orchestrator level.
+		opampHandler.Drain()
 		srv.BeginDraining()
 		logger.Info("draining", "delay", drainDelay)
 		time.Sleep(drainDelay)
 	case err := <-srv.Fatal():
 		logger.Error("listener failed", "error", err)
+		cancelPersist()
+		persistWG.Wait()
 		shutdownErr := shutdown(srv)
 		if shutdownErr != nil {
 			logger.Error("shutdown failed", "error", shutdownErr)
 		}
 		return err
 	}
+	// Drain window over: let Registry.Run/Flusher/SessionSnapshotter do
+	// their final flush now, and wait for it to actually finish (each is
+	// independently bounded by its own interval-as-timeout, same budget
+	// class as shutdownGrace) before closing listeners.
+	cancelPersist()
+	persistWG.Wait()
 	return shutdown(srv)
 }
 

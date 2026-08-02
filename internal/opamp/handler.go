@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/open-telemetry/opamp-go/protobufs"
 	opampserver "github.com/open-telemetry/opamp-go/server"
@@ -69,6 +70,10 @@ type Handler struct {
 	srv      opampserver.OpAMPServer
 	metrics  Metrics
 
+	// draining is set once by Drain and never cleared — a Handler only
+	// drains on the way to shutdown, it doesn't resume.
+	draining atomic.Bool
+
 	mu sync.Mutex
 	// connAgents maps a connection to the instance uids reported over it so
 	// a closing connection can mark its agents disconnected.
@@ -109,22 +114,7 @@ func transportFor(r *http.Request) string {
 // listener.
 func (h *Handler) Attach() (http.HandlerFunc, func(ctx context.Context, c net.Conn) context.Context, error) {
 	callbacks := servertypes.Callbacks{
-		OnConnecting: func(r *http.Request) servertypes.ConnectionResponse {
-			transport := transportFor(r)
-			return servertypes.ConnectionResponse{
-				Accept: true,
-				ConnectionCallbacks: servertypes.ConnectionCallbacks{
-					OnConnected: func(_ context.Context, conn servertypes.Connection) {
-						h.mu.Lock()
-						h.connTransports[conn] = transport
-						h.mu.Unlock()
-					},
-					OnMessage:          h.onMessage,
-					OnConnectionClose:  h.onConnectionClose,
-					OnReadMessageError: h.onReadMessageError,
-				},
-			}
-		},
+		OnConnecting: h.onConnecting,
 	}
 	handler, connCtx, err := h.srv.Attach(opampserver.Settings{
 		Callbacks:          callbacks,
@@ -134,6 +124,35 @@ func (h *Handler) Attach() (http.HandlerFunc, func(ctx context.Context, c net.Co
 		return nil, nil, err
 	}
 	return http.HandlerFunc(handler), connCtx, nil
+}
+
+// Drain makes onConnecting refuse every new connection from here on,
+// leaving already-open ones untouched. Called once, on the way to
+// shutdown — a rejected client's own exponential-backoff-with-jitter
+// reconnect (opamp-go) lands it on a different, still-ready replica behind
+// the same load balancer, no grex-side redirect needed.
+func (h *Handler) Drain() {
+	h.draining.Store(true)
+}
+
+func (h *Handler) onConnecting(r *http.Request) servertypes.ConnectionResponse {
+	if h.draining.Load() {
+		return servertypes.ConnectionResponse{Accept: false, HTTPStatusCode: http.StatusServiceUnavailable}
+	}
+	transport := transportFor(r)
+	return servertypes.ConnectionResponse{
+		Accept: true,
+		ConnectionCallbacks: servertypes.ConnectionCallbacks{
+			OnConnected: func(_ context.Context, conn servertypes.Connection) {
+				h.mu.Lock()
+				h.connTransports[conn] = transport
+				h.mu.Unlock()
+			},
+			OnMessage:          h.onMessage,
+			OnConnectionClose:  h.onConnectionClose,
+			OnReadMessageError: h.onReadMessageError,
+		},
+	}
 }
 
 func (h *Handler) onMessage(_ context.Context, conn servertypes.Connection, msg *protobufs.AgentToServer) *protobufs.ServerToAgent {

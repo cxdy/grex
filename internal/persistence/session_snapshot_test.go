@@ -156,6 +156,40 @@ func TestSessionSnapshotterStuckAgentDoesNotBlockOthers(t *testing.T) {
 	}
 }
 
+// TestSessionSnapshotterRunDoesFinalSnapshotOnCancel is
+// TestFlusherRunDoesFinalFlushOnCancel's counterpart for
+// SessionSnapshotter's own Run loop.
+func TestSessionSnapshotterRunDoesFinalSnapshotOnCancel(t *testing.T) {
+	store := &fakeStateStore{}
+	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), nil)
+
+	uid := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	registry.Report(&protobufs.AgentToServer{InstanceUid: uid}, fleet.ConnMeta{})
+	id, err := fleet.InstanceUID(uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	snapshotter := NewSessionSnapshotter(registry, store, time.Hour, discardLogger(), 4, nil)
+	done := make(chan struct{})
+	go func() {
+		snapshotter.Run(ctx)
+		close(done)
+	}()
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after context cancellation")
+	}
+
+	if _, ok, _ := store.GetAgent(context.Background(), id); !ok {
+		t.Fatal("Run did not do a final snapshot on cancellation")
+	}
+}
+
 // TestSessionSnapshotterBatchesSaveSession covers docs/spec/design.md's
 // Scaling gaps items 3-4: when the store supports BatchStateStore, every
 // registered agent's session write goes through one chunked pgx.Batch

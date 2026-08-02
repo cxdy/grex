@@ -113,13 +113,24 @@ func NewFlusher(registry *fleet.Registry, dirty *DirtyTracker, store StateStore,
 	}
 }
 
-// Run flushes on every interval tick until ctx is done.
+// Run flushes on every interval tick until ctx is done, then does one more
+// flush before returning — whatever's dirty at the moment of cancellation
+// (e.g. an agent's last message during a shutdown's drain window) still
+// gets persisted, rather than silently lost. ctx is already cancelled by
+// the time that final flush runs, so it can't be used to bound the write —
+// a child of an already-done context is immediately done too, and every
+// write would fail instantly. A fresh context, bounded by the same
+// interval-as-timeout convention every other write here uses, replaces it
+// for that one last attempt.
 func (f *Flusher) Run(ctx context.Context) {
 	ticker := time.NewTicker(f.interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
+			finalCtx, cancel := context.WithTimeout(context.Background(), f.interval)
+			f.flushOnce(finalCtx)
+			cancel()
 			return
 		case <-ticker.C:
 			f.flushOnce(ctx)
