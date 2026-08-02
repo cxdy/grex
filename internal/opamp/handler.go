@@ -247,7 +247,12 @@ func (h *Handler) onConnectionClose(conn servertypes.Connection) {
 
 func (h *Handler) onReadMessageError(_ servertypes.Connection, _ int, _ []byte, err error) {
 	h.metrics.MessageError()
-	h.log.Warn("opamp message read failed", "error", err)
+	// Debug, not Warn: this is per-connection, so a mass disconnect (an AZ
+	// blip, a gateway crash) fires one per dropped connection — a burst of
+	// blocking log writes at fleet scale. grex_opamp_message_errors_total
+	// already carries the aggregate at any level. Same reasoning as Sweep's
+	// per-agent logging (docs/spec/design.md's Scaling gaps, gap 2).
+	h.log.Debug("opamp message read failed", "error", err)
 }
 
 func (h *Handler) trackAgent(conn servertypes.Connection, msg *protobufs.AgentToServer) {

@@ -341,6 +341,7 @@ func TestLoadEnvOverrides(t *testing.T) {
 	t.Setenv("GREX_FLEET_REQUIRED_ATTRIBUTES", "team, deployment.environment")
 	t.Setenv("GREX_FLEET_SOFT_DELETE_DURATION", "48h")
 	t.Setenv("GREX_METRICS_PER_AGENT_SERIES_LIMIT", "25")
+	t.Setenv("GREX_FLEET_SHARD_COUNT", "1024")
 	t.Setenv("GREX_DEBUG_PPROF_ENABLED", "true")
 	path := writeFile(t, "config.yaml", "listeners:\n  opamp: \"127.0.0.1:14320\"\n")
 	cfg, err := Load(path)
@@ -369,6 +370,9 @@ func TestLoadEnvOverrides(t *testing.T) {
 	if cfg.Metrics.PerAgentSeriesLimit != 25 {
 		t.Errorf("PerAgentSeriesLimit = %d, want 25", cfg.Metrics.PerAgentSeriesLimit)
 	}
+	if cfg.Fleet.ShardCount != 1024 {
+		t.Errorf("ShardCount = %d, want 1024", cfg.Fleet.ShardCount)
+	}
 	if !cfg.Debug.PprofEnabled {
 		t.Error("PprofEnabled = false, want true from env")
 	}
@@ -386,6 +390,37 @@ func TestLoadNegativePerAgentSeriesLimit(t *testing.T) {
 	path := writeFile(t, "config.yaml", "metrics:\n  per_agent_series_limit: -1\n")
 	if _, err := Load(path); err == nil {
 		t.Fatal("want error for negative per-agent series limit")
+	}
+}
+
+func TestLoadShardCount(t *testing.T) {
+	path := writeFile(t, "config.yaml", "fleet:\n  shard_count: 512\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Fleet.ShardCount != 512 {
+		t.Errorf("ShardCount = %d, want 512", cfg.Fleet.ShardCount)
+	}
+}
+
+func TestLoadShardCountDefaultsToZero(t *testing.T) {
+	path := writeFile(t, "config.yaml", "{}\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// Zero means "let the registry pick its default"; not wired to a
+	// nonzero here so the two default constants can't drift apart.
+	if cfg.Fleet.ShardCount != 0 {
+		t.Errorf("ShardCount = %d, want 0 (registry default)", cfg.Fleet.ShardCount)
+	}
+}
+
+func TestLoadNegativeShardCount(t *testing.T) {
+	path := writeFile(t, "config.yaml", "fleet:\n  shard_count: -1\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("want error for negative shard count")
 	}
 }
 

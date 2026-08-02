@@ -69,6 +69,10 @@ fleet:
   # AgentDescription attribute keys every agent must report. Missing keys
   # are logged and counted in metrics; empty disables enforcement.
   required_attributes: []
+  # How many independently locked shards the in-memory agent registry is
+  # split across. Higher values reduce lock contention at very large fleet
+  # sizes. 0 uses the registry's built-in default (256).
+  shard_count: 0
   # How long a soft-deleted agent's durable row is kept before a periodic
   # job purges it outright. Only takes effect when database.host is set.
   soft_delete_duration: 168h # 7d
