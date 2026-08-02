@@ -143,10 +143,14 @@ const (
 // historical dispatch record that must survive the agent's eventual
 // hard-delete (purge), not disappear with it.
 type JobTarget struct {
-	ID           int64
-	JobID        string
-	InstanceUID  string
-	Status       string // pending | sent | send_failed | applied | failed
+	ID          int64
+	JobID       string
+	InstanceUID string
+	Status      string // pending | sent | send_failed | applied | failed | rejected
+	// Reason is set only when Status is JobTargetStatusRejected — why an
+	// arm-time gate excluded this target (e.g. not supervisor_managed), per
+	// docs/spec/design.md's "Decided: per-target rejection with a reason".
+	Reason       *string
 	DispatchedAt *time.Time
 	CompletedAt  *time.Time
 }
@@ -158,7 +162,17 @@ const (
 	JobTargetStatusSendFailed = "send_failed"
 	JobTargetStatusApplied    = "applied"
 	JobTargetStatusFailed     = "failed"
+	JobTargetStatusRejected   = "rejected"
 )
+
+// NewJobTarget is one row for CreateJobTargets to insert: an accepted
+// target (Status: JobTargetStatusPending, Reason nil) or a rejected one
+// (Status: JobTargetStatusRejected, Reason set).
+type NewJobTarget struct {
+	InstanceUID string
+	Status      string
+	Reason      *string
+}
 
 // JobQueue is the CRUD surface for jobs/job_targets. It deliberately does
 // not include arm/cancel/dispatch: those need the 5-minute cancellable-delay
@@ -171,6 +185,6 @@ type JobQueue interface {
 	CreateJob(ctx context.Context, job Job) (Job, error)
 	GetJob(ctx context.Context, id string) (Job, bool, error)
 	ListJobs(ctx context.Context) ([]Job, error)
-	CreateJobTargets(ctx context.Context, jobID string, instanceUIDs []string) ([]JobTarget, error)
+	CreateJobTargets(ctx context.Context, jobID string, targets []NewJobTarget) ([]JobTarget, error)
 	ListJobTargets(ctx context.Context, jobID string) ([]JobTarget, error)
 }

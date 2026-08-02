@@ -7,6 +7,16 @@ import (
 	"testing"
 )
 
+// pendingTargets builds accepted NewJobTarget rows for tests that don't
+// care about rejection, one per instanceUID.
+func pendingTargets(instanceUIDs ...string) []NewJobTarget {
+	targets := make([]NewJobTarget, len(instanceUIDs))
+	for i, id := range instanceUIDs {
+		targets[i] = NewJobTarget{InstanceUID: id, Status: JobTargetStatusPending}
+	}
+	return targets
+}
+
 func TestCreateJobAlwaysStartsPlanned(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -130,7 +140,7 @@ func TestCreateJobTargetsAndList(t *testing.T) {
 		t.Fatalf("CreateJob: %v", err)
 	}
 
-	targets, err := store.CreateJobTargets(ctx, job.ID, []string{"agent-1", "agent-2"})
+	targets, err := store.CreateJobTargets(ctx, job.ID, pendingTargets("agent-1", "agent-2"))
 	if err != nil {
 		t.Fatalf("CreateJobTargets: %v", err)
 	}
@@ -156,9 +166,10 @@ func TestCreateJobTargetsAndList(t *testing.T) {
 }
 
 // TestCreateJobTargetsBulk exercises CreateJobTargets' one-statement bulk
-// insert (INSERT ... SELECT unnest($2::text[])) with enough rows that a
-// naive one-round-trip-per-row implementation would be obviously slow —
-// this is the shape a job targeting a large fraction of a fleet takes.
+// insert (INSERT ... SELECT FROM unnest(...) over three parallel arrays)
+// with enough rows that a naive one-round-trip-per-row implementation would
+// be obviously slow — this is the shape a job targeting a large fraction of
+// a fleet takes.
 func TestCreateJobTargetsBulk(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -174,7 +185,7 @@ func TestCreateJobTargetsBulk(t *testing.T) {
 		instanceUIDs[i] = fmt.Sprintf("agent-%d", i)
 	}
 
-	targets, err := store.CreateJobTargets(ctx, job.ID, instanceUIDs)
+	targets, err := store.CreateJobTargets(ctx, job.ID, pendingTargets(instanceUIDs...))
 	if err != nil {
 		t.Fatalf("CreateJobTargets: %v", err)
 	}
@@ -188,6 +199,54 @@ func TestCreateJobTargetsBulk(t *testing.T) {
 	}
 	if len(got) != n {
 		t.Fatalf("ListJobTargets returned %d rows, want %d", len(got), n)
+	}
+}
+
+// TestCreateJobTargetsRejectedWithReason covers arming a job that rejects
+// some matched targets rather than the whole job (docs/spec/design.md's
+// "Decided: per-target rejection with a reason"): a mix of accepted and
+// rejected rows in one CreateJobTargets call, reason set only on the
+// rejected one.
+func TestCreateJobTargetsRejectedWithReason(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	job, err := store.CreateJob(ctx, Job{Filter: "service.name=otelcol-contrib", Action: "restart", SubmittedBy: "alice"})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	reason := "not supervisor_managed"
+	targets, err := store.CreateJobTargets(ctx, job.ID, []NewJobTarget{
+		{InstanceUID: "agent-1", Status: JobTargetStatusPending},
+		{InstanceUID: "agent-2", Status: JobTargetStatusRejected, Reason: &reason},
+	})
+	if err != nil {
+		t.Fatalf("CreateJobTargets: %v", err)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("CreateJobTargets returned %d rows, want 2", len(targets))
+	}
+
+	byID := make(map[string]JobTarget, len(targets))
+	for _, target := range targets {
+		byID[target.InstanceUID] = target
+	}
+
+	accepted := byID["agent-1"]
+	if accepted.Status != JobTargetStatusPending {
+		t.Errorf("agent-1 Status = %q, want %q", accepted.Status, JobTargetStatusPending)
+	}
+	if accepted.Reason != nil {
+		t.Errorf("agent-1 Reason = %v, want nil for an accepted target", *accepted.Reason)
+	}
+
+	rejected := byID["agent-2"]
+	if rejected.Status != JobTargetStatusRejected {
+		t.Errorf("agent-2 Status = %q, want %q", rejected.Status, JobTargetStatusRejected)
+	}
+	if rejected.Reason == nil || *rejected.Reason != reason {
+		t.Errorf("agent-2 Reason = %v, want %q", rejected.Reason, reason)
 	}
 }
 
@@ -213,7 +272,7 @@ func TestCreateJobTargetsUnknownJob(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 
-	_, err := store.CreateJobTargets(ctx, "00000000-0000-0000-0000-000000000000", []string{"agent-1"})
+	_, err := store.CreateJobTargets(ctx, "00000000-0000-0000-0000-000000000000", pendingTargets("agent-1"))
 	if err == nil {
 		t.Fatal("CreateJobTargets: want error for a job_id that doesn't exist")
 	}
@@ -233,7 +292,7 @@ func TestJobContextCanceled(t *testing.T) {
 	if _, err := store.ListJobs(ctx); err == nil {
 		t.Fatal("ListJobs: want error for a cancelled context")
 	}
-	if _, err := store.CreateJobTargets(ctx, "00000000-0000-0000-0000-000000000000", []string{"agent-1"}); err == nil {
+	if _, err := store.CreateJobTargets(ctx, "00000000-0000-0000-0000-000000000000", pendingTargets("agent-1")); err == nil {
 		t.Fatal("CreateJobTargets: want error for a cancelled context")
 	}
 	if _, err := store.ListJobTargets(ctx, "00000000-0000-0000-0000-000000000000"); err == nil {

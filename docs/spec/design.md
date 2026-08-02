@@ -816,8 +816,10 @@ Deliberately the first entry in an extensible reason set, not a one-off
 special case for Supervisor adoption: a future blast-radius rule (e.g. a
 cap on how many agents one job can target) is expected to reuse this same
 rejected-with-reason shape rather than invent its own rejection path.
-Not yet built: needs a `job_targets.status = 'rejected'` value plus a
-reason column, neither in the schema yet (see Jobs: schema and execution).
+The `job_targets.status = 'rejected'` value, its `reason` column, and the
+partitioning logic itself (`api.PartitionJobTargets`) are built. Not yet
+built: the arm endpoint that would actually call it — see Jobs: schema and
+execution.
 
 | Job | Requires Supervisor | Why |
 |-----|---------------------|-----|
