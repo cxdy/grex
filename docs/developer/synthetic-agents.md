@@ -112,3 +112,22 @@ scaling-relevant half.
 test (`internal/synth/run_test.go`) runs the agents against a real opamp-go
 server and asserts they connect and reconnect — no mocks. `Config.Validate`
 and the report aggregation are unit-tested in `internal/synth/synth_test.go`.
+
+## Smoke test
+
+`scripts/synth-smoke.sh` is the black-box check: it builds `grex` and
+`grex-synth`, starts grex with a plaintext OpAMP listener (no TLS, no
+database), runs a batch of agents against it, and fails unless every agent
+connected with no failures.
+
+```sh
+just synth-smoke
+# tune the batch: AGENTS=200 DURATION=10s just synth-smoke
+```
+
+CI runs the same script via `.github/workflows/synth-smoke.yaml`, which
+triggers **only** when the tool, its package, or the script itself changes
+(`cmd/grex-synth/**`, `internal/synth/**`, `scripts/synth-smoke.sh`). The
+full Go suite (`golang-tests.yaml`) already covers those paths on every PR;
+this workflow just adds the built-binary end-to-end check when synth code
+moves.
