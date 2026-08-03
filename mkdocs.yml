@@ -110,6 +110,7 @@ nav:
       - Read API: developer/read-api.md
       - Web UI: developer/ui.md
       - Testing: developer/testing.md
+      - Synthetic agents: developer/synthetic-agents.md
       - Extending grex: developer/extending.md
       - Contributing: developer/contributing.md
       - Releasing: developer/releasing.md
