@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -83,6 +84,13 @@ func testHandler() (*Handler, *fleet.Registry) {
 	return h, registry
 }
 
+// newConnState builds the per-connection bookkeeping the handler allocates in
+// onConnecting, letting unit tests drive onMessage/onConnectionClose directly
+// with a chosen transport.
+func newConnState(transport string) *connState {
+	return &connState{transport: transport, agents: make(map[string]struct{})}
+}
+
 func testHandlerMetrics() (*Handler, *fleet.Registry, *recordingMetrics) {
 	registry := fleet.New(fleet.Config{
 		HeartbeatInterval:     30 * time.Second,
@@ -132,8 +140,9 @@ func decodeConnectResult(t *testing.T, reply *protobufs.ServerToAgent) map[strin
 func TestGatewayConnectAccepted(t *testing.T) {
 	h, registry := testHandler()
 	conn := newFakeConn(t)
+	cs := newConnState("ws")
 
-	reply := h.onMessage(context.Background(), conn, connectMsg(t, "req-1"))
+	reply := h.onMessage(context.Background(), cs, conn, connectMsg(t, "req-1"))
 	result := decodeConnectResult(t, reply)
 	if result["accept"] != true {
 		t.Errorf("accept = %v", result["accept"])
@@ -148,7 +157,7 @@ func TestGatewayConnectAccepted(t *testing.T) {
 	// The connection is now known to be a gateway: relayed agents get
 	// ViaGateway metadata.
 	uid := uuid.New()
-	h.onMessage(context.Background(), conn, &protobufs.AgentToServer{InstanceUid: uid[:]})
+	h.onMessage(context.Background(), cs, conn, &protobufs.AgentToServer{InstanceUid: uid[:]})
 	agent, ok := registry.Get(uid.String())
 	if !ok {
 		t.Fatal("relayed agent not registered")
@@ -163,7 +172,7 @@ func TestGatewayConnectMalformed(t *testing.T) {
 	msg := connectMsg(t, "req-2")
 	msg.CustomMessage.Data = []byte("{not json")
 
-	result := decodeConnectResult(t, h.onMessage(context.Background(), newFakeConn(t), msg))
+	result := decodeConnectResult(t, h.onMessage(context.Background(), newConnState("ws"), newFakeConn(t), msg))
 	if result["accept"] != false {
 		t.Errorf("accept = %v, want false for malformed payload", result["accept"])
 	}
@@ -175,9 +184,10 @@ func TestGatewayConnectMalformed(t *testing.T) {
 func TestReportFeedsRegistry(t *testing.T) {
 	h, registry := testHandler()
 	conn := newFakeConn(t)
+	cs := newConnState("ws")
 	uid := uuid.New()
 
-	reply := h.onMessage(context.Background(), conn, &protobufs.AgentToServer{
+	reply := h.onMessage(context.Background(), cs, conn, &protobufs.AgentToServer{
 		InstanceUid: uid[:],
 		AgentDescription: &protobufs.AgentDescription{
 			IdentifyingAttributes: []*protobufs.KeyValue{{
@@ -211,21 +221,22 @@ func TestReportFeedsRegistry(t *testing.T) {
 func TestHandlerMetrics(t *testing.T) {
 	h, _, rec := testHandlerMetrics()
 	conn := newFakeConn(t)
+	cs := newConnState("ws")
 	uid := uuid.New()
 
 	// Two accepted connects on one connection: the gateway gauge opens once.
-	h.onMessage(context.Background(), conn, connectMsg(t, "req-1"))
-	h.onMessage(context.Background(), conn, connectMsg(t, "req-2"))
+	h.onMessage(context.Background(), cs, conn, connectMsg(t, "req-1"))
+	h.onMessage(context.Background(), cs, conn, connectMsg(t, "req-2"))
 	// One malformed connect: rejected.
 	bad := connectMsg(t, "req-3")
 	bad.CustomMessage.Data = []byte("{not json")
-	h.onMessage(context.Background(), conn, bad)
+	h.onMessage(context.Background(), cs, conn, bad)
 	// A regular report.
-	h.onMessage(context.Background(), conn, &protobufs.AgentToServer{InstanceUid: uid[:]})
+	h.onMessage(context.Background(), cs, conn, &protobufs.AgentToServer{InstanceUid: uid[:]})
 	// Closing the gateway connection closes the gauge.
-	h.onConnectionClose(conn)
+	h.onConnectionClose(cs)
 	// Closing a non-gateway connection does not.
-	h.onConnectionClose(newFakeConn(t))
+	h.onConnectionClose(newConnState("ws"))
 	// Read errors are counted.
 	h.onReadMessageError(nil, 0, nil, io.ErrUnexpectedEOF)
 
@@ -252,21 +263,22 @@ func TestHandlerMetrics(t *testing.T) {
 func TestRequestsFullStateFromDescriptionlessAgent(t *testing.T) {
 	h, _ := testHandler()
 	conn := newFakeConn(t)
+	cs := newConnState("ws")
 	uid := uuid.New()
 	fullState := uint64(protobufs.ServerToAgentFlags_ServerToAgentFlags_ReportFullState)
 
 	heartbeat := &protobufs.AgentToServer{InstanceUid: uid[:]}
-	reply := h.onMessage(context.Background(), conn, heartbeat)
+	reply := h.onMessage(context.Background(), cs, conn, heartbeat)
 	if reply.Flags&fullState == 0 {
 		t.Error("first heartbeat from unknown agent did not request full state")
 	}
 
-	reply = h.onMessage(context.Background(), conn, heartbeat)
+	reply = h.onMessage(context.Background(), cs, conn, heartbeat)
 	if reply.Flags&fullState == 0 {
 		t.Error("repeat heartbeat without description did not request full state")
 	}
 
-	reply = h.onMessage(context.Background(), conn, &protobufs.AgentToServer{
+	reply = h.onMessage(context.Background(), cs, conn, &protobufs.AgentToServer{
 		InstanceUid: uid[:],
 		AgentDescription: &protobufs.AgentDescription{
 			IdentifyingAttributes: []*protobufs.KeyValue{{
@@ -279,7 +291,7 @@ func TestRequestsFullStateFromDescriptionlessAgent(t *testing.T) {
 		t.Error("full-state report still flagged for full state")
 	}
 
-	reply = h.onMessage(context.Background(), conn, heartbeat)
+	reply = h.onMessage(context.Background(), cs, conn, heartbeat)
 	if reply.Flags&fullState != 0 {
 		t.Error("heartbeat after description recorded still flagged for full state")
 	}
@@ -355,13 +367,54 @@ func TestReadMessageErrorLogsAtDebug(t *testing.T) {
 	}
 }
 
-func TestConnectionCloseMarksDisconnected(t *testing.T) {
+// Concurrent messages from distinct agents on distinct connections must not
+// contend on any shared Handler lock (each connection owns its connState) and
+// must all land in the registry. Run under -race to catch a reintroduced
+// shared-state race.
+func TestConcurrentMessagesDistinctConnections(t *testing.T) {
+	// nil metrics → noopMetrics: the recording double is a plain int counter,
+	// racy under concurrent use and irrelevant to what this test checks.
+	registry := fleet.New(fleet.Config{
+		HeartbeatInterval:     30 * time.Second,
+		StaleMissedHeartbeats: 3,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	h := New(slog.New(slog.NewTextHandler(io.Discard, nil)), registry, nil)
+	const agents = 200
+
+	uids := make([]uuid.UUID, agents)
+	for i := range uids {
+		uids[i] = uuid.New()
+	}
+
+	var wg sync.WaitGroup
+	for i := range uids {
+		wg.Add(1)
+		go func(uid uuid.UUID) {
+			defer wg.Done()
+			cs := newConnState("ws")
+			h.onMessage(context.Background(), cs, newFakeConn(t), &protobufs.AgentToServer{InstanceUid: uid[:]})
+		}(uids[i])
+	}
+	wg.Wait()
+
+	for _, uid := range uids {
+		if _, ok := registry.Get(uid.String()); !ok {
+			t.Fatalf("agent %s not registered after concurrent reports", uid)
+		}
+	}
+}
+
+// A WebSocket close is a real disconnect: opamp-go delivers it once, when the
+// single per-connection goroutine's read loop ends. The agent stays registered
+// (until Sweep evicts it) but flips to not connected.
+func TestWSConnectionCloseMarksDisconnected(t *testing.T) {
 	h, registry := testHandler()
 	conn := newFakeConn(t)
+	cs := newConnState("ws")
 	uid := uuid.New()
 
-	h.onMessage(context.Background(), conn, &protobufs.AgentToServer{InstanceUid: uid[:]})
-	h.onConnectionClose(conn)
+	h.onMessage(context.Background(), cs, conn, &protobufs.AgentToServer{InstanceUid: uid[:]})
+	h.onConnectionClose(cs)
 
 	agent, ok := registry.Get(uid.String())
 	if !ok {
@@ -369,5 +422,28 @@ func TestConnectionCloseMarksDisconnected(t *testing.T) {
 	}
 	if agent.Connected {
 		t.Error("Connected = true after connection close")
+	}
+}
+
+// A plain-HTTP close fires at the end of every request (opamp-go
+// serverimpl.go), so it must NOT flip the agent to disconnected — that would
+// flap an HTTP-polling agent connected/disconnected each poll. Liveness for
+// HTTP agents is owned by Registry.Sweep via LastSeen, same as gateway-relayed
+// agents with no per-agent close signal.
+func TestHTTPConnectionCloseKeepsConnected(t *testing.T) {
+	h, registry := testHandler()
+	conn := newFakeConn(t)
+	cs := newConnState("http")
+	uid := uuid.New()
+
+	h.onMessage(context.Background(), cs, conn, &protobufs.AgentToServer{InstanceUid: uid[:]})
+	h.onConnectionClose(cs)
+
+	agent, ok := registry.Get(uid.String())
+	if !ok {
+		t.Fatal("agent missing after HTTP request close")
+	}
+	if !agent.Connected {
+		t.Error("Connected = false after HTTP request close; HTTP close must not disconnect")
 	}
 }

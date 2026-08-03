@@ -73,16 +73,29 @@ type Handler struct {
 	// draining is set once by Drain and never cleared — a Handler only
 	// drains on the way to shutdown, it doesn't resume.
 	draining atomic.Bool
+}
+
+// connState is one connection's OpAMP bookkeeping. It's allocated per
+// connection in onConnecting and captured by that connection's callbacks, so
+// there's no shared Handler lock on the message hot path. opamp-go processes a
+// single connection's callbacks serially (verified against v0.23.0: a
+// WebSocket connection is one goroutine looping over messages; a plain HTTP
+// request is a single OnConnected→OnMessage→OnConnectionClose sequence), so mu
+// only guards against that internal contract changing, never real cross-agent
+// contention.
+type connState struct {
+	// transport is the connection's OpAMP transport ("ws" or "http"), fixed at
+	// connect time before any message arrives and read-only after, so it needs
+	// no lock.
+	transport string
 
 	mu sync.Mutex
-	// connAgents maps a connection to the instance uids reported over it so
-	// a closing connection can mark its agents disconnected.
-	connAgents map[servertypes.Connection]map[string]struct{}
-	// gatewayConns marks connections that have sent a gateway connect
-	// message; agents on them are recorded as relayed.
-	gatewayConns map[servertypes.Connection]struct{}
-	// connTransports records each connection's OpAMP transport (ws or http).
-	connTransports map[servertypes.Connection]string
+	// viaGateway is set once the connection sends a gateway connect message;
+	// agents reported over it are then recorded as relayed.
+	viaGateway bool
+	// agents holds the instance uids reported over this connection so a close
+	// can mark them disconnected.
+	agents map[string]struct{}
 }
 
 // New builds a Handler feeding the given registry. A nil metrics receives no
@@ -92,13 +105,10 @@ func New(logger *slog.Logger, registry *fleet.Registry, metrics Metrics) *Handle
 		metrics = noopMetrics{}
 	}
 	return &Handler{
-		log:            logger,
-		registry:       registry,
-		srv:            opampserver.New(slogOpAMPLogger{logger}),
-		metrics:        metrics,
-		connAgents:     make(map[servertypes.Connection]map[string]struct{}),
-		gatewayConns:   make(map[servertypes.Connection]struct{}),
-		connTransports: make(map[servertypes.Connection]string),
+		log:      logger,
+		registry: registry,
+		srv:      opampserver.New(slogOpAMPLogger{logger}),
+		metrics:  metrics,
 	}
 }
 
@@ -139,31 +149,28 @@ func (h *Handler) onConnecting(r *http.Request) servertypes.ConnectionResponse {
 	if h.draining.Load() {
 		return servertypes.ConnectionResponse{Accept: false, HTTPStatusCode: http.StatusServiceUnavailable}
 	}
-	transport := transportFor(r)
+	cs := &connState{transport: transportFor(r), agents: make(map[string]struct{})}
 	return servertypes.ConnectionResponse{
 		Accept: true,
 		ConnectionCallbacks: servertypes.ConnectionCallbacks{
-			OnConnected: func(_ context.Context, conn servertypes.Connection) {
-				h.mu.Lock()
-				h.connTransports[conn] = transport
-				h.mu.Unlock()
+			OnMessage: func(ctx context.Context, conn servertypes.Connection, msg *protobufs.AgentToServer) *protobufs.ServerToAgent {
+				return h.onMessage(ctx, cs, conn, msg)
 			},
-			OnMessage:          h.onMessage,
-			OnConnectionClose:  h.onConnectionClose,
+			OnConnectionClose:  func(servertypes.Connection) { h.onConnectionClose(cs) },
 			OnReadMessageError: h.onReadMessageError,
 		},
 	}
 }
 
-func (h *Handler) onMessage(_ context.Context, conn servertypes.Connection, msg *protobufs.AgentToServer) *protobufs.ServerToAgent {
+func (h *Handler) onMessage(_ context.Context, cs *connState, conn servertypes.Connection, msg *protobufs.AgentToServer) *protobufs.ServerToAgent {
 	h.metrics.Message()
 	if custom := msg.GetCustomMessage(); custom.GetCapability() == GatewayCapability &&
 		custom.GetType() == gatewayConnectType {
-		return h.onGatewayConnect(conn, msg)
+		return h.onGatewayConnect(cs, msg)
 	}
 
-	h.trackAgent(conn, msg)
-	h.registry.Report(msg, h.connMeta(conn))
+	h.trackAgent(cs, msg)
+	h.registry.Report(msg, h.connMeta(cs, conn))
 	reply := &protobufs.ServerToAgent{
 		InstanceUid:  msg.GetInstanceUid(),
 		Capabilities: uint64(protobufs.ServerCapabilities_ServerCapabilities_AcceptsStatus),
@@ -192,13 +199,13 @@ func (h *Handler) needsFullState(msg *protobufs.AgentToServer) bool {
 // malformed payloads are rejected. The forwarded metadata cannot be joined to
 // a specific instance_uid (the protocol carries no agent id in the connect
 // message), so it is logged here and agents carry gateway-level metadata.
-func (h *Handler) onGatewayConnect(conn servertypes.Connection, msg *protobufs.AgentToServer) *protobufs.ServerToAgent {
-	h.mu.Lock()
-	if _, known := h.gatewayConns[conn]; !known {
-		h.gatewayConns[conn] = struct{}{}
+func (h *Handler) onGatewayConnect(cs *connState, msg *protobufs.AgentToServer) *protobufs.ServerToAgent {
+	cs.mu.Lock()
+	if !cs.viaGateway {
+		cs.viaGateway = true
 		h.metrics.GatewayConnectionOpened()
 	}
-	h.mu.Unlock()
+	cs.mu.Unlock()
 
 	var connect gatewayConnect
 	result := gatewayConnectResult{Accept: true, HTTPStatusCode: http.StatusOK}
@@ -229,16 +236,23 @@ func (h *Handler) onGatewayConnect(conn servertypes.Connection, msg *protobufs.A
 	}
 }
 
-func (h *Handler) onConnectionClose(conn servertypes.Connection) {
-	h.mu.Lock()
-	agents := h.connAgents[conn]
-	_, wasGateway := h.gatewayConns[conn]
-	delete(h.connAgents, conn)
-	delete(h.gatewayConns, conn)
-	delete(h.connTransports, conn)
-	h.mu.Unlock()
+func (h *Handler) onConnectionClose(cs *connState) {
+	cs.mu.Lock()
+	wasGateway := cs.viaGateway
+	agents := cs.agents
+	cs.agents = nil
+	cs.mu.Unlock()
 	if wasGateway {
 		h.metrics.GatewayConnectionClosed()
+	}
+	// Only a WebSocket close is a real disconnect. In plain HTTP mode opamp-go
+	// fires OnConnectionClose at the end of every request (server/serverimpl.go),
+	// so treating it as a disconnect would flap an HTTP-polling agent
+	// connected/disconnected on every poll. For HTTP, liveness is left to
+	// Registry.Sweep via LastSeen — the same path already relied on for
+	// gateway-relayed agents grex never sees a per-agent close for.
+	if cs.transport != "ws" {
+		return
 	}
 	for id := range agents {
 		h.registry.SetConnected(id, false)
@@ -255,25 +269,23 @@ func (h *Handler) onReadMessageError(_ servertypes.Connection, _ int, _ []byte, 
 	h.log.Debug("opamp message read failed", "error", err)
 }
 
-func (h *Handler) trackAgent(conn servertypes.Connection, msg *protobufs.AgentToServer) {
+func (h *Handler) trackAgent(cs *connState, msg *protobufs.AgentToServer) {
 	id, err := fleet.InstanceUID(msg.GetInstanceUid())
 	if err != nil {
 		return
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.connAgents[conn] == nil {
-		h.connAgents[conn] = make(map[string]struct{})
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if cs.agents == nil {
+		cs.agents = make(map[string]struct{})
 	}
-	h.connAgents[conn][id] = struct{}{}
+	cs.agents[id] = struct{}{}
 }
 
-func (h *Handler) connMeta(conn servertypes.Connection) fleet.ConnMeta {
-	meta := fleet.ConnMeta{}
-	h.mu.Lock()
-	_, meta.ViaGateway = h.gatewayConns[conn]
-	meta.Transport = h.connTransports[conn]
-	h.mu.Unlock()
+func (h *Handler) connMeta(cs *connState, conn servertypes.Connection) fleet.ConnMeta {
+	cs.mu.Lock()
+	meta := fleet.ConnMeta{ViaGateway: cs.viaGateway, Transport: cs.transport}
+	cs.mu.Unlock()
 
 	netConn := conn.Connection()
 	if netConn == nil {
