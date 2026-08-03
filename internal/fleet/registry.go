@@ -505,6 +505,93 @@ func (r *Registry) List() []Agent {
 	return list
 }
 
+// ConnRoute is how a connected agent reaches grex: its OpAMP transport and
+// whether it comes through a gateway. It keys FleetStats.Connected.
+type ConnRoute struct {
+	Transport string // "ws" or "http"
+	Via       string // "direct" or "gateway"
+}
+
+// FleetStats is a point-in-time aggregate over the whole fleet. Every field
+// is a plain count, computed by Aggregate without cloning any agent — the
+// metrics scrape path needs these numbers, not per-agent snapshots.
+type FleetStats struct {
+	Size              int
+	Connected         map[ConnRoute]int
+	Disconnected      int
+	Noncompliant      int
+	SupervisorManaged int
+	AwaitingFullState int
+}
+
+// Aggregate walks every shard and folds the fleet into counts without
+// allocating a per-agent snapshot (unlike List). Agent fields, including the
+// attribute maps SupervisorManaged reads, are examined in place under the
+// shard's read lock and never escape it. Not atomic across shards, same
+// accepted skew as List.
+func (r *Registry) Aggregate() FleetStats {
+	stats := FleetStats{Connected: make(map[ConnRoute]int)}
+	for _, s := range r.shards {
+		s.mu.RLock()
+		for _, agent := range s.agents {
+			stats.Size++
+			if agent.Connected {
+				via := "direct"
+				if agent.Conn.ViaGateway {
+					via = "gateway"
+				}
+				stats.Connected[ConnRoute{Transport: agent.Conn.Transport, Via: via}]++
+			} else {
+				stats.Disconnected++
+			}
+			if len(agent.MissingAttributes) > 0 {
+				stats.Noncompliant++
+			}
+			// *agent is a shallow struct copy (map headers, not their
+			// contents); SupervisorManaged only reads attribute values, so
+			// this clones nothing.
+			if SupervisorManaged(*agent) {
+				stats.SupervisorManaged++
+			}
+			if !agent.DescriptionReported {
+				stats.AwaitingFullState++
+			}
+		}
+		s.mu.RUnlock()
+	}
+	return stats
+}
+
+// AgentSeries is the minimal per-agent data the metrics collector needs for
+// its per-agent gauges: scalar fields only, no attribute maps, so no clone.
+type AgentSeries struct {
+	InstanceUID    string
+	HealthReported bool
+	Healthy        bool
+	LastSeen       time.Time
+}
+
+// AgentSeries returns one lightweight record per registered agent, without
+// cloning attribute maps. Meant for the metrics collector's per-agent gauges,
+// which it only emits below the per-agent series cap — callers over the cap
+// should not call this at all.
+func (r *Registry) AgentSeries() []AgentSeries {
+	var out []AgentSeries
+	for _, s := range r.shards {
+		s.mu.RLock()
+		for _, agent := range s.agents {
+			out = append(out, AgentSeries{
+				InstanceUID:    agent.InstanceUID,
+				HealthReported: agent.HealthReported,
+				Healthy:        agent.Healthy,
+				LastSeen:       agent.LastSeen,
+			})
+		}
+		s.mu.RUnlock()
+	}
+	return out
+}
+
 // Sweep updates liveness for agents that have stopped checking in, then
 // evicts those past the stale threshold. Returns instance uids of evicted
 // agents.

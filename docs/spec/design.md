@@ -1892,12 +1892,14 @@ Not yet a gap, checked and ruled out: `MergeAgents`
 O(N·M). `Registry.List()` deep-copies each agent per call: `snapshot()`
 (`internal/fleet/registry.go`) `maps.Clone`s the four per-agent maps
 (`Identifying`, `NonIdentifying`, `EffectiveConfig`, `Packages`) and copies
-two slices for every agent returned. Real, O(N)-per-call GC pressure — not a
-correctness or throughput failure on its own, but every caller that only
-needs aggregates (the metrics `FleetCollector` counting connected/healthy at
-scrape time) pays a full-fleet clone to produce a handful of numbers. A
-non-cloning aggregate walk over the shards is the fix, tracked as its own
-scaling item, not done here.
+two slices for every agent returned. Real, O(N)-per-call GC pressure, not a
+correctness or throughput failure on its own. The metrics `FleetCollector` no
+longer pays it: it counts the fleet through `Registry.Aggregate()` and reads
+its per-agent gauges (only below the series cap) through
+`Registry.AgentSeries()`, both of which walk the shards under their read locks
+without cloning any agent. `List()` itself still deep-copies for the API/UI
+read path, whose callers consume the whole agent including its attribute maps;
+narrowing that is separate, not done here.
 
 ## Open questions
 

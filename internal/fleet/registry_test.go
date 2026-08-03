@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -870,5 +871,89 @@ func TestReportOnDifferentShardsDoesNotBlock(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Report for a different shard's agent blocked on an unrelated shard's held lock")
+	}
+}
+
+// Aggregate must produce exactly the counts the old List-then-loop path did,
+// just without cloning. The reference here recomputes the same predicates over
+// List() so the two can't silently diverge.
+func TestAggregateMatchesList(t *testing.T) {
+	r, _ := testRegistry("team") // nothing reports "team", so all are noncompliant
+
+	r.Report(statusMsg(testUID()), ConnMeta{Transport: "ws"})
+	r.Report(statusMsg(testUID()), ConnMeta{Transport: "ws", ViaGateway: true})
+	r.Report(statusMsg(testUID()), ConnMeta{Transport: "http"})
+
+	gone := testUID()
+	r.Report(statusMsg(gone), ConnMeta{Transport: "ws"})
+	r.SetConnected(gone.String(), false)
+
+	sup := testUID()
+	r.Report(&protobufs.AgentToServer{
+		InstanceUid: sup[:],
+		AgentDescription: &protobufs.AgentDescription{
+			NonIdentifyingAttributes: []*protobufs.KeyValue{
+				strAttr("opamp.managed_by", "opentelemetry-opampsupervisor"),
+			},
+		},
+	}, ConnMeta{Transport: "ws"})
+
+	awaiting := testUID()
+	r.Report(&protobufs.AgentToServer{InstanceUid: awaiting[:]}, ConnMeta{Transport: "ws"})
+
+	want := FleetStats{Connected: map[ConnRoute]int{}}
+	for _, a := range r.List() {
+		want.Size++
+		if a.Connected {
+			via := "direct"
+			if a.Conn.ViaGateway {
+				via = "gateway"
+			}
+			want.Connected[ConnRoute{Transport: a.Conn.Transport, Via: via}]++
+		} else {
+			want.Disconnected++
+		}
+		if len(a.MissingAttributes) > 0 {
+			want.Noncompliant++
+		}
+		if SupervisorManaged(a) {
+			want.SupervisorManaged++
+		}
+		if !a.DescriptionReported {
+			want.AwaitingFullState++
+		}
+	}
+
+	if got := r.Aggregate(); !reflect.DeepEqual(got, want) {
+		t.Errorf("Aggregate() = %+v, want %+v (List-derived reference)", got, want)
+	}
+}
+
+// AgentSeries returns one lightweight record per agent with the scalar fields
+// the per-agent gauges need, and never fewer than the fleet size.
+func TestAgentSeries(t *testing.T) {
+	r, _ := testRegistry()
+
+	healthy := testUID()
+	r.Report(&protobufs.AgentToServer{
+		InstanceUid: healthy[:],
+		Health:      &protobufs.ComponentHealth{Healthy: true},
+	}, ConnMeta{Transport: "ws"})
+	bare := testUID()
+	r.Report(&protobufs.AgentToServer{InstanceUid: bare[:]}, ConnMeta{Transport: "ws"})
+
+	series := r.AgentSeries()
+	if len(series) != 2 {
+		t.Fatalf("AgentSeries len = %d, want 2", len(series))
+	}
+	byID := map[string]AgentSeries{}
+	for _, s := range series {
+		byID[s.InstanceUID] = s
+	}
+	if s := byID[healthy.String()]; !s.HealthReported || !s.Healthy || s.LastSeen.IsZero() {
+		t.Errorf("healthy agent series = %+v, want reported+healthy with a last-seen", s)
+	}
+	if s := byID[bare.String()]; s.HealthReported {
+		t.Errorf("bare agent series HealthReported = true, want false")
 	}
 }

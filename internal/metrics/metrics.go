@@ -281,56 +281,39 @@ func (c *FleetCollector) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect implements prometheus.Collector.
 func (c *FleetCollector) Collect(ch chan<- prometheus.Metric) {
-	agents := c.registry.List()
+	// Aggregate folds the fleet into counts without cloning any agent, so a
+	// scrape of a very large fleet doesn't allocate a snapshot per agent just
+	// to sum a handful of gauges (see docs/spec/design.md's Scaling gaps).
+	stats := c.registry.Aggregate()
 
-	connected := make(map[[2]string]float64)
-	var disconnected, noncompliant, supervisorManaged, awaiting float64
-	for _, agent := range agents {
-		if agent.Connected {
-			via := "direct"
-			if agent.Conn.ViaGateway {
-				via = "gateway"
-			}
-			connected[[2]string{agent.Conn.Transport, via}]++
-		} else {
-			disconnected++
-		}
-		if len(agent.MissingAttributes) > 0 {
-			noncompliant++
-		}
-		if fleet.SupervisorManaged(agent) {
-			supervisorManaged++
-		}
-		if !agent.DescriptionReported {
-			awaiting++
-		}
-	}
-	for labels, count := range connected {
+	for route, count := range stats.Connected {
 		ch <- prometheus.MustNewConstMetric(descAgentsConnected,
-			prometheus.GaugeValue, count, labels[0], labels[1])
+			prometheus.GaugeValue, float64(count), route.Transport, route.Via)
 	}
 	ch <- prometheus.MustNewConstMetric(descAgentsDisconnected,
-		prometheus.GaugeValue, disconnected)
+		prometheus.GaugeValue, float64(stats.Disconnected))
 	ch <- prometheus.MustNewConstMetric(descAgentsNoncompliant,
-		prometheus.GaugeValue, noncompliant)
+		prometheus.GaugeValue, float64(stats.Noncompliant))
 	ch <- prometheus.MustNewConstMetric(descAgentsSupervisorManaged,
-		prometheus.GaugeValue, supervisorManaged)
+		prometheus.GaugeValue, float64(stats.SupervisorManaged))
 	ch <- prometheus.MustNewConstMetric(descAgentsAwaitingFullState,
-		prometheus.GaugeValue, awaiting)
+		prometheus.GaugeValue, float64(stats.AwaitingFullState))
 	ch <- prometheus.MustNewConstMetric(descFleetSize,
-		prometheus.GaugeValue, float64(len(agents)))
+		prometheus.GaugeValue, float64(stats.Size))
 
 	capped := 0.0
-	if len(agents) > c.perAgentLimit {
+	if stats.Size > c.perAgentLimit {
 		capped = 1.0
 	}
 	ch <- prometheus.MustNewConstMetric(descAgentSeriesCapped,
 		prometheus.GaugeValue, capped)
 
-	if len(agents) > c.perAgentLimit {
+	// Only pull per-agent data below the cap: over it the series are dropped,
+	// so a capped fleet pays nothing for them.
+	if stats.Size > c.perAgentLimit {
 		return
 	}
-	for _, agent := range agents {
+	for _, agent := range c.registry.AgentSeries() {
 		// Health is omitted until the agent reports it; a bare registry
 		// entry (e.g. right after a server restart) must not read as
 		// unhealthy.
