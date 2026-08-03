@@ -1832,6 +1832,33 @@ running against a fixed period, which still fails at large enough N.
        concern, not grex's code — rolling-update pacing
        (`maxUnavailable`/PDB) or a random startup delay in the
        collector/Supervisor's own entrypoint before its first report.
+7. **Fixed: the OpAMP `Handler`'s single `sync.Mutex` was the same
+   hot-path lock as #1, one layer up — now per-connection state.** Sharding
+   fixed `fleet.Registry`, but every message still took `Handler.mu` twice
+   (`trackAgent` then `connMeta`) to touch three connection-keyed maps
+   (`connAgents`, `gatewayConns`, `connTransports`). Those are gone. State
+   each connection needs (transport, gateway flag, the instance uids seen on
+   it) now lives in a `*connState` allocated in `onConnecting` and captured by
+   that connection's own callbacks, so nothing on the message path contends
+   across connections. Safe because opamp-go processes one connection's
+   callbacks serially (verified against v0.23.0: a WebSocket connection is a
+   single read-loop goroutine, a plain HTTP request is one
+   `OnConnected`→`OnMessage`→`OnConnectionClose` sequence); `connState.mu`
+   remains only as defense against that internal contract changing.
+   `grex_gateway_connections` stays correct off the per-connection gateway
+   flag, no shared map.
+
+   **Bug found and fixed in the same pass:** `onConnectionClose` marked every
+   tracked agent disconnected regardless of transport. In plain HTTP mode
+   opamp-go fires `OnConnectionClose` at the end of *every* request
+   (`server/serverimpl.go`), so an HTTP-polling agent flapped
+   connected/disconnected each poll and spammed
+   `grex_agent_connects_total`/`grex_agent_disconnects_total`. Now only a
+   WebSocket close is treated as a real disconnect; HTTP-agent liveness is
+   left to `Registry.Sweep` via `LastSeen`, the same path already used for
+   gateway-relayed agents grex never sees a per-agent close for. opamp-go's
+   per-request close is correct for HTTP's stateless model, so the fix is
+   grex-side only, not upstream.
 
 Not yet a gap, checked and ruled out: `MergeAgents`
 (`internal/api/filter.go:223`) uses a map for the overlap check, O(N+M) not
