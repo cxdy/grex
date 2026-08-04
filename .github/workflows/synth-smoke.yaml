@@ -1,0 +1,39 @@
+name: synth-smoke
+
+# Black-box smoke for cmd/grex-synth. Runs only when the synthetic-agent
+# tool, its package, or this workflow change — the full Go suite
+# (golang-tests.yaml) already covers everything else on every PR.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cmd/grex-synth/**"
+      - "internal/synth/**"
+      - "scripts/synth-smoke.sh"
+      - ".github/workflows/synth-smoke.yaml"
+  pull_request:
+    paths:
+      - "cmd/grex-synth/**"
+      - "internal/synth/**"
+      - "scripts/synth-smoke.sh"
+      - ".github/workflows/synth-smoke.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install dependencies
+        run: go mod download
+      - name: Run synth smoke
+        run: |
+          chmod +x scripts/synth-smoke.sh
+          ./scripts/synth-smoke.sh

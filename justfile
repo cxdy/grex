@@ -66,6 +66,10 @@ compose-up:
 compose-down:
     docker compose down -v
 
+# Black-box smoke for cmd/grex-synth (same entrypoint as CI's synth-smoke).
+synth-smoke:
+    ./scripts/synth-smoke.sh
+
 # Migrates grex's own tables (not River's — see internal/persistence/migrations
 # and cmd/river-migrate). Placeholder migration only until jobs/permission
 # schema is decided (docs/spec/design.md Open questions).
