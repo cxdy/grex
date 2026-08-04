@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"io"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/dennisme/grex/internal/synth"
 )
 
 func TestParseConfigDefaults(t *testing.T) {
@@ -50,5 +54,48 @@ func TestParseConfigRejectsMissingURL(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "server url") {
 		t.Errorf("error = %q, want it to mention server url", err.Error())
+	}
+}
+
+func TestRunRejectsBadArgs(t *testing.T) {
+	err := run(context.Background(), []string{"-agents", "0", "-url", "ws://x/y"}, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("run with agents=0 = nil, want validation error")
+	}
+}
+
+// TestRunReportsAgainstDeadEndpoint drives run() end to end: valid config, a
+// short duration, and a URL nothing listens on. Agents fail to connect, the
+// run still completes, and the report is written to out.
+func TestRunReportsAgainstDeadEndpoint(t *testing.T) {
+	var out bytes.Buffer
+	args := []string{
+		"-url", "ws://127.0.0.1:1/v1/opamp",
+		"-agents", "2",
+		"-duration", "300ms",
+	}
+	if err := run(context.Background(), args, &out, io.Discard); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "synth report") {
+		t.Errorf("output missing report header:\n%s", got)
+	}
+	if !strings.Contains(got, "connected:  0") {
+		t.Errorf("output = %q, want connected 0 against a dead endpoint", got)
+	}
+}
+
+func TestPrintReportRendersErrors(t *testing.T) {
+	var out bytes.Buffer
+	r := synth.Report{Total: 3, Connected: 2, Failed: 1, Errors: map[string]int{"dial timeout": 1}}
+	if err := printReport(&out, r); err != nil {
+		t.Fatalf("printReport: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"agents:     3", "connected:  2", "failed:     1", "dial timeout"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
 	}
 }
