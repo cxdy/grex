@@ -2,8 +2,8 @@
 // PostgresStore implements StateStore, Flusher keeps the agents/
 // agent_effective_config tables current from a Registry's dirty-tracked
 // Events notifications, and SessionSnapshotter independently keeps
-// agent_session current on its own wholesale cadence (see docs/spec/
-// design.md's Agent state schema). internal/fleet.Registry remains the
+// agent_session fresh enough to read as a liveness signal, on its own
+// keepalive cadence (see docs/spec/design.md's Agent state schema). internal/fleet.Registry remains the
 // runtime source of truth for live fleet state; internal/api and
 // internal/ui fall back to StateStore for an agent this replica doesn't
 // hold locally.
@@ -33,12 +33,12 @@ type StateStore interface {
 	// SaveSession writes only agent_session (connected, remote_addr,
 	// tls_subject, via_gateway, transport, description_reported,
 	// sequence_num), independent of the agents table. Used by
-	// SessionSnapshotter's wholesale per-tick pass over every registered
-	// agent, deliberately not routed through SaveAgent: agent_session needs
-	// refreshing on every tick regardless of whether identity/health data
-	// changed, and paying SaveAgent's full JSONB-column rewrite cost for that
-	// would scale badly with fleet size. Guarded the same way as SaveAgent,
-	// keyed on agent.LastSeen.
+	// SessionSnapshotter's keepalive pass, deliberately not routed through
+	// SaveAgent: agent_session needs refreshing to stay readable as a
+	// liveness signal regardless of whether identity/health data changed,
+	// and paying SaveAgent's full JSONB-column rewrite cost for that would
+	// scale badly with fleet size. Guarded the same way as SaveAgent, keyed
+	// on agent.LastSeen.
 	SaveSession(ctx context.Context, agent fleet.Agent) error
 	GetAgent(ctx context.Context, instanceUID string) (fleet.Agent, bool, error)
 	ListAgents(ctx context.Context) ([]fleet.Agent, error)

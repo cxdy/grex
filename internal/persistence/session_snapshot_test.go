@@ -270,6 +270,147 @@ func TestSessionSnapshotterRecordsWriteMetrics(t *testing.T) {
 	}
 }
 
+// TestSessionSnapshotterSkipsAgentWithFreshStoredSession covers the
+// keepalive cadence: an agent whose stored session row is still well inside
+// the disconnect threshold needs no write this tick, because nothing that
+// reads agent_session can tell the difference (see api.StaleConnected) and
+// the row's other columns only change through events that already mark the
+// agent dirty for Flusher.
+func TestSessionSnapshotterSkipsAgentWithFreshStoredSession(t *testing.T) {
+	store := &fakeStateStore{}
+	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), nil)
+
+	id, raw := testInstanceUID(t, 1)
+	registry.Report(&protobufs.AgentToServer{InstanceUid: raw}, fleet.ConnMeta{})
+
+	clock := time.Now()
+	snapshotter := NewSessionSnapshotter(registry, store, 5*time.Second, discardLogger(), 4, nil)
+	snapshotter.now = func() time.Time { return clock }
+
+	snapshotter.snapshotOnce(context.Background())
+	if got := store.sessionWriteCount(id); got != 1 {
+		t.Fatalf("sessionWriteCount after first snapshot = %d, want 1", got)
+	}
+
+	clock = clock.Add(snapshotter.keepalive - time.Second)
+	snapshotter.snapshotOnce(context.Background())
+	if got := store.sessionWriteCount(id); got != 1 {
+		t.Errorf("sessionWriteCount = %d, want 1 (stored row still fresh, no rewrite due)", got)
+	}
+}
+
+// TestSessionSnapshotterRewritesStoredSessionBeforeItGoesStale is the other
+// half: once the stored row has aged to the keepalive point, it is rewritten
+// so a reader never sees it cross the disconnect threshold and wrongly
+// conclude the agent's owning replica died.
+func TestSessionSnapshotterRewritesStoredSessionBeforeItGoesStale(t *testing.T) {
+	store := &fakeStateStore{}
+	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), nil)
+
+	id, raw := testInstanceUID(t, 1)
+	registry.Report(&protobufs.AgentToServer{InstanceUid: raw}, fleet.ConnMeta{})
+
+	clock := time.Now()
+	snapshotter := NewSessionSnapshotter(registry, store, 5*time.Second, discardLogger(), 4, nil)
+	snapshotter.now = func() time.Time { return clock }
+
+	snapshotter.snapshotOnce(context.Background())
+	clock = clock.Add(snapshotter.keepalive)
+	snapshotter.snapshotOnce(context.Background())
+
+	if got := store.sessionWriteCount(id); got != 2 {
+		t.Errorf("sessionWriteCount = %d, want 2 (stored row reached the keepalive point)", got)
+	}
+}
+
+// TestKeepaliveIntervalStaysUnderDisconnectThreshold pins the correctness
+// invariant the whole cadence rests on: a stored row's worst-case age is the
+// keepalive plus one more tick (an agent can come due just after a tick
+// starts), and that total must stay under the threshold api.StaleConnected
+// compares against, or a healthy agent flips to Disconnected in the read
+// path. Includes a threshold shorter than the tick itself, where the only
+// safe answer is to write every tick.
+func TestKeepaliveIntervalStaysUnderDisconnectThreshold(t *testing.T) {
+	tests := []struct {
+		name            string
+		disconnectAfter time.Duration
+		tick            time.Duration
+		want            time.Duration
+	}{
+		{"default fleet settings", 45 * time.Second, 5 * time.Second, 30 * time.Second},
+		{"tick eats into the two-thirds point", 9 * time.Second, 4 * time.Second, 5 * time.Second},
+		{"threshold shorter than the tick", 3 * time.Second, 5 * time.Second, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := keepaliveInterval(tt.disconnectAfter, tt.tick)
+			if got != tt.want {
+				t.Errorf("keepaliveInterval(%v, %v) = %v, want %v", tt.disconnectAfter, tt.tick, got, tt.want)
+			}
+			// A zero keepalive is already writing every agent every tick,
+			// the most this can do; the tick alone exceeding the threshold
+			// is a fleet config problem no cadence here can solve.
+			if got > 0 && got+tt.tick > tt.disconnectAfter {
+				t.Errorf("keepalive %v + tick %v exceeds the disconnect threshold %v", got, tt.tick, tt.disconnectAfter)
+			}
+		})
+	}
+}
+
+// TestSessionSnapshotterRetriesAfterFailedWrite proves a failed write isn't
+// recorded as done: the agent comes due again on the very next tick rather
+// than waiting out a full keepalive with nothing in the database.
+func TestSessionSnapshotterRetriesAfterFailedWrite(t *testing.T) {
+	id, raw := testInstanceUID(t, 1)
+	store := &fakeBatchStore{errFor: map[string]error{id: errors.New("constraint violation")}}
+	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Minute, StaleMissedHeartbeats: 3}, discardLogger(), nil)
+	registry.Report(&protobufs.AgentToServer{InstanceUid: raw}, fleet.ConnMeta{})
+
+	clock := time.Now()
+	snapshotter := NewSessionSnapshotter(registry, store, 5*time.Second, discardLogger(), 4, nil)
+	snapshotter.now = func() time.Time { return clock }
+
+	snapshotter.snapshotOnce(context.Background())
+	if store.savedSession(id) {
+		t.Fatal("the write was supposed to fail")
+	}
+
+	store.mu.Lock()
+	store.errFor = nil
+	store.mu.Unlock()
+
+	clock = clock.Add(time.Second)
+	snapshotter.snapshotOnce(context.Background())
+	if !store.savedSession(id) {
+		t.Error("a failed write was treated as done; the agent was not retried on the next tick")
+	}
+}
+
+// TestSessionSnapshotterForgetsAgentsGoneFromRegistry covers the bookkeeping
+// that would otherwise grow without bound: an agent evicted from the
+// registry must not keep an entry in the snapshotter's write tracking, since
+// nothing else would ever remove it.
+func TestSessionSnapshotterForgetsAgentsGoneFromRegistry(t *testing.T) {
+	store := &fakeStateStore{}
+	registry := fleet.New(fleet.Config{HeartbeatInterval: time.Millisecond, StaleMissedHeartbeats: 1}, discardLogger(), nil)
+
+	id, raw := testInstanceUID(t, 1)
+	registry.Report(&protobufs.AgentToServer{InstanceUid: raw}, fleet.ConnMeta{})
+
+	snapshotter := NewSessionSnapshotter(registry, store, 5*time.Second, discardLogger(), 4, nil)
+	snapshotter.snapshotOnce(context.Background())
+	if _, ok := snapshotter.written[id]; !ok {
+		t.Fatalf("%s was written but not tracked", id)
+	}
+
+	registry.Sweep(time.Now().Add(time.Hour))
+	snapshotter.snapshotOnce(context.Background())
+
+	if _, ok := snapshotter.written[id]; ok {
+		t.Errorf("%s left the registry but its write tracking entry survived", id)
+	}
+}
+
 // TestNewSessionSnapshotterSetsWriteTimeoutOnce covers construction: the
 // configured timeout is recorded once immediately, not lazily on first
 // write.
