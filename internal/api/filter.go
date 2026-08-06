@@ -249,8 +249,9 @@ func MergeAgents(local, db []fleet.Agent, now time.Time, disconnectAfter time.Du
 // persistence.SessionSnapshotter) — LastSeen only reflects genuine
 // identity/health changes, so it can go stale in the database for a
 // perfectly healthy, quiet agent long before disconnectAfter, while
-// SessionUpdatedAt is kept fresh independently by the periodic wholesale
-// snapshot as long as the agent keeps checking in at all. Uses the same
+// SessionUpdatedAt is kept fresh independently by SessionSnapshotter's
+// keepalive, which rewrites the row before it can age past this threshold,
+// as long as the agent keeps checking in at all. Uses the same
 // threshold Sweep applies locally (Registry.HeartbeatInterval), so a
 // DB-only agent and a locally registered one are held to one shared
 // definition of "stale," not two.

@@ -18,6 +18,9 @@ type fakeStateStore struct {
 	mu      sync.Mutex
 	agents  map[string]fleet.Agent
 	evicted map[string]time.Time
+	// sessionWrites counts SaveSession calls per instance_uid, so a test can
+	// assert that a write was skipped rather than only that a row exists.
+	sessionWrites map[string]int
 }
 
 var _ StateStore = (*fakeStateStore)(nil)
@@ -38,6 +41,10 @@ func (f *fakeStateStore) SaveSession(_ context.Context, agent fleet.Agent) error
 	if f.agents == nil {
 		f.agents = make(map[string]fleet.Agent)
 	}
+	if f.sessionWrites == nil {
+		f.sessionWrites = make(map[string]int)
+	}
+	f.sessionWrites[agent.InstanceUID]++
 	existing := f.agents[agent.InstanceUID]
 	existing.Connected = agent.Connected
 	existing.Conn = agent.Conn
@@ -49,6 +56,14 @@ func (f *fakeStateStore) SaveSession(_ context.Context, agent fleet.Agent) error
 	}
 	f.agents[agent.InstanceUID] = existing
 	return nil
+}
+
+// sessionWriteCount is safe for concurrent use, same convention as the
+// other accessors here.
+func (f *fakeStateStore) sessionWriteCount(instanceUID string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sessionWrites[instanceUID]
 }
 
 func (f *fakeStateStore) GetAgent(_ context.Context, instanceUID string) (fleet.Agent, bool, error) {

@@ -112,6 +112,26 @@ agent's config on every list query.
    database: agents already re-report everything on reconnect
    (`ReportFullState`), so durability here only needs to survive seconds
    of staleness, not be per-message-perfect.
+5. `internal/persistence.SessionSnapshotter` runs on a third ticker
+   (`sessionSnapshotInterval`, 5s in `cmd/grex`) covering the case the
+   dirty set structurally cannot: a healthy agent's heartbeat is an empty
+   `AgentToServer`, so it marks nothing dirty and `Flusher` never sees it
+   again after connect. That matters because `agent_session.updated_at`
+   is what `api.StaleConnected` reads to decide whether an agent held by
+   *another* replica still counts as connected.
+
+   Each tick it writes only the agents whose stored row has come due, not
+   every registered agent. "Due" means no row written yet, or a stored
+   timestamp that has aged to `keepaliveInterval` — two-thirds of
+   `Registry.DisconnectThreshold()`, clamped so keepalive-plus-one-tick
+   still fits under the threshold. Derived from the threshold rather than
+   configured on purpose: set independently and too high, stored rows age
+   past what `StaleConnected` accepts and the whole fleet reads as
+   disconnected. The connection columns (`connected`, `remote_addr`,
+   `transport`, …) don't wait for a keepalive — they only change through
+   events that mark the agent dirty, and `SaveAgent` writes
+   `agent_session` as part of that same flush. See design.md's Scaling
+   gaps item 3 for the write-volume reasoning.
 
 ## Soft delete and purge
 

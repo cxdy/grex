@@ -477,8 +477,10 @@ staleness, not be per-message-perfect. `agent_session` churns far more
 than `agents`/`agent_effective_config` and its precision matters less (a
 connect/disconnect a few seconds stale in the database is fine) —
 **built**, not just an option anymore: `persistence.SessionSnapshotter`
-snapshots it wholesale every tick for every registered agent, independent
-of the dirty set. Necessary, not just cheaper: `agents`/`agent_session`
+refreshes it on its own ticker for every registered agent, independent of
+the dirty set, each agent's row rewritten once its stored timestamp reaches
+the keepalive point rather than on every tick (see Scaling gaps item 3).
+Necessary, not just cheaper: `agents`/`agent_session`
 are dirty-tracked together via the same `Report()` events, so a quiet,
 healthy agent sending heartbeats with no reportable field change would
 otherwise never re-flush `agent_session` either, and `Connected` would go
@@ -1754,20 +1756,66 @@ running against a fixed period, which still fails at large enough N.
    one summary line per `Sweep`, or moving the call outside the lock
    entirely, are still open if per-agent detail is ever needed back at
    `info` — not done here, this was the cheap fix.
-3. **Partially fixed: `SessionSnapshotter`'s `SaveSession` writes are now
-   chunked-batched, but it's still unconditional every tick.** Round-trip
-   count is real progress — `defaultBatchSize` (500, `write.go`) agents per
+3. **Fixed: `SessionSnapshotter` writes an agent's session row when it comes
+   due, not every tick.** Two separate changes, in order. First,
+   round-trip count: `defaultBatchSize` (500, `write.go`) agents per
    `pgx.Batch` send instead of one round trip each, when the store supports
    `BatchStateStore` (`PostgresStore` does; a store that doesn't, e.g. a
-   test fake, falls back to the original one-row-per-agent path unchanged).
-   What's *not* fixed: it still writes every registered agent's session
-   state every `sessionSnapshotInterval` regardless of whether anything
-   changed (`session_snapshot.go`'s own doc comment). Batching cuts
-   round-trip overhead, not total write volume — at 1M agents Postgres
-   still needs to absorb 1M row-writes every 5s, batched or not. Real
-   dirty-tracked cadence for session data (accepting the staleness
-   tradeoff Agent state schema already discusses) is separate, undecided
-   future work.
+   test fake, falls back to the one-row-per-agent path unchanged). That cut
+   round-trip overhead but not write *volume* — at 1M agents Postgres still
+   absorbed 1M row-writes every `sessionSnapshotInterval` (5s), batched or
+   not.
+
+   Volume is what the second change addresses, and the shape of the fix is
+   not the "dirty-tracked session cadence" this item originally proposed.
+   Wiring `agent_session` to `DirtyTracker` would break the read path:
+   `agent_session.updated_at` is the fleet's only durable liveness signal,
+   and `api.StaleConnected` (`internal/api/filter.go`) reads exactly it to
+   decide whether an agent owned by *another* replica still shows as
+   connected. Dirty tracking cannot carry that, because a healthy agent is
+   never dirty — verified against `opamp-go` v0.23.0 rather than assumed:
+   the WebSocket heartbeat is `NextMessage().Update(func(msg
+   *AgentToServer) {})` (`client/internal/wssender.go`), an empty message
+   with no description and no health block, so `Registry.Report` fires no
+   `ReportReceived` event for it. Quiet is the steady state, not an edge
+   case. Dirty-gating session writes would have flipped every healthy
+   agent on a peer replica to Disconnected in the UI within one
+   `DisconnectThreshold`.
+
+   What the row actually does is two jobs, and only one of them is
+   per-tick work. The columns that describe the connection (`connected`,
+   `remote_addr`, `tls_subject`, `via_gateway`, `transport`,
+   `description_reported`) change only through events that already mark
+   the agent dirty (`AgentConnected`/`AgentDisconnected` from
+   `Registry.Report`/`SetConnected`, `ReportReceived` from a real
+   description), and `SaveAgent` writes `agent_session` as part of that
+   flush — so change-driven session writes were already covered by
+   `Flusher`, with no new mechanism needed. The remaining job is a
+   liveness keepalive on `updated_at`, and *that* does not need per-tick
+   cadence, it needs a per-agent deadline.
+
+   So the snapshotter now tracks what timestamp it last wrote per agent and
+   rewrites a row only once that stored value reaches
+   `keepaliveInterval(Registry.DisconnectThreshold(), tick)` — two-thirds
+   of the threshold, clamped so keepalive-plus-one-tick still fits under it
+   (a row can only come due at a tick boundary). Derived, deliberately not
+   configured: an independently tuned knob set too high pushes stored rows
+   past the threshold `StaleConnected` compares against, which reads as the
+   entire fleet disconnecting at once. At default fleet settings that is a
+   30s keepalive against a 45s threshold on a 5s tick — the 9x headroom
+   between "how often we wrote" and "how fresh the reader actually needs
+   it" was being spent for nothing. Roughly 6x fewer session writes (1M
+   agents: ~200k/s down to ~33k/s) with `StaleConnected`'s semantics and
+   the read path both untouched. Spending the remaining margin means
+   raising `fleet.heartbeat_interval`, a deployment decision, not a code
+   one.
+
+   `sequence_num` is the one column allowed to sit stale between
+   keepalives. It is display/debugging only, never read back to resume
+   ordering checks (see the `agent_state` migration's own comment on it).
+   Bookkeeping is bounded: entries for agents that have left the registry
+   are dropped on the pass that first misses them, via a generation counter,
+   so the map tracks the live fleet and not everything ever seen.
 4. **Fixed: `Flusher`'s `SoftDeleteAgent` and `agent_connections`'s
    `UpsertAgentConnection` are chunked-batched, same mechanism as #3.**
    `SaveAgent` itself is deliberately *not* batched — it's not a single
@@ -1886,6 +1934,28 @@ running against a fixed period, which still fails at large enough N.
    intended path that makes this less urgent. Fix direction, once a ceiling is
    known: a configurable max-connection limit that refuses over the line with
    the same 503-and-reconnect-elsewhere behavior `Drain` already uses.
+10. **Known gap, not started: `agent_connections.last_seen` is only
+    refreshed for dirty agents, so it cannot support the lease-expiry sweep
+    it was added for.** `Flusher.flushAgentConnections`
+    (`internal/persistence/flush.go`) upserts only the agents drained from
+    `DirtyTracker` that are still connected. A healthy agent goes dirty on
+    connect and then never again — its heartbeat is an empty
+    `AgentToServer` that fires no `ReportReceived` (same `opamp-go`
+    finding as gap 3) — so in steady state its `last_seen` sits frozen at
+    whatever its connect-time flush wrote, for as long as the connection
+    lives. The column's own migration comment (`000004_agent_connections`)
+    describes it as "what a lease-expiry sweep checks: a replica that
+    crashes without deregistering leaves a stale row here until it ages
+    out," and `Flusher.flushOnce` points at the same unbuilt sweep. Built
+    against the column as it behaves today, that sweep would expire the
+    entire live fleet's ownership rows, not just the crashed replicas' —
+    dispatch would then have no route to agents that are connected and
+    fine. Nothing is broken *yet*, purely because the sweep does not
+    exist; this is a trap laid for whoever builds it. Fix direction: give
+    the ownership refresh the same per-agent deadline treatment gap 3 gave
+    the session row, rather than making it per-tick wholesale (which would
+    reintroduce exactly the volume gap 3 just removed, on a second table).
+    Found by review while fixing gap 3, not by load testing.
 
 Not yet a gap, checked and ruled out: `MergeAgents`
 (`internal/api/filter.go:223`) uses a map for the overlap check, O(N+M) not

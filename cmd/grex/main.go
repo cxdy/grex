@@ -69,12 +69,13 @@ const shutdownGrace = 10 * time.Second
 // and durability are different concerns.
 const persistenceFlushInterval = 5 * time.Second
 
-// sessionSnapshotInterval is how often every registered agent's session
-// state (agent_session) is wholesale-written, independent of dirty
-// tracking — see persistence.SessionSnapshotter. agent_session's row is
-// small (no JSONB), so this can run at the same cadence as the dirty flush
-// without the write-amplification cost a wholesale agents-table rewrite
-// would have at fleet scale.
+// sessionSnapshotInterval is how often session state (agent_session) is
+// checked for rows due a keepalive rewrite, independent of dirty tracking —
+// see persistence.SessionSnapshotter, which derives the keepalive itself
+// from the fleet's disconnect threshold. This is the granularity at which
+// an agent can come due, not how often any given agent is written, so it
+// stays at the dirty flush's cadence: it bounds how late a due row is
+// noticed, and the keepalive already reserves margin for one tick of it.
 const sessionSnapshotInterval = 5 * time.Second
 
 // drainDelay gives an orchestrator's readiness probe time to observe

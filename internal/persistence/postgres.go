@@ -26,7 +26,7 @@ type execer interface {
 // not the agents table's — the two tables are allowed to disagree about
 // which write is "newest" since they're written by different paths on
 // different cadences (SaveAgent's dirty-triggered writes vs
-// SessionSnapshotter's wholesale ones).
+// SessionSnapshotter's keepalive ones).
 //
 // The guard allows ties (<=), not just strict advances (<): Registry.Sweep
 // marks a missed-heartbeat agent disconnected without ever advancing
@@ -218,9 +218,8 @@ func (s *PostgresStore) SaveAgent(ctx context.Context, agent fleet.Agent) error 
 }
 
 // SaveSession writes only agent_session, independent of the agents table
-// (see saveSessionUpsert). Used by SessionSnapshotter's wholesale per-tick
-// pass over every registered agent — see StateStore's doc comment for why
-// this isn't routed through SaveAgent.
+// (see saveSessionUpsert). Used by SessionSnapshotter's keepalive pass —
+// see StateStore's doc comment for why this isn't routed through SaveAgent.
 func (s *PostgresStore) SaveSession(ctx context.Context, agent fleet.Agent) error {
 	return saveSessionUpsert(ctx, s.pool, agent)
 }
